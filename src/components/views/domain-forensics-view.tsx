@@ -402,14 +402,45 @@ function downloadPdf(data: ForensicsResult) {
       ["Headers", "Capture all HTTP response headers from the initial URL"],
       ["Fuzzing", "Probe ~250 sensitive paths: admin panels, backups, configs, SCM metadata, API endpoints, CMS-specific, framework-specific"],
       ["Attribution", "Extract Google Analytics IDs, GA4, Meta Pixel, FB App ID, Yandex Metrica, Hotjar, Sentry DSN, GitHub links, emails, phones, crypto addresses, HTML comments, image EXIF"],
+      ["Screenshot", "Capture a 1024x768 PNG via s-shot.ru / microlink.io / thum.io (3 fallbacks)"],
       ["FINDINGS.md", "Executive summary + risk signals + all sections consolidated into Markdown"],
-      ["ZIP bundle", "All artifacts bundled into a downloadable .zip with mirror/, fuzzing/, headers/, attribution/ folders"],
+      ["ZIP bundle", "All artifacts bundled into a downloadable .zip with mirror/, fuzzing/, headers/, attribution/ folders + FINDINGS.md"],
     ],
     theme: "grid", margin: { left: margin, right: margin },
     styles: { fontSize: 9, cellPadding: 5, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
     headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold", fontSize: 10 },
     columnStyles: { 0: { cellWidth: 100, fontStyle: "bold" } },
   });
+  // @ts-ignore
+  y = (doc as any).lastAutoTable.finalY + 18;
+
+  // 10. FINDINGS.md — the full consolidated markdown report
+  sectionHeading("10. FINDINGS.md — Consolidated Report");
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(51, 65, 85);
+  // Render the markdown as monospaced text, word-wrapped to fit the page width.
+  // Split by lines and write each, paginating as needed.
+  const findingsLines = (data.findings || "").split("\n");
+  const lineHeight = 10;
+  for (const line of findingsLines) {
+    if (y > pageHeight - margin - 30) {
+      doc.addPage();
+      y = margin + 6;
+    }
+    // Wrap long lines — jsPDF doesn't auto-wrap
+    const wrapped = doc.splitTextToSize(line || " ", contentWidth);
+    for (const wLine of wrapped) {
+      if (y > pageHeight - margin - 20) {
+        doc.addPage();
+        y = margin + 6;
+      }
+      // Skip drawing pure empty lines but still advance y for spacing
+      doc.text(wLine, margin, y);
+      y += lineHeight;
+    }
+  }
+  y += 8;
 
   // Footer on every page
   const pageCount = doc.getNumberOfPages();
