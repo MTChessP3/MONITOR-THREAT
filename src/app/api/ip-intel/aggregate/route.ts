@@ -24,7 +24,7 @@ export async function GET(request: Request) {
   const base = new URL(request.url).origin;
   const ipEnc = encodeURIComponent(ip);
 
-  const [geo, blacklists, ports, reputation] = await Promise.all([
+  const [geo, blacklists, ports, reputation, cves] = await Promise.all([
     fetch(`${base}/api/ip-intel/geo?ip=${ipEnc}`).then((r) =>
       r.ok ? r.json() : Promise.resolve({ error: "geo_failed" })
     ),
@@ -36,6 +36,9 @@ export async function GET(request: Request) {
     ),
     fetch(`${base}/api/ip-intel/reputation?ip=${ipEnc}`).then((r) =>
       r.ok ? r.json() : Promise.resolve({ error: "reputation_failed" })
+    ),
+    fetch(`${base}/api/ip-intel/cves?ip=${ipEnc}`).then((r) =>
+      r.ok ? r.json() : Promise.resolve({ error: "cves_failed" })
     ),
   ]);
 
@@ -50,6 +53,7 @@ export async function GET(request: Request) {
     blacklists,
     ports,
     reputation,
+    cves,
     tags: [...new Set(tags)],
     timestamp: new Date().toISOString(),
   };

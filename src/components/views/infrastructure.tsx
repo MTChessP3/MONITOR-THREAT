@@ -9,6 +9,7 @@ import {
   Link as LinkIcon,
   Box,
   ShieldOff,
+  ShieldCheck,
   Network,
   Loader2,
   AlertTriangle,
@@ -163,8 +164,41 @@ interface AggregateResult {
   blacklists: BlacklistResult;
   ports: PortsResult;
   reputation: ReputationResult;
+  cves: CveAssessment;
   tags: string[];
   timestamp: string;
+}
+
+interface CveDetail {
+  id: string;
+  source: "nvd" | "shodan";
+  description?: string;
+  cvssScore?: number;
+  cvssSeverity?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  cvssVector?: string;
+  attackVector?: "NETWORK" | "ADJACENT" | "LOCAL" | "PHYSICAL";
+  publishedDate?: string;
+  lastModified?: string;
+  cwe?: string;
+  references?: Array<{ url: string; source?: string; tags?: string[] }>;
+  affectedProducts?: string[];
+  isRecent: boolean;
+  ageDays?: number;
+}
+
+interface CveAssessment {
+  ip: string;
+  available: boolean;
+  totalCves: number;
+  recentCves: number;
+  criticalCount: number;
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
+  topSeverity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "NONE";
+  cves: CveDetail[];
+  shodanOk: boolean;
+  error?: string;
 }
 
 const CATEGORY_BADGE: Record<BlacklistEntry["category"], { label: string; cls: string }> = {
@@ -963,6 +997,180 @@ export function IpIntelView() {
               </>
             ) : (
               <p className="text-sm text-muted-foreground">No data.</p>
+            )}
+          </Panel>
+
+          {/* Vulnerability Assessment (CVE) */}
+          <Panel
+            title="Vulnerability Assessment (CVE)"
+            className="md:col-span-2"
+            action={
+              data.cves?.available ? (
+                <a
+                  href={`https://internetdb.shodan.io/${data.ip}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-cyan-500 hover:underline flex items-center gap-1"
+                >
+                  Shodan raw vuln list <ExternalLink className="w-3 h-3" />
+                </a>
+              ) : undefined
+            }
+          >
+            {data.cves?.error && !data.cves.available ? (
+              <p className="text-sm text-muted-foreground">
+                CVE assessment failed: {data.cves.error}
+              </p>
+            ) : data.cves ? (
+              <div className="flex flex-col gap-3">
+                {/* Summary cards */}
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                  {[
+                    { label: "Total CVEs", n: data.cves.totalCves, cls: "border-border bg-muted/20" },
+                    { label: "Recent (<2 mo)", n: data.cves.recentCves, cls: "border-yellow-500/40 bg-yellow-500/10 text-yellow-400" },
+                    { label: "Critical", n: data.cves.criticalCount, cls: "border-red-500/40 bg-red-500/10 text-red-400" },
+                    { label: "High", n: data.cves.highCount, cls: "border-orange-500/40 bg-orange-500/10 text-orange-400" },
+                    { label: "Medium / Low", n: data.cves.mediumCount + data.cves.lowCount, cls: "border-blue-500/40 bg-blue-500/10 text-blue-400" },
+                  ].map((b) => (
+                    <div key={b.label} className={`rounded p-2 border ${b.cls}`}>
+                      <div className="text-xl font-bold font-mono leading-none">{b.n}</div>
+                      <div className="text-[10px] mt-0.5">{b.label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {data.cves.totalCves === 0 ? (
+                  <p className="text-sm text-emerald-500 flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4" />
+                    No known CVEs associated with this IP per Shodan InternetDB.
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-2 max-h-[600px] overflow-y-auto">
+                    {data.cves.cves.map((cve) => (
+                      <div
+                        key={cve.id}
+                        className={`rounded border p-3 ${
+                          cve.isRecent
+                            ? "border-yellow-500/60 bg-yellow-500/5"
+                            : cve.cvssSeverity === "CRITICAL"
+                            ? "border-red-500/40 bg-red-500/5"
+                            : cve.cvssSeverity === "HIGH"
+                            ? "border-orange-500/40 bg-orange-500/5"
+                            : "border-border"
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="shrink-0 flex flex-col items-center">
+                            {cve.cvssScore !== undefined && (
+                              <div
+                                className={`text-xl font-mono font-bold leading-none ${
+                                  cve.cvssSeverity === "CRITICAL"
+                                    ? "text-red-500"
+                                    : cve.cvssSeverity === "HIGH"
+                                    ? "text-orange-500"
+                                    : cve.cvssSeverity === "MEDIUM"
+                                    ? "text-yellow-500"
+                                    : "text-blue-500"
+                                }`}
+                              >
+                                {cve.cvssScore}
+                              </div>
+                            )}
+                            {cve.cvssSeverity && (
+                              <Badge
+                                variant={
+                                  cve.cvssSeverity === "CRITICAL"
+                                    ? "destructive"
+                                    : cve.cvssSeverity === "HIGH"
+                                    ? "default"
+                                    : "secondary"
+                                }
+                                className="font-mono text-[9px] mt-1"
+                              >
+                                {cve.cvssSeverity}
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <a
+                                href={`https://nvd.nist.gov/vuln/detail/${cve.id}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="font-mono text-sm text-cyan-500 hover:underline"
+                              >
+                                {cve.id}
+                              </a>
+                              {cve.isRecent && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[9px] font-mono text-yellow-500 border-yellow-500/40"
+                                >
+                                  RECENT · {cve.ageDays}d ago
+                                </Badge>
+                              )}
+                              {cve.attackVector && (
+                                <Badge variant="outline" className="text-[9px] font-mono">
+                                  {cve.attackVector}
+                                </Badge>
+                              )}
+                              {cve.cwe && (
+                                <Badge variant="outline" className="text-[9px] font-mono">
+                                  {cve.cwe}
+                                </Badge>
+                              )}
+                            </div>
+                            {cve.description && (
+                              <p className="text-xs text-muted-foreground mt-1 line-clamp-3">
+                                {cve.description}
+                              </p>
+                            )}
+                            {cve.affectedProducts && cve.affectedProducts.length > 0 && (
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {cve.affectedProducts.slice(0, 5).map((p) => (
+                                  <Badge
+                                    key={p}
+                                    variant="secondary"
+                                    className="font-mono text-[9px]"
+                                  >
+                                    {p}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
+                            {cve.publishedDate && (
+                              <div className="text-[10px] text-muted-foreground mt-1">
+                                Published: {new Date(cve.publishedDate).toLocaleDateString()}
+                                {cve.cvssVector && (
+                                  <span className="ml-2 font-mono">[{cve.cvssVector}]</span>
+                                )}
+                              </div>
+                            )}
+                            {cve.references && cve.references.length > 0 && (
+                              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                                {cve.references.slice(0, 3).map((r) => (
+                                  <a
+                                    key={r.url}
+                                    href={r.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-[10px] text-cyan-500 hover:underline truncate max-w-md"
+                                  >
+                                    ↗ {r.url.replace(/^https?:\/\//, "").slice(0, 60)}
+                                    {r.url.length > 60 ? "…" : ""}
+                                  </a>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">No CVE data.</p>
             )}
           </Panel>
 
