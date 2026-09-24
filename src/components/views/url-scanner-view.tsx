@@ -84,6 +84,12 @@ interface UrlScanResult {
     redirected?: string; verdictUrl?: string; scanTime?: string;
     malicious?: boolean; error?: string;
   } | null;
+  otx: {
+    available: boolean; pulseCount: number;
+    pulses: Array<{ name: string; created: string; tags: string[]; tlp: string; adversary?: string; attackIds: Array<{ id: string; name: string }> }>;
+    validations: Array<{ source: string; message: string; name: string }>;
+    error?: string;
+  } | null;
 }
 
 // ---------- PDF ----------
@@ -651,8 +657,70 @@ export function UrlScannerView() {
             </Panel>
           )}
 
+          {/* 7. AlienVault OTX */}
+          {data.otx?.available && (
+            <Panel title="7. AlienVault OTX Threat Intel" className="md:col-span-2" action={
+              <a href={`https://otx.alienvault.com/indicator/url/${encodeURIComponent(data.url)}`}
+                target="_blank" rel="noreferrer"
+                className="text-xs text-cyan-500 hover:underline flex items-center gap-1">
+                OTX report <ExternalLink className="w-3 h-3" />
+              </a>
+            }>
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <div className={`rounded p-2 border ${data.otx.pulseCount > 0 ? "border-orange-500/40 bg-orange-500/10 text-orange-400" : "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"}`}>
+                  <div className="text-xl font-bold font-mono">{data.otx.pulseCount}</div>
+                  <div className="text-[10px]">threat pulses</div>
+                </div>
+                <div className="rounded p-2 border border-border bg-muted/20">
+                  <div className="text-xl font-bold font-mono">{data.otx.validations.length}</div>
+                  <div className="text-[10px]">validations</div>
+                </div>
+              </div>
+              {data.otx.validations.length > 0 && (
+                <div className="mb-3 flex flex-wrap gap-1">
+                  {data.otx.validations.map((v, i) => (
+                    <Badge key={i} variant="secondary" className="text-[10px] font-mono">
+                      [{v.source}] {v.message}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+              {data.otx.pulses.length > 0 && (
+                <div className="max-h-48 overflow-y-auto">
+                  <div className="text-xs text-muted-foreground mb-1 font-semibold">Threat pulses:</div>
+                  {data.otx.pulses.map((p, i) => (
+                    <div key={i} className="rounded border border-border p-2 mb-1 bg-muted/20">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-semibold">{p.name.slice(0, 80)}</span>
+                        <span className="text-[10px] text-muted-foreground">{p.created.slice(0, 10)}</span>
+                        <Badge variant="outline" className="text-[9px] font-mono">TLP:{p.tlp}</Badge>
+                        {p.adversary && <Badge variant="destructive" className="text-[9px]">adversary: {p.adversary}</Badge>}
+                      </div>
+                      {p.tags.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {p.tags.slice(0, 8).map((t, j) => (
+                            <Badge key={j} variant="secondary" className="text-[9px] font-mono">#{t}</Badge>
+                          ))}
+                        </div>
+                      )}
+                      {p.attackIds.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {p.attackIds.map((a, j) => (
+                            <Badge key={j} variant="outline" className="text-[9px] font-mono text-orange-500">
+                              {a.id}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Panel>
+          )}
+
           <div className="md:col-span-2 text-[10px] text-muted-foreground font-mono">
-            Query timestamp: {data.timestamp} · Powered by URL parsing, HTTP fetch, content extraction, VirusTotal URL API, OpenPhish feed, urlscan.io.
+            Query timestamp: {data.timestamp} · Powered by URL parsing, HTTP fetch, content extraction, VirusTotal URL API, OpenPhish feed, urlscan.io, AlienVault OTX.
           </div>
         </div>
       )}

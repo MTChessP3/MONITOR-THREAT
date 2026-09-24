@@ -128,6 +128,7 @@ interface UrlScanResult {
     matches: string[];
   };
   urlscanIo: UrlScanResult_urlscan | null;
+  otx: OtxResult | null;
   error?: string;
 }
 
@@ -754,6 +755,61 @@ function computeRiskScore(
   return { score, classification, verdict };
 }
 
+// ---------- AlienVault OTX Check ----------
+
+interface OtxPulse {
+  name: string;
+  created: string;
+  tags: string[];
+  tlp: string;
+  adversary?: string;
+  attackIds: Array<{ id: string; name: string }>;
+}
+
+interface OtxResult {
+  available: boolean;
+  pulseCount: number;
+  pulses: OtxPulse[];
+  validations: Array<{ source: string; message: string; name: string }>;
+  error?: string;
+}
+
+async function checkOtx(url: string): Promise<OtxResult> {
+  try {
+    const encodedUrl = encodeURIComponent(url);
+    const endpoint = `https://otx.alienvault.com/api/v1/indicators/url/${encodedUrl}/general`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(endpoint, {
+      signal: controller.signal,
+      headers: { "User-Agent": "MONITOR-THREAT/2.0", Accept: "application/json" },
+    });
+    clearTimeout(timeout);
+    if (!res.ok) {
+      return { available: false, pulseCount: 0, pulses: [], validations: [], error: `otx_error_${res.status}` };
+    }
+    const data = await res.json();
+    const pi = data.pulse_info || {};
+    const rawPulses = pi.pulses || [];
+    const pulses: OtxPulse[] = rawPulses.slice(0, 10).map((p: any) => ({
+      name: p.name || "?",
+      created: p.created || "?",
+      tags: p.tags || [],
+      tlp: p.TLP || "?",
+      adversary: p.adversary || "",
+      attackIds: (p.attack_ids || []).slice(0, 5).map((a: any) => ({ id: a.id, name: a.name })),
+    }));
+    const validations = (data.validation || []).map((v: any) => ({
+      source: v.source || "?",
+      message: v.message || "",
+      name: v.name || "",
+    }));
+    return { available: true, pulseCount: pi.count || pulses.length, pulses, validations };
+  } catch {
+    return { available: false, pulseCount: 0, pulses: [], validations: [], error: "otx_unreachable" };
+  }
+}
+
 // ---------- urlscan.io Check ----------
 
 interface UrlScanResult {
@@ -854,11 +910,12 @@ export async function GET(request: Request) {
     // Remove body from fetch result (don't send to client)
     const { body, ...fetchWithoutBody } = fetchResult;
 
-    // 4. VirusTotal URL report + OpenPhish + urlscan.io (all in parallel)
-    const [vtResult, openPhishResult, urlscanResult] = await Promise.all([
+    // 4. VirusTotal + OpenPhish + urlscan.io + OTX (all in parallel)
+    const [vtResult, openPhishResult, urlscanResult, otxResult] = await Promise.all([
       getVtUrlReport(parse.fullUrl),
       checkOpenPhish(parse.fullUrl),
       checkUrlscanIo(parse.fullUrl),
+      checkOtx(parse.fullUrl),
     ]);
 
     // 5. Compute risk score
@@ -879,6 +936,7 @@ export async function GET(request: Request) {
       virusTotal: vtResult,
       openPhish: openPhishResult,
       urlscanIo: urlscanResult,
+      otx: otxResult,
     };
 
     return NextResponse.json(result);
