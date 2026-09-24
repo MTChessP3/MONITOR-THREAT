@@ -3,6 +3,11 @@
 // This makes the popup SAME-ORIGIN with MONITOR-THREAT, so all the
 // monitoring hooks (console, errors, popups, eval, crypto, etc.) work
 // without cross-origin restrictions.
+//
+// For NON-HTML responses (images, CSS, JS, fonts) it passes through
+// the bytes with CORS headers — this allows html2canvas (running in
+// the parent) to render the popup's <img> elements as same-origin
+// resources, so the canvas is not tainted and toDataURL works.
 
 import { NextResponse } from "next/server";
 
@@ -35,8 +40,56 @@ const MONITOR_SCRIPT = `
       parent.postMessage({type:'crypto', script: s.src, miner: 'CoinHive/CryptoNight'}, '*');
     }
   }
+  // REWRITE IMAGE URLs to go through our proxy (so they get CORS headers
+  // and html2canvas can render them without tainting the canvas)
+  function rewriteResourceUrls() {
+    try {
+      document.querySelectorAll('img[src]').forEach(function(img) {
+        var s = img.getAttribute('src');
+        if (!s || s.startsWith('data:') || s.startsWith('blob:') || s.startsWith('/api/')) return;
+        try {
+          var abs = new URL(s, document.baseURI).href;
+          if (abs.startsWith('http:') || abs.startsWith('https:')) {
+            img.setAttribute('src', '/api/sandbox/proxy?url=' + encodeURIComponent(abs));
+            img.setAttribute('crossorigin', 'anonymous');
+          }
+        } catch(e) {}
+      });
+      // Rewrite <source> in <picture>
+      document.querySelectorAll('source[src]').forEach(function(src) {
+        var s = src.getAttribute('src');
+        if (!s || s.startsWith('data:') || s.startsWith('blob:') || s.startsWith('/api/')) return;
+        try {
+          var abs = new URL(s, document.baseURI).href;
+          if (abs.startsWith('http:') || abs.startsWith('https:')) {
+            src.setAttribute('src', '/api/sandbox/proxy?url=' + encodeURIComponent(abs));
+          }
+        } catch(e) {}
+      });
+      // Rewrite inline style background-image url(...)
+      document.querySelectorAll('[style*="url("]').forEach(function(el) {
+        var st = el.getAttribute('style') || '';
+        var newSt = st.replace(/url\\(\\s*(['"]?)(https?:\\/\\/[^'")\\s]+)\\1\\s*\\)/g, function(m, q, u) {
+          return 'url(' + q + '/api/sandbox/proxy?url=' + encodeURIComponent(u) + q + ')';
+        });
+        if (newSt !== st) el.setAttribute('style', newSt);
+      });
+      // Rewrite CSS <link> hrefs (stylesheets) through proxy
+      document.querySelectorAll('link[rel="stylesheet"]').forEach(function(link) {
+        var s = link.getAttribute('href');
+        if (!s || s.startsWith('data:') || s.startsWith('blob:') || s.startsWith('/api/')) return;
+        try {
+          var abs = new URL(s, document.baseURI).href;
+          if (abs.startsWith('http:') || abs.startsWith('https:')) {
+            link.setAttribute('href', '/api/sandbox/proxy?url=' + encodeURIComponent(abs));
+          }
+        } catch(e) {}
+      });
+    } catch(e) {}
+  }
   // Form auto-submit
   document.addEventListener('DOMContentLoaded', function() {
+    rewriteResourceUrls();
     var forms = document.querySelectorAll('form');
     for (var f of forms) {
       if (f.hasAttribute('onload') || f.querySelector('input[type=submit][autofocus]')) {
@@ -58,8 +111,56 @@ const MONITOR_SCRIPT = `
         parent.postMessage({type:'link', href: href, text: (a.textContent || '').trim().slice(0,80), domain: u.hostname, sameDomain: sameDomain}, '*');
       } catch(e) {}
     }
-    // Send final DOM
+    // Send final DOM (the parent uses this for the finalDom panel/PDF only)
     parent.postMessage({type:'finalDom', html: document.documentElement.outerHTML.slice(0, 50000), title: document.title}, '*');
+    // Run html2canvas on our own body and post the data URL back to parent.
+    // The parent exposed its html2canvas onto our window (popup.html2canvas = ...)
+    // so we can call it from inside our context — this ensures the rendering
+    // sandbox iframe uses our window, and the rewritten images load
+    // through our proxy with CORS headers.
+    function shoot(delay) {
+      setTimeout(function() {
+        try {
+          if (typeof window.html2canvas !== 'function') {
+            parent.postMessage({type:'screenshotError', delay: delay, error: 'html2canvas not exposed on popup window'}, '*');
+            return;
+          }
+          window.html2canvas(document.body, {
+            useCORS: true,
+            allowTaint: false,
+            backgroundColor: '#ffffff',
+            scale: 1,
+            width: 1280,
+            height: 720,
+            windowWidth: 1280,
+            windowHeight: 720,
+            imageTimeout: 3000,
+            logging: false,
+            foreignObjectRendering: false
+          }).then(function(canvas) {
+            try {
+              var dataUrl = canvas.toDataURL('image/png');
+              parent.postMessage({type:'screenshot', delay: delay, dataUrl: dataUrl}, '*');
+            } catch(e) {
+              // tainted canvas — extract what we can
+              parent.postMessage({type:'screenshotError', delay: delay, error: 'toDataURL failed: ' + String(e).slice(0,200)}, '*');
+            }
+          }).catch(function(err) {
+            parent.postMessage({type:'screenshotError', delay: delay, error: 'html2canvas rejected: ' + String(err).slice(0,200)}, '*');
+          });
+        } catch(e) {
+          parent.postMessage({type:'screenshotError', delay: delay, error: 'shoot: ' + String(e).slice(0,200)}, '*');
+        }
+      }, delay);
+    }
+    // Take screenshots at 2s, 6s, 10s, 14s after DOMContentLoaded
+    // (the parent has a 20s total recording window — these all fit)
+    shoot(2000);
+    shoot(6000);
+    shoot(10000);
+    shoot(14000);
+    // Re-run URL rewriting periodically to catch dynamically added images
+    setInterval(rewriteResourceUrls, 2000);
   });
   // WebGL fingerprinting
   try {
@@ -83,25 +184,6 @@ const MONITOR_SCRIPT = `
   if (meta) { parent.postMessage({type:'hiddenRedirect', url: (meta.getAttribute('content')||'').match(/url=(.+)/i) ? RegExp.$1 : ''}, '*'); }
   // Notify parent that monitoring is active
   parent.postMessage({type:'sandboxReady'}, '*');
-
-  // SELF-SCREENSHOT: send the rendered DOM to the parent so IT can
-  // use html2canvas to render it. The parent has html2canvas installed
-  // and can render the HTML on a hidden iframe (same-origin).
-  function sendDomSnapshot() {
-    try {
-      var html = '<!DOCTYPE html><html><head><base href="' + (document.querySelector('base') ? document.querySelector('base').href : location.href) + '"></head><body>' + (document.body ? document.body.innerHTML : '') + '</body></html>';
-      parent.postMessage({type:'domSnapshot', html: html.slice(0, 200000), title: document.title || '', url: location.href}, '*');
-    } catch(e) {
-      parent.postMessage({type:'screenshotError', error: 'domSnapshot: ' + String(e).slice(0,200)}, '*');
-    }
-  }
-
-  // Send DOM snapshots at 6s, 12s, 18s
-  [6000, 12000, 18000].forEach(function(delay) {
-    setTimeout(function() {
-      sendDomSnapshot();
-    }, delay);
-  });
 })();
 </script>
 `;
@@ -114,31 +196,49 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "missing_url" }, { status: 400 });
   }
 
+  // Common CORS + cache headers for pass-through responses
+  const corsHeaders: Record<string, string> = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "*",
+    "Cache-Control": "public, max-age=3600, immutable",
+  };
+
   try {
     // Fetch the target URL server-side
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const res = await fetch(targetUrl, {
       signal: controller.signal,
       redirect: "follow",
       headers: {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
       },
     });
     clearTimeout(timeout);
 
+    const contentType = res.headers.get("content-type") || "";
+
+    // NON-HTML pass-through: images, CSS, JS, fonts, JSON, etc.
+    // Returns the bytes with CORS headers so the browser can use them
+    // in same-origin contexts (and html2canvas can render them without
+    // tainting the canvas).
+    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
+      const bodyBuffer = await res.arrayBuffer();
+      const passHeaders: Record<string, string> = {
+        ...corsHeaders,
+        "Content-Type": contentType || "application/octet-stream",
+      };
+      // Preserve content-length if present
+      const cl = res.headers.get("content-length");
+      if (cl) passHeaders["Content-Length"] = cl;
+      return new NextResponse(bodyBuffer, { status: 200, headers: passHeaders });
+    }
+
     if (!res.ok) {
       return new NextResponse(
         `<html><body><h1>Sandbox: HTTP ${res.status}</h1><p>Could not load ${targetUrl}</p></body></html>`,
-        { status: 200, headers: { "Content-Type": "text/html" } }
-      );
-    }
-
-    const contentType = res.headers.get("content-type") || "";
-    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
-      return new NextResponse(
-        `<html><body><h1>Sandbox: Non-HTML content</h1><p>Content-Type: ${contentType}</p></body></html>`,
         { status: 200, headers: { "Content-Type": "text/html" } }
       );
     }
@@ -162,8 +262,6 @@ export async function GET(request: Request) {
       html = `<head>${baseTag}${MONITOR_SCRIPT}</head>${html}`;
     }
 
-    // Remove X-Frame-Options and CSP so the page can be loaded in a popup
-    // (we're serving from our own origin, so these headers would be ours anyway)
     return new NextResponse(html, {
       status: 200,
       headers: {
@@ -177,4 +275,15 @@ export async function GET(request: Request) {
       { status: 200, headers: { "Content-Type": "text/html" } }
     );
   }
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+    },
+  });
 }

@@ -254,6 +254,18 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
         break;
       case "sandboxReady":
         loaded = true;
+        // Expose our html2canvas to the popup so its monitor script
+        // can call window.html2canvas(document.body, ...) on its own
+        // DOM. This runs in the popup's window context — the rendering
+        // sandbox iframe is created in the popup, and the rewritten
+        // <img> URLs (rewritten by the monitor script) load through
+        // /api/sandbox/proxy which returns them with CORS headers, so
+        // the canvas is NOT tainted and toDataURL works.
+        try {
+          (popup as any).html2canvas = html2canvas;
+        } catch (e) {
+          // popup may have navigated away — ignore
+        }
         timeline.push({
           time: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
           timestamp: new Date().toISOString(),
@@ -298,91 +310,9 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
         }
         break;
       case "domSnapshot":
-        // The popup sent its rendered DOM HTML. We render it in a hidden
-        // iframe using the SAME proxy URL so the <base> tag works and
-        // CSS/images load correctly from the original site.
-        if (d.html) {
-          onProgress(Date.now() - startTime, `Renderizando screenshot desde DOM...`);
-          finalTitle = d.title || finalTitle;
-          finalDom = d.html.slice(0, 50000);
-          // Create a hidden iframe that loads via the proxy (same-origin,
-          // and the <base> tag makes relative CSS/images resolve correctly)
-          const hiddenIframe = document.createElement("iframe");
-          hiddenIframe.style.position = "fixed";
-          hiddenIframe.style.top = "-9999px";
-          hiddenIframe.style.left = "-9999px";
-          hiddenIframe.style.width = "1280px";
-          hiddenIframe.style.height = "720px";
-          hiddenIframe.style.border = "none";
-          hiddenIframe.onload = async () => {
-            try {
-              const iframeDoc = hiddenIframe.contentDocument;
-              if (iframeDoc && iframeDoc.body) {
-                // Wait 1s for CSS and images to load
-                await new Promise(r => setTimeout(r, 1000));
-                const canvas = await html2canvas(iframeDoc.body, {
-                  width: 1280, height: 720, windowWidth: 1280, windowHeight: 720,
-                  useCORS: true, allowTaint: true, logging: false, scale: 1,
-                  backgroundColor: "#ffffff",
-                });
-                const dataUrl = canvas.toDataURL("image/png");
-                screenshots.push(dataUrl);
-                const img = new Image();
-                img.onload = () => {
-                  latestScreenshotImg = img;
-                  if (videoCtx) {
-                    videoCtx.fillStyle = "#ffffff";
-                    videoCtx.fillRect(0, 0, 1280, 720);
-                    videoCtx.drawImage(img, 0, 0, 1280, 720);
-                  }
-                };
-                img.src = dataUrl;
-                onProgress(Date.now() - startTime, `Screenshot renderizado correctamente`);
-              }
-            } catch (e) {
-              // html2canvas failed — try text fallback
-              try {
-                const iframeDoc = hiddenIframe.contentDocument;
-                if (iframeDoc) {
-                  const bodyText = iframeDoc.body ? iframeDoc.body.innerText.slice(0, 5000) : "";
-                  const titleText = iframeDoc.title || "";
-                  const fc = document.createElement("canvas");
-                  fc.width = 1280; fc.height = 720;
-                  const fctx = fc.getContext("2d")!;
-                  fctx.fillStyle = "#ffffff"; fctx.fillRect(0, 0, 1280, 720);
-                  fctx.fillStyle = "#333"; fctx.font = "bold 24px sans-serif";
-                  fctx.fillText(titleText.slice(0, 80), 20, 40);
-                  fctx.font = "14px monospace";
-                  const lines = bodyText.split("\n").slice(0, 40);
-                  for (let i = 0; i < lines.length; i++) {
-                    fctx.fillText(lines[i].slice(0, 150), 20, 80 + i * 20);
-                  }
-                  const dataUrl = fc.toDataURL("image/png");
-                  screenshots.push(dataUrl);
-                  const img = new Image();
-                  img.onload = () => {
-                    latestScreenshotImg = img;
-                    if (videoCtx) {
-                      videoCtx.fillStyle = "#ffffff";
-                      videoCtx.fillRect(0, 0, 1280, 720);
-                      videoCtx.drawImage(img, 0, 0, 1280, 720);
-                    }
-                  };
-                  img.src = dataUrl;
-                  onProgress(Date.now() - startTime, `Screenshot (text fallback)`);
-                }
-              } catch (e2) {
-                onProgress(Date.now() - startTime, `Screenshot falló: ${String(e2).slice(0, 100)}`);
-              }
-            } finally {
-              if (hiddenIframe.parentNode) hiddenIframe.parentNode.removeChild(hiddenIframe);
-            }
-          };
-          // Use the proxy URL as the iframe src so the <base> tag works
-          // and CSS/images resolve to the original site
-          hiddenIframe.src = `/api/sandbox/proxy?url=${encodeURIComponent(url)}`;
-          document.body.appendChild(hiddenIframe);
-        }
+        // Legacy message type — no longer used. The popup now takes its
+        // own screenshots via the injected html2canvas (parent exposes
+        // popup.html2canvas = html2canvas after sandboxReady). Ignored.
         break;
       case "screenshotError":
         timeline.push({
@@ -512,7 +442,7 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
     videoCtx.font = "14px monospace";
     videoCtx.fillText(`Target: ${url.slice(0, 100)}`, 40, 120);
     videoCtx.fillText(`Duration: 20 seconds`, 40, 145);
-    videoCtx.fillText(`Waiting for first screenshot at 6s...`, 40, 170);
+    videoCtx.fillText(`Waiting for first screenshot at 2s...`, 40, 170);
     // Progress bar background
     videoCtx.fillStyle = "#333";
     videoCtx.fillRect(40, 680, 1200, 8);
@@ -565,6 +495,45 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
 
     onProgress(elapsed, `Sandbox running... ${Math.round(pct * 100)}% | Screenshots: ${screenshots.length}`);
   }, 200);
+
+  // FALLBACK: if the popup's html2canvas never produced a screenshot
+  // (e.g., the page never reached DOMContentLoaded, or html2canvas
+  // threw on every attempt), grab the popup's text content directly
+  // and draw it on the video canvas. This ensures the video always
+  // shows SOMETHING from the target page, not just the MONITOR-THREAT
+  // initial frame.
+  setTimeout(() => {
+    if (screenshots.length === 0) {
+      try {
+        const popupDoc = popup.document;
+        if (popupDoc && popupDoc.body) {
+          const bodyText = (popupDoc.body.innerText || "").slice(0, 6000);
+          const titleText = popupDoc.title || "";
+          if (bodyText || titleText) {
+            const fc = document.createElement("canvas");
+            fc.width = 1280; fc.height = 720;
+            const fctx = fc.getContext("2d")!;
+            fctx.fillStyle = "#ffffff"; fctx.fillRect(0, 0, 1280, 720);
+            fctx.fillStyle = "#0f172a"; fctx.font = "bold 22px sans-serif";
+            fctx.fillText(titleText.slice(0, 90), 24, 40);
+            fctx.fillStyle = "#64748b"; fctx.font = "12px monospace";
+            fctx.fillText(`Fallback text capture (html2canvas did not return) · ${url.slice(0, 80)}`, 24, 62);
+            fctx.fillStyle = "#1e293b"; fctx.font = "13px monospace";
+            const lines = bodyText.split("\n").filter((l: string) => l.trim()).slice(0, 42);
+            for (let i = 0; i < lines.length; i++) {
+              fctx.fillText(lines[i].slice(0, 145), 24, 90 + i * 18);
+            }
+            const dataUrl = fc.toDataURL("image/png");
+            screenshots.push(dataUrl);
+            const img = new Image();
+            img.onload = () => { latestScreenshotImg = img; };
+            img.src = dataUrl;
+            onProgress(Date.now() - startTime, `Fallback screenshot (text-only) capturado`);
+          }
+        }
+      } catch (e) { /* popup may be closed or cross-origin */ }
+    }
+  }, 12000);
 
   // Wait for SANDBOX_DURATION
   await new Promise(resolve => setTimeout(resolve, SANDBOX_DURATION));
