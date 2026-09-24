@@ -299,12 +299,14 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
         break;
       case "domSnapshot":
         // The popup sent its rendered DOM HTML. We render it in a hidden
-        // iframe (same-origin) and use html2canvas to capture it.
+        // iframe using the SAME proxy URL so the <base> tag works and
+        // CSS/images load correctly from the original site.
         if (d.html) {
           onProgress(Date.now() - startTime, `Renderizando screenshot desde DOM...`);
           finalTitle = d.title || finalTitle;
           finalDom = d.html.slice(0, 50000);
-          // Create a hidden iframe to render the DOM
+          // Create a hidden iframe that loads via the proxy (same-origin,
+          // and the <base> tag makes relative CSS/images resolve correctly)
           const hiddenIframe = document.createElement("iframe");
           hiddenIframe.style.position = "fixed";
           hiddenIframe.style.top = "-9999px";
@@ -316,8 +318,8 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
             try {
               const iframeDoc = hiddenIframe.contentDocument;
               if (iframeDoc && iframeDoc.body) {
-                // Wait 500ms for the iframe to render
-                await new Promise(r => setTimeout(r, 500));
+                // Wait 1s for CSS and images to load
+                await new Promise(r => setTimeout(r, 1000));
                 const canvas = await html2canvas(iframeDoc.body, {
                   width: 1280, height: 720, windowWidth: 1280, windowHeight: 720,
                   useCORS: true, allowTaint: true, logging: false, scale: 1,
@@ -325,7 +327,6 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
                 });
                 const dataUrl = canvas.toDataURL("image/png");
                 screenshots.push(dataUrl);
-                // Update latest screenshot for video
                 const img = new Image();
                 img.onload = () => {
                   latestScreenshotImg = img;
@@ -339,7 +340,7 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
                 onProgress(Date.now() - startTime, `Screenshot renderizado correctamente`);
               }
             } catch (e) {
-              // html2canvas failed on the iframe — try text fallback
+              // html2canvas failed — try text fallback
               try {
                 const iframeDoc = hiddenIframe.contentDocument;
                 if (iframeDoc) {
@@ -368,18 +369,18 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
                     }
                   };
                   img.src = dataUrl;
-                  onProgress(Date.now() - startTime, `Screenshot (text fallback) renderizado`);
+                  onProgress(Date.now() - startTime, `Screenshot (text fallback)`);
                 }
               } catch (e2) {
                 onProgress(Date.now() - startTime, `Screenshot falló: ${String(e2).slice(0, 100)}`);
               }
             } finally {
-              // Remove the hidden iframe
               if (hiddenIframe.parentNode) hiddenIframe.parentNode.removeChild(hiddenIframe);
             }
           };
-          // Set the iframe content via srcdoc
-          hiddenIframe.srcdoc = d.html.slice(0, 200000);
+          // Use the proxy URL as the iframe src so the <base> tag works
+          // and CSS/images resolve to the original site
+          hiddenIframe.src = `/api/sandbox/proxy?url=${encodeURIComponent(url)}`;
           document.body.appendChild(hiddenIframe);
         }
         break;
