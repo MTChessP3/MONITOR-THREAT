@@ -285,12 +285,9 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
         if (d.dataUrl) {
           screenshots.push(d.dataUrl);
           onProgress(Date.now() - startTime, `Screenshot capturado a los ${(d.delay / 1000).toFixed(0)}s`);
-          // Update the latest screenshot image for the video canvas redraw loop
           const img = new Image();
           img.onload = () => {
             latestScreenshotImg = img;
-            latestScreenshotTime = d.delay;
-            // Draw immediately so the next video frame has it
             if (videoCtx) {
               videoCtx.fillStyle = "#ffffff";
               videoCtx.fillRect(0, 0, 1280, 720);
@@ -298,6 +295,92 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
             }
           };
           img.src = d.dataUrl;
+        }
+        break;
+      case "domSnapshot":
+        // The popup sent its rendered DOM HTML. We render it in a hidden
+        // iframe (same-origin) and use html2canvas to capture it.
+        if (d.html) {
+          onProgress(Date.now() - startTime, `Renderizando screenshot desde DOM...`);
+          finalTitle = d.title || finalTitle;
+          finalDom = d.html.slice(0, 50000);
+          // Create a hidden iframe to render the DOM
+          const hiddenIframe = document.createElement("iframe");
+          hiddenIframe.style.position = "fixed";
+          hiddenIframe.style.top = "-9999px";
+          hiddenIframe.style.left = "-9999px";
+          hiddenIframe.style.width = "1280px";
+          hiddenIframe.style.height = "720px";
+          hiddenIframe.style.border = "none";
+          hiddenIframe.onload = async () => {
+            try {
+              const iframeDoc = hiddenIframe.contentDocument;
+              if (iframeDoc && iframeDoc.body) {
+                // Wait 500ms for the iframe to render
+                await new Promise(r => setTimeout(r, 500));
+                const canvas = await html2canvas(iframeDoc.body, {
+                  width: 1280, height: 720, windowWidth: 1280, windowHeight: 720,
+                  useCORS: true, allowTaint: true, logging: false, scale: 1,
+                  backgroundColor: "#ffffff",
+                });
+                const dataUrl = canvas.toDataURL("image/png");
+                screenshots.push(dataUrl);
+                // Update latest screenshot for video
+                const img = new Image();
+                img.onload = () => {
+                  latestScreenshotImg = img;
+                  if (videoCtx) {
+                    videoCtx.fillStyle = "#ffffff";
+                    videoCtx.fillRect(0, 0, 1280, 720);
+                    videoCtx.drawImage(img, 0, 0, 1280, 720);
+                  }
+                };
+                img.src = dataUrl;
+                onProgress(Date.now() - startTime, `Screenshot renderizado correctamente`);
+              }
+            } catch (e) {
+              // html2canvas failed on the iframe — try text fallback
+              try {
+                const iframeDoc = hiddenIframe.contentDocument;
+                if (iframeDoc) {
+                  const bodyText = iframeDoc.body ? iframeDoc.body.innerText.slice(0, 5000) : "";
+                  const titleText = iframeDoc.title || "";
+                  const fc = document.createElement("canvas");
+                  fc.width = 1280; fc.height = 720;
+                  const fctx = fc.getContext("2d")!;
+                  fctx.fillStyle = "#ffffff"; fctx.fillRect(0, 0, 1280, 720);
+                  fctx.fillStyle = "#333"; fctx.font = "bold 24px sans-serif";
+                  fctx.fillText(titleText.slice(0, 80), 20, 40);
+                  fctx.font = "14px monospace";
+                  const lines = bodyText.split("\n").slice(0, 40);
+                  for (let i = 0; i < lines.length; i++) {
+                    fctx.fillText(lines[i].slice(0, 150), 20, 80 + i * 20);
+                  }
+                  const dataUrl = fc.toDataURL("image/png");
+                  screenshots.push(dataUrl);
+                  const img = new Image();
+                  img.onload = () => {
+                    latestScreenshotImg = img;
+                    if (videoCtx) {
+                      videoCtx.fillStyle = "#ffffff";
+                      videoCtx.fillRect(0, 0, 1280, 720);
+                      videoCtx.drawImage(img, 0, 0, 1280, 720);
+                    }
+                  };
+                  img.src = dataUrl;
+                  onProgress(Date.now() - startTime, `Screenshot (text fallback) renderizado`);
+                }
+              } catch (e2) {
+                onProgress(Date.now() - startTime, `Screenshot falló: ${String(e2).slice(0, 100)}`);
+              }
+            } finally {
+              // Remove the hidden iframe
+              if (hiddenIframe.parentNode) hiddenIframe.parentNode.removeChild(hiddenIframe);
+            }
+          };
+          // Set the iframe content via srcdoc
+          hiddenIframe.srcdoc = d.html.slice(0, 200000);
+          document.body.appendChild(hiddenIframe);
         }
         break;
       case "screenshotError":
