@@ -10,6 +10,10 @@ import {
   Box,
   ShieldOff,
   Network,
+  Loader2,
+  AlertTriangle,
+  ExternalLink,
+  ShieldAlert,
 } from "lucide-react";
 
 import {
@@ -21,6 +25,7 @@ import {
 } from "@/components/module-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import {
   Table,
@@ -32,107 +37,610 @@ import {
 } from "@/components/ui/table";
 
 import {
-  IP_INTEL_RESULT,
   DOMAIN_INTEL_RESULT,
   URL_SCANNER_RESULT,
   TAKEDOWN_REQUESTS,
 } from "@/lib/mock-data";
 
-// ---------- IP Intel ----------
+const PORT_SERVICES: Record<number, string> = {
+  21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
+  80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS",
+  465: "SMTPS", 587: "SMTP Submission", 993: "IMAPS", 995: "POP3S",
+  1433: "MSSQL", 1521: "Oracle", 3306: "MySQL", 3389: "RDP",
+  5432: "PostgreSQL", 5900: "VNC", 6379: "Redis",
+  8080: "HTTP Alt", 8443: "HTTPS Alt",
+  9001: "Tor ORPort", 9030: "Tor DirPort", 27017: "MongoDB",
+};
+
+// ---- Types for the real IP Intel API response ----
+interface GeoResult {
+  ip: string;
+  country: string;
+  countryCode: string;
+  region?: string;
+  city: string;
+  latitude: number;
+  longitude: number;
+  asn?: number;
+  organization?: string;
+  isp?: string;
+  domain?: string;
+  timezone?: string;
+  reverse?: string;
+  flagEmoji?: string;
+  provider: string;
+  error?: string;
+}
+
+interface BlacklistEntry {
+  rid: string;
+  zone: string;
+  url?: string;
+  result: string;
+  category: "black" | "brown" | "yellow" | "white" | "neutral" | "not_listed" | "failed";
+  reason?: string;
+}
+
+interface BlacklistResult {
+  ip: string;
+  summary: {
+    total: number;
+    blacklisted: number;
+    brownlisted: number;
+    yellowlisted: number;
+    whitelisted: number;
+    neutrallisted: number;
+    notListed: number;
+    failed: number;
+  };
+  entries: BlacklistEntry[];
+  embedded_url: string;
+  error?: string;
+}
+
+interface PortsResult {
+  ip: string;
+  ports: number[];
+  hostnames: string[];
+  tags: string[];
+  vulns: string[];
+  cpes: string[];
+  error?: string;
+}
+
+interface ReputationResult {
+  ip: string;
+  score: number;
+  classification: "BENIGN" | "SUSPICIOUS" | "MALICIOUS";
+  signals: Array<{ source: string; weight: number; detail: string }>;
+  tags: string[];
+  threatIntel: Array<{ source: string; verdict: string; details?: string }>;
+  abuseipdb?: {
+    score: number;
+    totalReports: number;
+    abuseConfidenceScore: number;
+  } | null;
+  error?: string;
+}
+
+interface AggregateResult {
+  ip: string;
+  geo: GeoResult;
+  blacklists: BlacklistResult;
+  ports: PortsResult;
+  reputation: ReputationResult;
+  tags: string[];
+  timestamp: string;
+}
+
+const CATEGORY_BADGE: Record<BlacklistEntry["category"], { label: string; cls: string }> = {
+  black: { label: "BLACKLISTED", cls: "bg-red-500 text-white" },
+  brown: { label: "BROWNLISTED", cls: "bg-orange-600 text-white" },
+  yellow: { label: "YELLOWLISTED", cls: "bg-yellow-500 text-black" },
+  white: { label: "WHITELISTED", cls: "bg-emerald-500 text-white" },
+  neutral: { label: "NEUTRAL", cls: "bg-cyan-500 text-white" },
+  not_listed: { label: "NOT LISTED", cls: "bg-muted text-muted-foreground" },
+  failed: { label: "FAILED", cls: "bg-zinc-700 text-zinc-400" },
+};
+
+// ---------- IP Intel (real APIs) ----------
 export function IpIntelView() {
-  const r = IP_INTEL_RESULT;
+  const [input, setInput] = React.useState("8.8.8.8");
+  const [loading, setLoading] = React.useState(false);
+  const [data, setData] = React.useState<AggregateResult | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const abortRef = React.useRef<AbortController | null>(null);
+
+  async function analyze(ip: string) {
+    if (!ip.trim()) return;
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/ip-intel/aggregate?ip=${encodeURIComponent(ip.trim())}`,
+        { signal: ac.signal }
+      );
+      const json = await res.json();
+      if (!res.ok) {
+        setError(json?.error || `HTTP ${res.status}`);
+        setData(null);
+      } else {
+        setData(json);
+      }
+    } catch (err: any) {
+      if (err.name !== "AbortError") {
+        setError(err.message || "Fetch failed");
+        setData(null);
+      }
+    } finally {
+      if (ac === abortRef.current) setLoading(false);
+    }
+  }
+
+  React.useEffect(() => {
+    analyze("8.8.8.8");
+    return () => abortRef.current?.abort();
+  }, []);
+
   return (
     <ModuleShell
       name="IP Intel"
-      description="Geolocation, ASN, open ports, reputation and threat intel for an IP address."
+      description="Geolocation, ASN, open ports, reputation and threat intel for an IP address. Powered by ipwho.is, multirbl.valli.org, Shodan InternetDB and AbuseIPDB."
       icon={MapPin}
       category="INFRASTRUCTURE"
+      status={loading ? "QUERYING" : "READY"}
     >
-      <SearchBar
-        label="IP address"
-        placeholder="e.g. 185.220.101.34"
-        buttonText="Analyze"
-      />
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-        <Panel title="Geolocation & ASN">
-          <FieldRow label="IP" value={r.ip} mono />
-          <FieldRow label="ASN" value={r.asn} mono />
-          <FieldRow label="ISP" value={r.isp} />
-          <FieldRow label="Organization" value={r.organization} />
-          <FieldRow label="Country" value={`${r.country} (${r.countryCode})`} />
-          <FieldRow label="Region" value={r.region} />
-          <FieldRow label="City" value={r.city} />
-          <FieldRow
-            label="Coordinates"
-            value={`${r.latitude}, ${r.longitude}`}
-            mono
+      <div className="flex flex-col gap-2 mb-4">
+        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+          IP address (IPv4 / IPv6)
+        </label>
+        <div className="flex gap-2">
+          <Input
+            type="text"
+            placeholder="e.g. 8.8.8.8, 185.220.101.34, 2001:4860:4860::8888"
+            className="flex-1 font-mono text-sm"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && analyze(input)}
           />
-        </Panel>
-        <Panel title="Open Ports">
-          <div className="flex flex-wrap gap-1.5">
-            {r.openPorts.map((p) => (
-              <Badge key={p} variant="outline" className="font-mono">
-                :{p}
-              </Badge>
-            ))}
-          </div>
-        </Panel>
-        <Panel title="Reputation">
-          <FieldRow label="Score" value={`${r.reputation.score}/100`} mono />
-          <FieldRow
-            label="Classification"
-            value={
-              <Badge variant="secondary" className="font-mono">
-                {r.reputation.classification}
-              </Badge>
-            }
-          />
-          <FieldRow label="Votes" value={r.reputation.votes} mono />
-          <FieldRow label="Last report" value={r.reputation.lastReport} mono />
-        </Panel>
-        <Panel title="Threat Intel">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Source</TableHead>
-                <TableHead>Pulses</TableHead>
-                <TableHead>Verdict</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {r.threatIntel.map((t) => (
-                <TableRow key={t.source}>
-                  <TableCell>{t.source}</TableCell>
-                  <TableCell className="font-mono">
-                    {("pulses" in t && t.pulses) ||
-                      ("confidence" in t && t.confidence + "%") ||
-                      "-"}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className="font-mono text-[10px]">
-                      {t.verdict}
-                    </Badge>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Panel>
-      </div>
-      <Panel title="Tags" className="mt-4">
-        <div className="flex flex-wrap gap-1.5">
-          {r.tags.map((t) => (
-            <Badge key={t} variant="secondary" className="font-mono">
-              #{t}
-            </Badge>
-          ))}
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => analyze(input)}
+            disabled={loading}
+          >
+            {loading ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
+                Analyzing…
+              </>
+            ) : (
+              <>
+                <Search className="w-3.5 h-3.5 mr-2" />
+                Analyze
+              </>
+            )}
+          </Button>
         </div>
-      </Panel>
+      </div>
+
+      {error && (
+        <div className="mb-4 p-3 rounded-md border border-red-500/40 bg-red-500/10 text-red-400 flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span className="text-sm">{error}</span>
+        </div>
+      )}
+
+      {data && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Geolocation & ASN */}
+          <Panel
+            title="Geolocation & ASN"
+            action={
+              data.geo?.latitude && data.geo?.longitude ? (
+                <a
+                  href={`https://www.openstreetmap.org/?mlat=${data.geo.latitude}&mlon=${data.geo.longitude}#map=12/${data.geo.latitude}/${data.geo.longitude}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-cyan-500 hover:underline flex items-center gap-1"
+                >
+                  OpenStreetMap <ExternalLink className="w-3 h-3" />
+                </a>
+              ) : undefined
+            }
+          >
+            {data.geo?.error ? (
+              <p className="text-sm text-muted-foreground">{data.geo.error}</p>
+            ) : data.geo ? (
+              <>
+                <FieldRow label="IP" value={data.geo.ip} mono />
+                <FieldRow
+                  label="Country"
+                  value={`${data.geo.flagEmoji || "🌐"} ${data.geo.country} (${data.geo.countryCode})`}
+                />
+                {data.geo.region && (
+                  <FieldRow label="Region" value={data.geo.region} />
+                )}
+                <FieldRow label="City" value={data.geo.city} />
+                <FieldRow
+                  label="Coordinates"
+                  value={`${data.geo.latitude}, ${data.geo.longitude}`}
+                  mono
+                />
+                {data.geo.asn && (
+                  <FieldRow label="ASN" value={`AS${data.geo.asn}`} mono />
+                )}
+                {data.geo.organization && (
+                  <FieldRow label="Organization" value={data.geo.organization} />
+                )}
+                {data.geo.isp && <FieldRow label="ISP" value={data.geo.isp} />}
+                {data.geo.domain && (
+                  <FieldRow label="Domain" value={data.geo.domain} mono />
+                )}
+                {data.geo.timezone && (
+                  <FieldRow label="Timezone" value={data.geo.timezone} mono />
+                )}
+                {data.geo.reverse && (
+                  <FieldRow label="rDNS" value={data.geo.reverse} mono />
+                )}
+                <div className="mt-2 pt-2 text-[10px] text-muted-foreground border-t border-border/40">
+                  Source: {data.geo.provider}
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">No data.</p>
+            )}
+          </Panel>
+
+          {/* OpenStreetMap embed */}
+          <Panel title="OpenStreetMap View">
+            {data.geo?.latitude && data.geo?.longitude ? (
+              <div className="flex flex-col gap-2">
+                <div className="rounded-md overflow-hidden border border-border">
+                  <iframe
+                    title="OpenStreetMap"
+                    className="w-full h-[260px]"
+                    loading="lazy"
+                    src={`https://www.openstreetmap.org/export/embed.html?bbox=${
+                      data.geo.longitude - 0.15
+                    }%2C${data.geo.latitude - 0.1}%2C${
+                      data.geo.longitude + 0.15
+                    }%2C${data.geo.latitude + 0.1}&layer=mapnik&marker=${data.geo.latitude}%2C${data.geo.longitude}`}
+                  />
+                </div>
+                <Button variant="outline" size="sm" asChild>
+                  <a
+                    href={`https://www.openstreetmap.org/?mlat=${data.geo.latitude}&mlon=${data.geo.longitude}#map=12/${data.geo.latitude}/${data.geo.longitude}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <ExternalLink className="w-3 h-3 mr-1" />
+                    Open in OpenStreetMap
+                  </a>
+                </Button>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No coordinates available.
+              </p>
+            )}
+          </Panel>
+
+          {/* Open Ports */}
+          <Panel title="Open Ports & Services">
+            {data.ports?.error ? (
+              <p className="text-sm text-muted-foreground">{data.ports.error}</p>
+            ) : data.ports ? (
+              <>
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  {data.ports.ports.length > 0 ? (
+                    data.ports.ports.map((p) => (
+                      <Badge
+                        key={p}
+                        variant="outline"
+                        className="font-mono text-xs"
+                        title={PORT_SERVICES[p] || ""}
+                      >
+                        :{p}{" "}
+                        {PORT_SERVICES[p] && (
+                          <span className="text-muted-foreground ml-1">
+                            {PORT_SERVICES[p]}
+                          </span>
+                        )}
+                      </Badge>
+                    ))
+                  ) : (
+                    <span className="text-sm text-muted-foreground">
+                      No open ports recorded by Shodan.
+                    </span>
+                  )}
+                </div>
+                {data.ports.hostnames.length > 0 && (
+                  <>
+                    <Separator />
+                    <div className="pt-2">
+                      <span className="text-xs text-muted-foreground">Hostnames:</span>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {data.ports.hostnames.map((h) => (
+                          <Badge key={h} variant="secondary" className="font-mono text-[10px]">
+                            {h}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+                {data.ports.vulns.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-border/40">
+                    <span className="text-xs text-red-500">Known CVEs:</span>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {data.ports.vulns.slice(0, 12).map((v) => (
+                        <Badge
+                          key={v}
+                          variant="destructive"
+                          className="font-mono text-[10px]"
+                        >
+                          {v}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="mt-2 pt-2 text-[10px] text-muted-foreground border-t border-border/40">
+                  Source: Shodan InternetDB · {data.ports.ports.length} ports ·{" "}
+                  {data.ports.hostnames.length} hostnames
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">No data.</p>
+            )}
+          </Panel>
+
+          {/* Reputation */}
+          <Panel title="Reputation">
+            {data.reputation?.error ? (
+              <p className="text-sm text-muted-foreground">{data.reputation.error}</p>
+            ) : data.reputation ? (
+              <>
+                <div className="flex items-center gap-3 mb-3">
+                  <div
+                    className={`text-3xl font-mono font-bold ${
+                      data.reputation.classification === "MALICIOUS"
+                        ? "text-red-500"
+                        : data.reputation.classification === "SUSPICIOUS"
+                        ? "text-yellow-500"
+                        : "text-emerald-500"
+                    }`}
+                  >
+                    {data.reputation.score}
+                    <span className="text-base text-muted-foreground">/100</span>
+                  </div>
+                  <div>
+                    <Badge
+                      variant={
+                        data.reputation.classification === "MALICIOUS"
+                          ? "destructive"
+                          : data.reputation.classification === "SUSPICIOUS"
+                          ? "default"
+                          : "secondary"
+                      }
+                      className="font-mono text-xs"
+                    >
+                      {data.reputation.classification}
+                    </Badge>
+                    <div className="text-[10px] text-muted-foreground mt-1">
+                      {data.reputation.signals.length} signal(s)
+                    </div>
+                  </div>
+                </div>
+                <Separator />
+                <div className="pt-2 flex flex-col gap-1.5 max-h-44 overflow-y-auto">
+                  {data.reputation.signals.length > 0 ? (
+                    data.reputation.signals.map((s, i) => (
+                      <div
+                        key={i}
+                        className="flex items-start gap-2 text-xs"
+                      >
+                        <ShieldAlert
+                          className={`w-3 h-3 shrink-0 mt-0.5 ${
+                            s.weight > 20
+                              ? "text-red-500"
+                              : s.weight > 5
+                              ? "text-yellow-500"
+                              : "text-muted-foreground"
+                          }`}
+                        />
+                        <div className="flex-1">
+                          <span className="font-mono text-[10px] text-cyan-500">
+                            [{s.source}]
+                          </span>{" "}
+                          <span>{s.detail}</span>
+                          <Badge variant="outline" className="ml-1 font-mono text-[9px]">
+                            +{s.weight}
+                          </Badge>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="text-sm text-muted-foreground">
+                      No negative signals detected.
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">No data.</p>
+            )}
+          </Panel>
+
+          {/* Threat Intel */}
+          <Panel title="Threat Intel Sources">
+            {data.reputation && Array.isArray(data.reputation.threatIntel) ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Source</TableHead>
+                    <TableHead>Verdict</TableHead>
+                    <TableHead>Details</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.reputation.threatIntel.map((t, i) => (
+                    <TableRow key={i}>
+                      <TableCell className="font-mono text-xs">{t.source}</TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            t.verdict === "malicious" || t.verdict === "blacklisted"
+                              ? "destructive"
+                              : t.verdict === "suspicious" || t.verdict === "tagged"
+                              ? "default"
+                              : "secondary"
+                          }
+                          className="font-mono text-[10px]"
+                        >
+                          {t.verdict}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {t.details || "-"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <p className="text-sm text-muted-foreground">No data.</p>
+            )}
+          </Panel>
+
+          {/* Blacklists summary */}
+          <Panel
+            title="DNSBL / Blacklist Summary"
+            className="md:col-span-2"
+            action={
+              data.blacklists?.embedded_url ? (
+                <a
+                  href={data.blacklists.embedded_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-cyan-500 hover:underline flex items-center gap-1"
+                >
+                  multirbl.valli.org <ExternalLink className="w-3 h-3" />
+                </a>
+              ) : undefined
+            }
+          >
+            {data.blacklists?.error ? (
+              <p className="text-sm text-muted-foreground">{data.blacklists.error}</p>
+            ) : data.blacklists ? (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+                  {[
+                    { label: "Blacklisted", n: data.blacklists.summary.blacklisted, cls: "bg-red-500/15 text-red-400" },
+                    { label: "Brownlisted", n: data.blacklists.summary.brownlisted, cls: "bg-orange-500/15 text-orange-400" },
+                    { label: "Yellowlisted", n: data.blacklists.summary.yellowlisted, cls: "bg-yellow-500/15 text-yellow-400" },
+                    { label: "Whitelisted", n: data.blacklists.summary.whitelisted, cls: "bg-emerald-500/15 text-emerald-400" },
+                  ].map((b) => (
+                    <div
+                      key={b.label}
+                      className={`rounded-md p-2 border border-border ${b.cls}`}
+                    >
+                      <div className="text-xl font-bold font-mono">{b.n}</div>
+                      <div className="text-xs">{b.label}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="text-xs text-muted-foreground mb-2">
+                  Total zones checked: {data.blacklists.summary.total} · Not listed:{" "}
+                  {data.blacklists.summary.notListed} · Failed:{" "}
+                  {data.blacklists.summary.failed}
+                </div>
+                <Separator />
+                <div className="mt-2 max-h-72 overflow-y-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-32">Status</TableHead>
+                        <TableHead>Zone</TableHead>
+                        <TableHead>Reason</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {data.blacklists.entries
+                        .filter((e, i) => e.category !== "not_listed" || i < 5)
+                        .slice(0, 50)
+                        .map((e) => {
+                          const badge = CATEGORY_BADGE[e.category];
+                          return (
+                            <TableRow key={e.rid}>
+                              <TableCell>
+                                <span
+                                  className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono ${badge.cls}`}
+                                >
+                                  {badge.label}
+                                </span>
+                              </TableCell>
+                              <TableCell className="font-mono text-xs">
+                                {e.url ? (
+                                  <a
+                                    href={e.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-cyan-500 hover:underline"
+                                  >
+                                    {e.zone}
+                                  </a>
+                                ) : (
+                                  e.zone
+                                )}
+                              </TableCell>
+                              <TableCell className="text-xs text-muted-foreground">
+                                {e.reason || e.result}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                    </TableBody>
+                  </Table>
+                </div>
+                <div className="mt-2 pt-2 text-[10px] text-muted-foreground border-t border-border/40">
+                  Source: multirbl.valli.org + direct DNSBL (15 zones)
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">No data.</p>
+            )}
+          </Panel>
+
+          {/* Tags */}
+          {data.tags && data.tags.length > 0 && (
+            <Panel title="Tags" className="md:col-span-2">
+              <div className="flex flex-wrap gap-1.5">
+                {data.tags.map((t) => (
+                  <Badge key={t} variant="secondary" className="font-mono">
+                    #{t}
+                  </Badge>
+                ))}
+              </div>
+            </Panel>
+          )}
+
+          <div className="md:col-span-2 text-[10px] text-muted-foreground font-mono">
+            Query timestamp: {data.timestamp} · Powered by ipwho.is, multirbl.valli.org,
+            Shodan InternetDB, AbuseIPDB (optional).
+          </div>
+        </div>
+      )}
     </ModuleShell>
   );
 }
 
-// ---------- Domain Intel ----------
+// ---------- Domain Intel (mock) ----------
 export function DomainIntelView() {
   const r = DOMAIN_INTEL_RESULT;
   return (
@@ -199,7 +707,7 @@ export function DomainIntelView() {
   );
 }
 
-// ---------- Domain Forensics ----------
+// ---------- Domain Forensics (placeholder) ----------
 export function DomainForensicsView() {
   return (
     <ModuleShell
@@ -236,7 +744,7 @@ export function DomainForensicsView() {
   );
 }
 
-// ---------- DNS Dump ----------
+// ---------- DNS Dump (mock) ----------
 export function DnsDumpView() {
   const records = [
     { type: "A", name: "@", value: "185.220.101.34", ttl: 3600 },
@@ -288,7 +796,7 @@ export function DnsDumpView() {
   );
 }
 
-// ---------- URL Scanner ----------
+// ---------- URL Scanner (mock) ----------
 export function UrlScannerView() {
   const r = URL_SCANNER_RESULT;
   return (
@@ -369,7 +877,7 @@ export function UrlScannerView() {
   );
 }
 
-// ---------- URL Sandbox ----------
+// ---------- URL Sandbox (placeholder) ----------
 export function UrlSandboxView() {
   return (
     <ModuleShell
@@ -413,7 +921,7 @@ export function UrlSandboxView() {
   );
 }
 
-// ---------- TakeDown URL ----------
+// ---------- TakeDown URL (mock) ----------
 export function TakedownUrlView() {
   return (
     <ModuleShell
