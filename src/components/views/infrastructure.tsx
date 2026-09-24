@@ -1807,86 +1807,8 @@ export { DomainForensicsView } from "@/components/views/domain-forensics-view";
 // ---------- DNS Dump (re-export from dedicated file) ----------
 export { DnsDumpView } from "@/components/views/dns-dump-view";
 
-// ---------- URL Scanner (mock) ----------
-export function UrlScannerView() {
-  const r = URL_SCANNER_RESULT;
-  return (
-    <ModuleShell
-      name="URL Scanner"
-      description="Static and dynamic analysis of suspicious URLs."
-      icon={LinkIcon}
-      category="INFRASTRUCTURE"
-    >
-      <SearchBar label="URL" placeholder="https://example.com/path" />
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-        <Panel title="HTTP Response">
-          <FieldRow label="Final URL" value={r.finalUrl} mono />
-          <FieldRow label="Status" value={r.httpStatus} mono />
-          <FieldRow label="Redirects" value={r.redirects} mono />
-          <FieldRow label="Response time" value={`${r.responseTime}ms`} mono />
-          <FieldRow
-            label="SSL"
-            value={
-              r.ssl.valid
-                ? `Valid · ${r.ssl.issuer}`
-                : "Invalid"
-            }
-          />
-        </Panel>
-        <Panel title="Technologies">
-          <div className="flex flex-wrap gap-1.5">
-            {r.technologies.map((t) => (
-              <Badge key={t} variant="secondary" className="font-mono">
-                {t}
-              </Badge>
-            ))}
-          </div>
-        </Panel>
-        <Panel title="Verdicts">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Source</TableHead>
-                <TableHead>Verdict</TableHead>
-                <TableHead>Details</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {r.verdicts.map((v) => (
-                <TableRow key={v.source}>
-                  <TableCell>{v.source}</TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={v.verdict === "malicious" ? "destructive" : "secondary"}
-                      className="font-mono text-[10px]"
-                    >
-                      {v.verdict}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    {"positives" in v
-                      ? `${v.positives}/${v.total}`
-                      : "score" in v
-                      ? `score: ${v.score}`
-                      : "listed: " + (v.listed ? "yes" : "no")}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Panel>
-        <Panel title="Extracted Content">
-          <FieldRow label="Emails" value={r.extracted.emails.length} mono />
-          <FieldRow label="Phones" value={r.extracted.phones.length} mono />
-          <FieldRow label="IPs" value={r.extracted.ips.length} mono />
-          <FieldRow label="Forms" value={r.extracted.forms} mono />
-          <FieldRow label="Iframes" value={r.extracted.iframes} mono />
-          <FieldRow label="Scripts" value={r.extracted.scripts} mono />
-        </Panel>
-      </div>
-    </ModuleShell>
-  );
-}
+// ---------- URL Scanner (re-export from dedicated file) ----------
+export { UrlScannerView } from "@/components/views/url-scanner-view";
 
 // ---------- URL Sandbox (placeholder) ----------
 export function UrlSandboxView() {
