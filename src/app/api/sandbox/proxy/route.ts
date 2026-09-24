@@ -84,42 +84,78 @@ const MONITOR_SCRIPT = `
   // Notify parent that monitoring is active
   parent.postMessage({type:'sandboxReady'}, '*');
 
-  // SELF-SCREENSHOT: load html2canvas from CDN and capture screenshots
-  // The popup captures ITSELF (same-origin = no CORS issues) and sends
-  // the PNG data to the parent via postMessage.
-  function loadScript(src) {
-    return new Promise(function(resolve, reject) {
-      var s = document.createElement('script');
-      s.src = src; s.onload = resolve; s.onerror = reject;
-      document.head.appendChild(s);
-    });
+  // SELF-SCREENSHOT: capture screenshots using native browser APIs.
+  // No external libraries needed — uses SVG foreignObject to render the
+  // popup's own HTML as an image. Works even with strict CSP.
+  function captureSelf() {
+    try {
+      // Get the full rendered HTML of the page
+      var clone = document.documentElement.cloneNode(true);
+      // Remove our injected monitoring script from the clone (avoid infinite loop)
+      var scripts = clone.querySelectorAll('script');
+      scripts.forEach(function(s) { s.remove(); });
+      
+      // Serialize to SVG with foreignObject
+      var width = Math.min(window.innerWidth || 1280, 1280);
+      var height = Math.min(window.innerHeight || 720, 720);
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '">'
+        + '<foreignObject width="100%" height="100%">'
+        + '<div xmlns="http://www.w3.org/1999/xhtml" style="width:' + width + 'px;height:' + height + 'px;overflow:hidden;">'
+        + new XMLSerializer().serializeToString(clone)
+        + '</div></foreignObject></svg>';
+      
+      var svgBlob = new Blob([svg], {type: 'image/svg+xml;charset=utf-8'});
+      var url = URL.createObjectURL(svgBlob);
+      var img = new Image();
+      img.onload = function() {
+        var canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        var ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        URL.revokeObjectURL(url);
+        try {
+          var dataUrl = canvas.toDataURL('image/png');
+          parent.postMessage({type:'screenshot', dataUrl: dataUrl}, '*');
+        } catch(e) {
+          // canvas.toDataURL might throw if the SVG contains cross-origin images
+          // Fallback: send the SVG itself as the screenshot
+          parent.postMessage({type:'screenshot', dataUrl: 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg))).slice(0, 100000)}, '*');
+        }
+      };
+      img.onerror = function() {
+        URL.revokeObjectURL(url);
+        // SVG foreignObject failed — try a simpler approach
+        // Just capture the text content as a basic representation
+        var bodyText = document.body ? document.body.innerText.slice(0, 5000) : '';
+        var titleText = document.title || '';
+        var canvas2 = document.createElement('canvas');
+        canvas2.width = 1280; canvas2.height = 720;
+        var ctx2 = canvas2.getContext('2d');
+        ctx2.fillStyle = '#ffffff'; ctx2.fillRect(0, 0, 1280, 720);
+        ctx2.fillStyle = '#333333'; ctx2.font = 'bold 24px sans-serif';
+        ctx2.fillText(titleText.slice(0, 80), 20, 40);
+        ctx2.font = '14px monospace';
+        var lines = bodyText.split('\\n').slice(0, 40);
+        for (var i = 0; i < lines.length; i++) {
+          ctx2.fillText(lines[i].slice(0, 150), 20, 80 + i * 20);
+        }
+        parent.postMessage({type:'screenshot', dataUrl: canvas2.toDataURL('image/png')}, '*');
+      };
+      img.src = url;
+    } catch(e) {
+      parent.postMessage({type:'screenshotError', error: String(e).slice(0,200)}, '*');
+    }
   }
 
-  loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js')
-    .then(function() {
-      // html2canvas loaded — capture screenshots at 6s, 12s, 18s
-      var times = [6000, 12000, 18000];
-      times.forEach(function(delay) {
-        setTimeout(function() {
-          try {
-            html2canvas(document.body, {
-              width: 1280, height: 720, windowWidth: 1280, windowHeight: 720,
-              useCORS: true, allowTaint: true, logging: false, scale: 1,
-              backgroundColor: '#ffffff'
-            }).then(function(canvas) {
-              parent.postMessage({type:'screenshot', dataUrl: canvas.toDataURL('image/png'), delay: delay}, '*');
-            }).catch(function(e) {
-              parent.postMessage({type:'screenshotError', delay: delay, error: String(e).slice(0,200)}, '*');
-            });
-          } catch(e) {
-            parent.postMessage({type:'screenshotError', delay: delay, error: String(e).slice(0,200)}, '*');
-          }
-        }, delay);
-      });
-    })
-    .catch(function(e) {
-      parent.postMessage({type:'screenshotError', delay: 0, error: 'Failed to load html2canvas: ' + String(e).slice(0,200)}, '*');
-    });
+  // Capture at 6s, 12s, 18s
+  [6000, 12000, 18000].forEach(function(delay) {
+    setTimeout(function() {
+      captureSelf();
+    }, delay);
+  });
 })();
 </script>
 `;
