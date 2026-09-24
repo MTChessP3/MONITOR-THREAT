@@ -91,6 +91,14 @@ interface ForensicsResult {
     discoveredPaths: FuzzingResultEntry[];
   };
   attribution: Attribution;
+  screenshot: {
+    available: boolean;
+    source: string;
+    url?: string;
+    dataUrl?: string | null;
+    width: number;
+    height: number;
+  };
   findings: string;
   zipBase64: string;
   zipFilename: string;
@@ -172,6 +180,34 @@ function downloadPdf(data: ForensicsResult) {
     // @ts-ignore
     y = (doc as any).lastAutoTable.finalY + 18;
   };
+
+  // 0. Screenshot — first page, visual
+  if (data.screenshot?.available && data.screenshot.dataUrl) {
+    sectionHeading("Site Screenshot");
+    try {
+      // Strip the data:image/png;base64, prefix
+      const base64Data = data.screenshot.dataUrl.replace(/^data:image\/png;base64,/, "");
+      const imgData = `data:image/png;base64,${base64Data}`;
+      // Calculate aspect ratio to fit within content width
+      const imgWidth = contentWidth;
+      const imgHeight = (data.screenshot.height / data.screenshot.width) * imgWidth;
+      // If image is too tall, scale down
+      const maxHeight = pageHeight - margin * 2 - 100;
+      const finalHeight = Math.min(imgHeight, maxHeight);
+      const finalWidth = (finalHeight / imgHeight) * imgWidth;
+      const xOffset = margin + (contentWidth - finalWidth) / 2;
+      doc.addImage(imgData, "PNG", xOffset, y, finalWidth, finalHeight);
+      y += finalHeight + 20;
+      doc.setFontSize(9);
+      doc.setTextColor(148, 163, 184);
+      doc.text(`Source: ${data.screenshot.source} · Resolution: ${data.screenshot.width}×${data.screenshot.height}`, margin, y);
+      y += 18;
+    } catch {
+      doc.setTextColor(148, 163, 184);
+      doc.text("(screenshot could not be embedded)", margin, y);
+      y += 18;
+    }
+  }
 
   // 1. Executive summary
   sectionHeading("1. Executive Summary");
@@ -500,6 +536,38 @@ export function DomainForensicsView() {
 
       {data && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Screenshot — most visual artifact */}
+          {data.screenshot?.available && data.screenshot.dataUrl && (
+            <Panel
+              title="Site Screenshot"
+              className="md:col-span-2"
+              action={
+                <span className="text-xs text-muted-foreground">
+                  via {data.screenshot.source}
+                </span>
+              }
+            >
+              <div className="flex flex-col gap-2">
+                <div className="rounded-md overflow-hidden border border-border bg-muted/20">
+                  <img
+                    src={data.screenshot.dataUrl}
+                    alt={`Screenshot of ${data.url}`}
+                    className="w-full h-auto"
+                    style={{ maxHeight: "500px", objectFit: "contain" }}
+                  />
+                </div>
+                <div className="text-xs text-muted-foreground flex items-center justify-between">
+                  <span>
+                    Captured at {new Date(data.timestamp).toLocaleString()}
+                  </span>
+                  <span>
+                    {data.screenshot.width}×{data.screenshot.height}
+                  </span>
+                </div>
+              </div>
+            </Panel>
+          )}
+
           {/* Executive summary cards */}
           <Panel title="Executive Summary" className="md:col-span-2">
             <div className="grid grid-cols-2 md:grid-cols-5 gap-2">

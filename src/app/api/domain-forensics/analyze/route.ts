@@ -30,9 +30,90 @@ import JSZip from "jszip";
 const TIMEOUT_MS = 6000;
 const MAX_PAGES = 50;
 const MAX_DEPTH = 2;
-const MAX_CONCURRENT_FUZZ = 25;  // bumped from 10 for speed
+const MAX_CONCURRENT_FUZZ = 25;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB per image
-const FUZZ_TIMEOUT_MS = 2500;  // shorter timeout for fuzz requests
+const FUZZ_TIMEOUT_MS = 2500;
+const SCREENSHOT_TIMEOUT_MS = 30000; // screenshots can take a while
+
+// ---------- Screenshot capture ----------
+
+async function captureScreenshot(targetUrl: string): Promise<{ buffer: Buffer | null; source: string; url?: string }> {
+  // 1. Primary: s-shot.ru (free, no key, 1024x768 PNG)
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SCREENSHOT_TIMEOUT_MS);
+    const res = await fetch(
+      `https://mini.s-shot.ru/1024x768/PNG/1024/Z100/?${encodeURIComponent(targetUrl)}`,
+      {
+        signal: controller.signal,
+        headers: { "User-Agent": "Mozilla/5.0", Accept: "image/png,image/*" },
+      }
+    );
+    clearTimeout(timeout);
+    if (res.ok) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > 1000 && buf[0] === 0x89 && buf[1] === 0x50) {
+        // Valid PNG signature
+        return { buffer: buf, source: "s-shot.ru" };
+      }
+    }
+  } catch { /* ignore, try fallback */ }
+
+  // 2. Fallback: microlink.io (free 50/day, returns JSON with S3 URL)
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SCREENSHOT_TIMEOUT_MS);
+    const res = await fetch(
+      `https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}&screenshot=true&meta=false`,
+      {
+        signal: controller.signal,
+        headers: { "User-Agent": "MONITOR-THREAT/2.0", Accept: "application/json" },
+      }
+    );
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data = await res.json();
+      const screenshotUrl = data?.data?.screenshot?.url;
+      if (screenshotUrl) {
+        const imgController = new AbortController();
+        const imgTimeout = setTimeout(() => imgController.abort(), SCREENSHOT_TIMEOUT_MS);
+        const imgRes = await fetch(screenshotUrl, {
+          signal: imgController.signal,
+          headers: { "User-Agent": "Mozilla/5.0", Accept: "image/*" },
+        });
+        clearTimeout(imgTimeout);
+        if (imgRes.ok) {
+          const buf = Buffer.from(await imgRes.arrayBuffer());
+          if (buf.length > 1000) {
+            return { buffer: buf, source: "microlink.io", url: screenshotUrl };
+          }
+        }
+      }
+    }
+  } catch { /* ignore */ }
+
+  // 3. Final fallback: thum.io (free public endpoint)
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SCREENSHOT_TIMEOUT_MS);
+    const res = await fetch(
+      `https://image.thum.io/get/width/1024/crop/768/${targetUrl}`,
+      {
+        signal: controller.signal,
+        headers: { "User-Agent": "Mozilla/5.0", Accept: "image/png,image/*" },
+      }
+    );
+    clearTimeout(timeout);
+    if (res.ok) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > 1000 && buf[0] === 0x89 && buf[1] === 0x50) {
+        return { buffer: buf, source: "thum.io" };
+      }
+    }
+  } catch { /* ignore */ }
+
+  return { buffer: null, source: "none" };
+}
 
 // ---------- Helpers ----------
 
@@ -501,13 +582,56 @@ function extractAttribution(pages: CrawledPage[], origin: string): Attribution {
     for (const m of emailMatches) {
       if (!att.emails.includes(m[0])) att.emails.push(m[0]);
     }
-    // Phone numbers (international +1-555-555-5555)
-    const phoneMatches = page.body.matchAll(/\+?\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{3,5}[-.\s]?\d{3,5}/g);
+    // Phone numbers — strict regex to avoid capturing numeric IDs
+    // Rules:
+    //   1. International format: starts with +, has separators, length 7-15 digits
+    //   2. (XXX) XXX-XXXX or XXX-XXX-XXXX with separators
+    //   3. tel: links (preferred source — highest precision)
+    //   4. NOT pure numeric runs >= 10 consecutive digits (those are IDs/hashes)
+    // We collect from tel: links first (highest precision), then from text
+    // patterns with separators, then validate the digit count.
+
+    // 1. tel: hrefs — the canonical phone-number source in HTML
+    const telMatches = page.body.matchAll(/href=["']tel:([^"'?\s]+)["']/gi);
+    for (const m of telMatches) {
+      const raw = m[1].trim();
+      // Strip non-digit except leading +
+      const digits = raw.replace(/[^\d+]/g, "");
+      const digitCount = digits.replace(/^\+/, "").length;
+      if (digitCount >= 7 && digitCount <= 15) {
+        if (!att.phones.includes(raw)) att.phones.push(raw);
+      }
+    }
+
+    // 2. Text patterns with separators (must have at least one separator
+    //    or be prefixed with +, to avoid matching pure numeric IDs).
+    //    Patterns we accept:
+    //      +1 555 555 5555
+    //      +1-555-555-5555
+    //      +1 (555) 555-5555
+    //      (555) 555-5555
+    //      555-555-5555
+    //      555 555 5555
+    //    Patterns we REJECT:
+    //      222474322285 (12 consecutive digits, no separators, no +)
+    //      1790261528663 (13 consecutive digits)
+    const phoneRegex = /(?:\+(\d{1,3}[-.\s]?))?\(?\d{2,4}\)?[-.\s]\d{3,5}[-.\s]?\d{3,5}/g;
+    const phoneMatches = page.body.matchAll(phoneRegex);
     for (const m of phoneMatches) {
       const p = m[0].trim();
-      if (p.length >= 10 && /\d/.test(p) && !att.phones.includes(p)) {
-        att.phones.push(p);
-      }
+      // Count digits only
+      const digits = p.replace(/\D/g, "");
+      const digitCount = digits.length;
+      // Reject if too long or too short
+      if (digitCount < 7 || digitCount > 15) continue;
+      // Reject if it's just a pure numeric run with no separators and no +
+      // (those are IDs/hashes)
+      const hasSeparator = /[-.\s()]/.test(p);
+      const startsWithPlus = p.startsWith("+");
+      if (!hasSeparator && !startsWithPlus) continue;
+      // Reject if it looks like a Unix timestamp (10 digits starting with 1)
+      if (digitCount === 10 && /^1\d{9}$/.test(digits)) continue;
+      if (!att.phones.includes(p)) att.phones.push(p);
     }
     // Bitcoin addresses (legacy P2PKH/P2SH + Bech32)
     const btcMatches = page.body.matchAll(/\b(?:[13][a-km-zA-HJ-NP-Z1-9]{25,34}|bc1[a-z0-9]{39,59})\b/g);
@@ -609,10 +733,17 @@ async function buildZip(
   headers: HttpHeaderEntry[],
   attribution: Attribution,
   findingsMd: string,
-  startUrl: string
+  startUrl: string,
+  screenshot?: { buffer: Buffer | null; source: string; url?: string }
 ): Promise<Buffer> {
   const zip = new JSZip();
   const root = zip.folder(domain)!;
+
+  // Save screenshot at the top of mirror/ — most prominent artifact
+  if (screenshot?.buffer) {
+    root.folder("mirror")!.file("screenshot.png", screenshot.buffer);
+    root.file("screenshot_source.txt", `Source: ${screenshot.source}\nURL: ${screenshot.url || "(direct)"}\nCaptured: ${new Date().toISOString()}`);
+  }
 
   // ----- mirror/ -----
   const mirror = root.folder("mirror")!;
@@ -974,6 +1105,10 @@ export async function GET(request: Request) {
     // 4. Attribution
     const attribution = extractAttribution(mirrorResult.pages, parsed);
 
+    // 4.5. Screenshot — runs in parallel with steps 1-4 already happened,
+    //      but we kick it off here so it doesn't block. Then wait for it.
+    const screenshotPromise = captureScreenshot(finalUrl);
+
     // 5. Build FINDINGS.md
     const findings = buildFindingsMd(
       url, domain, mirrorResult.pages, fuzzingResults,
@@ -981,15 +1116,23 @@ export async function GET(request: Request) {
       mirrorResult.robots, mirrorResult.sitemap
     );
 
-    // 6. Build ZIP
+    // Wait for screenshot to complete
+    const screenshot = await screenshotPromise;
+
+    // 6. Build ZIP — now includes the screenshot
     const zipBuffer = await buildZip(
       domain, mirrorResult.pages, mirrorResult.assetUrls,
       mirrorResult.robots, mirrorResult.sitemap,
       fuzzingResults, initialHeaders, attribution,
-      findings, url
+      findings, url, screenshot
     );
 
-    // Return JSON with embedded base64 ZIP
+    // Encode screenshot to base64 for the frontend to display
+    const screenshotBase64 = screenshot.buffer
+      ? `data:image/png;base64,${screenshot.buffer.toString("base64")}`
+      : null;
+
+    // Return JSON with embedded base64 ZIP + screenshot
     return NextResponse.json({
       url,
       domain,
@@ -1011,6 +1154,14 @@ export async function GET(request: Request) {
         discoveredPaths: fuzzingResults.filter((r) => r.status === 200).slice(0, 50),
       },
       attribution,
+      screenshot: {
+        available: !!screenshot.buffer,
+        source: screenshot.source,
+        url: screenshot.url,
+        dataUrl: screenshotBase64,
+        width: 1024,
+        height: 768,
+      },
       findings,
       zipBase64: zipBuffer.toString("base64"),
       zipFilename: `${domain}-forensics-${Date.now()}.zip`,
