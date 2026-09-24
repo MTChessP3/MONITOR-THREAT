@@ -112,6 +112,24 @@ interface ReputationResult {
   ip: string;
   score: number;
   classification: "BENIGN" | "SUSPICIOUS" | "MALICIOUS";
+  virusTotal: {
+    score: number;
+    classification: "BENIGN" | "SUSPICIOUS" | "MALICIOUS";
+    reputation: number;
+    lastAnalysisStats: {
+      malicious: number;
+      suspicious: number;
+      undetected: number;
+      harmless: number;
+      timeout: number;
+    };
+    totalVotes: { harmless: number; malicious: number };
+    totalEngines: number;
+    flaggedEnginesCount: number;
+    lastAnalysisDate?: string;
+    available: boolean;
+    error?: string;
+  };
   signals: Array<{ source: string; weight: number; detail: string }>;
   tags: string[];
   threatIntel: Array<{ source: string; verdict: string; details?: string }>;
@@ -189,7 +207,7 @@ export function IpIntelView() {
   return (
     <ModuleShell
       name="IP Intel"
-      description="Geolocation, ASN, open ports, reputation and threat intel for an IP address. Powered by ipwho.is, multirbl.valli.org, Shodan InternetDB and AbuseIPDB."
+      description="Geolocation, ASN, open ports, reputation and threat intel for an IP address. Powered by VirusTotal, multirbl.valli.org, ipwho.is and Shodan InternetDB."
       icon={MapPin}
       category="INFRASTRUCTURE"
       status={loading ? "QUERYING" : "READY"}
@@ -400,26 +418,42 @@ export function IpIntelView() {
             )}
           </Panel>
 
-          {/* Reputation */}
-          <Panel title="Reputation">
+          {/* Reputation — VirusTotal powered */}
+          <Panel
+            title="Reputation"
+            className="md:col-span-2"
+            action={
+              data.reputation?.virusTotal?.available ? (
+                <a
+                  href={`https://www.virustotal.com/gui/ip-address/${data.ip}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-cyan-500 hover:underline flex items-center gap-1"
+                >
+                  VirusTotal report <ExternalLink className="w-3 h-3" />
+                </a>
+              ) : undefined
+            }
+          >
             {data.reputation?.error ? (
               <p className="text-sm text-muted-foreground">{data.reputation.error}</p>
             ) : data.reputation ? (
-              <>
-                <div className="flex items-center gap-3 mb-3">
-                  <div
-                    className={`text-3xl font-mono font-bold ${
-                      data.reputation.classification === "MALICIOUS"
-                        ? "text-red-500"
-                        : data.reputation.classification === "SUSPICIOUS"
-                        ? "text-yellow-500"
-                        : "text-emerald-500"
-                    }`}
-                  >
-                    {data.reputation.score}
-                    <span className="text-base text-muted-foreground">/100</span>
-                  </div>
-                  <div>
+              <div className="flex flex-col gap-4">
+                {/* Headline score */}
+                <div className="flex items-start gap-4">
+                  <div className="flex flex-col items-center gap-1 shrink-0">
+                    <div
+                      className={`text-4xl font-mono font-bold leading-none ${
+                        data.reputation.classification === "MALICIOUS"
+                          ? "text-red-500"
+                          : data.reputation.classification === "SUSPICIOUS"
+                          ? "text-yellow-500"
+                          : "text-emerald-500"
+                      }`}
+                    >
+                      {data.reputation.score}
+                      <span className="text-base text-muted-foreground">/100</span>
+                    </div>
                     <Badge
                       variant={
                         data.reputation.classification === "MALICIOUS"
@@ -432,46 +466,154 @@ export function IpIntelView() {
                     >
                       {data.reputation.classification}
                     </Badge>
-                    <div className="text-[10px] text-muted-foreground mt-1">
-                      {data.reputation.signals.length} signal(s)
+                    <div className="text-[10px] text-muted-foreground">
+                      composite score
                     </div>
                   </div>
-                </div>
-                <Separator />
-                <div className="pt-2 flex flex-col gap-1.5 max-h-44 overflow-y-auto">
-                  {data.reputation.signals.length > 0 ? (
-                    data.reputation.signals.map((s, i) => (
-                      <div
-                        key={i}
-                        className="flex items-start gap-2 text-xs"
-                      >
-                        <ShieldAlert
-                          className={`w-3 h-3 shrink-0 mt-0.5 ${
-                            s.weight > 20
-                              ? "text-red-500"
-                              : s.weight > 5
-                              ? "text-yellow-500"
-                              : "text-muted-foreground"
-                          }`}
-                        />
-                        <div className="flex-1">
-                          <span className="font-mono text-[10px] text-cyan-500">
-                            [{s.source}]
-                          </span>{" "}
-                          <span>{s.detail}</span>
-                          <Badge variant="outline" className="ml-1 font-mono text-[9px]">
-                            +{s.weight}
+                  <div className="flex-1">
+                    {/* VirusTotal block */}
+                    {data.reputation.virusTotal?.available ? (
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant="outline"
+                            className="font-mono text-[10px] text-cyan-500 border-cyan-500/40"
+                          >
+                            VirusTotal
                           </Badge>
+                          <Badge
+                            variant={
+                              data.reputation.virusTotal.classification === "MALICIOUS"
+                                ? "destructive"
+                                : data.reputation.virusTotal.classification === "SUSPICIOUS"
+                                ? "default"
+                                : "secondary"
+                            }
+                            className="font-mono text-[10px]"
+                          >
+                            {data.reputation.virusTotal.classification}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">
+                            {data.reputation.virusTotal.flaggedEnginesCount}/
+                            {data.reputation.virusTotal.totalEngines} engines flag this IP
+                          </span>
+                        </div>
+
+                        {/* Analysis stats grid */}
+                        <div className="grid grid-cols-5 gap-1.5">
+                          {[
+                            { label: "Malicious", n: data.reputation.virusTotal.lastAnalysisStats.malicious, cls: "bg-red-500/15 text-red-400" },
+                            { label: "Suspicious", n: data.reputation.virusTotal.lastAnalysisStats.suspicious, cls: "bg-orange-500/15 text-orange-400" },
+                            { label: "Undetected", n: data.reputation.virusTotal.lastAnalysisStats.undetected, cls: "bg-yellow-500/15 text-yellow-400" },
+                            { label: "Harmless", n: data.reputation.virusTotal.lastAnalysisStats.harmless, cls: "bg-emerald-500/15 text-emerald-400" },
+                            { label: "Timeout", n: data.reputation.virusTotal.lastAnalysisStats.timeout, cls: "bg-zinc-500/15 text-zinc-400" },
+                          ].map((b) => (
+                            <div
+                              key={b.label}
+                              className={`rounded p-1.5 border border-border ${b.cls}`}
+                            >
+                              <div className="text-base font-bold font-mono leading-none">
+                                {b.n}
+                              </div>
+                              <div className="text-[10px] mt-0.5">{b.label}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Community votes + reputation */}
+                        <div className="flex flex-wrap gap-4 text-xs">
+                          <div>
+                            <span className="text-muted-foreground">Community votes:</span>{" "}
+                            <span className="text-emerald-500 font-mono">
+                              {data.reputation.virusTotal.totalVotes.harmless} harmless
+                            </span>{" "}
+                            <span className="text-muted-foreground">/</span>{" "}
+                            <span className="text-red-500 font-mono">
+                              {data.reputation.virusTotal.totalVotes.malicious} malicious
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Reputation:</span>{" "}
+                            <span
+                              className={`font-mono ${
+                                data.reputation.virusTotal.reputation < 0
+                                  ? "text-red-500"
+                                  : data.reputation.virusTotal.reputation > 0
+                                  ? "text-emerald-500"
+                                  : "text-muted-foreground"
+                              }`}
+                            >
+                              {data.reputation.virusTotal.reputation > 0 ? "+" : ""}
+                              {data.reputation.virusTotal.reputation}
+                            </span>
+                          </div>
+                          {data.reputation.virusTotal.lastAnalysisDate && (
+                            <div>
+                              <span className="text-muted-foreground">Last scan:</span>{" "}
+                              <span className="font-mono">
+                                {new Date(
+                                  data.reputation.virusTotal.lastAnalysisDate
+                                ).toLocaleString()}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
-                    ))
-                  ) : (
-                    <span className="text-sm text-muted-foreground">
-                      No negative signals detected.
-                    </span>
-                  )}
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          variant="outline"
+                          className="font-mono text-[10px] text-muted-foreground"
+                        >
+                          VirusTotal
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">
+                          {data.reputation.virusTotal?.error || "unavailable"}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </>
+
+                {/* Secondary signals */}
+                {data.reputation.signals.length > 0 && (
+                  <>
+                    <Separator />
+                    <div>
+                      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+                        Additional signals
+                      </div>
+                      <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto">
+                        {data.reputation.signals.map((s, i) => (
+                          <div
+                            key={i}
+                            className="flex items-start gap-2 text-xs"
+                          >
+                            <ShieldAlert
+                              className={`w-3 h-3 shrink-0 mt-0.5 ${
+                                s.weight > 20
+                                  ? "text-red-500"
+                                  : s.weight > 5
+                                  ? "text-yellow-500"
+                                  : "text-muted-foreground"
+                              }`}
+                            />
+                            <div className="flex-1">
+                              <span className="font-mono text-[10px] text-cyan-500">
+                                [{s.source}]
+                              </span>{" "}
+                              <span>{s.detail}</span>
+                              <Badge variant="outline" className="ml-1 font-mono text-[9px]">
+                                +{s.weight}
+                              </Badge>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             ) : (
               <p className="text-sm text-muted-foreground">No data.</p>
             )}
@@ -631,7 +773,7 @@ export function IpIntelView() {
           )}
 
           <div className="md:col-span-2 text-[10px] text-muted-foreground font-mono">
-            Query timestamp: {data.timestamp} · Powered by ipwho.is, multirbl.valli.org,
+            Query timestamp: {data.timestamp} · Powered by VirusTotal, ipwho.is, multirbl.valli.org,
             Shodan InternetDB, AbuseIPDB (optional).
           </div>
         </div>
