@@ -182,6 +182,20 @@ interface CveDetail {
   cwe?: string;
   references?: Array<{ url: string; source?: string; tags?: string[] }>;
   affectedProducts?: string[];
+  // Exploitation enrichment
+  inKev?: boolean;
+  kevEntry?: {
+    dateAdded: string;
+    dueDate: string;
+    knownRansomwareCampaignUse: "Known" | "Unknown";
+    requiredAction: string;
+    shortDescription: string;
+  };
+  epss?: number;
+  epssPercentile?: number;
+  pocAvailable?: boolean;
+  pocRepoCount?: number;
+  pocTopRepos?: Array<{ name: string; url: string; stars: number; description?: string }>;
   isRecent: boolean;
   ageDays?: number;
 }
@@ -195,7 +209,12 @@ interface CveAssessment {
   highCount: number;
   mediumCount: number;
   lowCount: number;
+  kevCount: number;
+  highEpssCount: number;
+  pocCount: number;
   topSeverity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "NONE";
+  kevCatalogVersion?: string;
+  kevCatalogCount?: number;
   cves: CveDetail[];
   shodanOk: boolean;
   error?: string;
@@ -1023,13 +1042,16 @@ export function IpIntelView() {
               </p>
             ) : data.cves ? (
               <div className="flex flex-col gap-3">
-                {/* Summary cards */}
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                {/* Summary cards — now 8 cards showing all enrichment dimensions */}
+                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
                   {[
                     { label: "Total CVEs", n: data.cves.totalCves, cls: "border-border bg-muted/20" },
                     { label: "Recent (<2 mo)", n: data.cves.recentCves, cls: "border-yellow-500/40 bg-yellow-500/10 text-yellow-400" },
                     { label: "Critical", n: data.cves.criticalCount, cls: "border-red-500/40 bg-red-500/10 text-red-400" },
                     { label: "High", n: data.cves.highCount, cls: "border-orange-500/40 bg-orange-500/10 text-orange-400" },
+                    { label: "CISA KEV", n: data.cves.kevCount, cls: "border-fuchsia-500/60 bg-fuchsia-500/10 text-fuchsia-400" },
+                    { label: "High EPSS", n: data.cves.highEpssCount, cls: "border-pink-500/40 bg-pink-500/10 text-pink-400" },
+                    { label: "PoC public", n: data.cves.pocCount, cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" },
                     { label: "Medium / Low", n: data.cves.mediumCount + data.cves.lowCount, cls: "border-blue-500/40 bg-blue-500/10 text-blue-400" },
                   ].map((b) => (
                     <div key={b.label} className={`rounded p-2 border ${b.cls}`}>
@@ -1038,6 +1060,19 @@ export function IpIntelView() {
                     </div>
                   ))}
                 </div>
+
+                {/* CISA KEV catalog banner when KEV CVEs are present */}
+                {data.cves.kevCount > 0 && data.cves.kevCatalogVersion && (
+                  <div className="rounded border border-fuchsia-500/40 bg-fuchsia-500/10 p-2 text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-fuchsia-500" />
+                    <span className="text-fuchsia-300">
+                      <strong className="font-mono">{data.cves.kevCount}</strong> CVE
+                      {data.cves.kevCount !== 1 ? "s" : ""} on this IP match the CISA Known
+                      Exploited Vulnerabilities catalog (v{data.cves.kevCatalogVersion}, {data.cves.kevCatalogCount} entries).
+                      These are being actively exploited in the wild.
+                    </span>
+                  </div>
+                )}
 
                 {data.cves.totalCves === 0 ? (
                   <p className="text-sm text-emerald-500 flex items-center gap-2">
@@ -1050,7 +1085,9 @@ export function IpIntelView() {
                       <div
                         key={cve.id}
                         className={`rounded border p-3 ${
-                          cve.isRecent
+                          cve.inKev
+                            ? "border-fuchsia-500/60 bg-fuchsia-500/5"
+                            : cve.isRecent
                             ? "border-yellow-500/60 bg-yellow-500/5"
                             : cve.cvssSeverity === "CRITICAL"
                             ? "border-red-500/40 bg-red-500/5"
@@ -1101,6 +1138,39 @@ export function IpIntelView() {
                               >
                                 {cve.id}
                               </a>
+                              {cve.inKev && (
+                                <Badge
+                                  variant="destructive"
+                                  className="text-[9px] font-mono bg-fuchsia-600 hover:bg-fuchsia-600"
+                                  title={`In CISA KEV since ${cve.kevEntry?.dateAdded}. Ransomware use: ${cve.kevEntry?.knownRansomwareCampaignUse || "Unknown"}. Required action: ${cve.kevEntry?.requiredAction || ""}`}
+                                >
+                                  CISA KEV · RANSOMWARE {cve.kevEntry?.knownRansomwareCampaignUse === "Known" ? "✓" : "?"}
+                                </Badge>
+                              )}
+                              {cve.epssPercentile !== undefined && (
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[9px] font-mono ${
+                                    cve.epssPercentile >= 0.95
+                                      ? "text-pink-500 border-pink-500/60"
+                                      : cve.epssPercentile >= 0.5
+                                      ? "text-orange-500 border-orange-500/40"
+                                      : "text-muted-foreground"
+                                  }`}
+                                  title={`EPSS probability of exploitation in next 30 days: ${(cve.epss * 100).toFixed(2)}% (percentile ${(cve.epssPercentile * 100).toFixed(2)}%)`}
+                                >
+                                  EPSS {(cve.epssPercentile * 100).toFixed(1)}%
+                                </Badge>
+                              )}
+                              {cve.pocAvailable && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[9px] font-mono text-emerald-500 border-emerald-500/40"
+                                  title={`${cve.pocRepoCount} public PoC repo(s) on GitHub`}
+                                >
+                                  PoC × {cve.pocRepoCount}
+                                </Badge>
+                              )}
                               {cve.isRecent && (
                                 <Badge
                                   variant="outline"
@@ -1135,6 +1205,43 @@ export function IpIntelView() {
                                   >
                                     {p}
                                   </Badge>
+                                ))}
+                              </div>
+                            )}
+                            {cve.inKev && cve.kevEntry && (
+                              <div className="mt-2 rounded p-2 bg-fuchsia-500/5 border border-fuchsia-500/20 text-xs">
+                                <div className="text-fuchsia-300 font-semibold mb-1">
+                                  CISA KEV entry
+                                </div>
+                                <div className="text-muted-foreground">
+                                  <span className="font-mono">Added:</span> {cve.kevEntry.dateAdded}{" "}
+                                  · <span className="font-mono">Due:</span> {cve.kevEntry.dueDate}{" "}
+                                  · <span className="font-mono">Ransomware:</span>{" "}
+                                  <span className={cve.kevEntry.knownRansomwareCampaignUse === "Known" ? "text-red-500 font-semibold" : "text-muted-foreground"}>
+                                    {cve.kevEntry.knownRansomwareCampaignUse}
+                                  </span>
+                                </div>
+                                <div className="mt-1 text-muted-foreground">
+                                  <span className="font-mono">Required:</span> {cve.kevEntry.requiredAction}
+                                </div>
+                              </div>
+                            )}
+                            {cve.pocAvailable && cve.pocTopRepos && cve.pocTopRepos.length > 0 && (
+                              <div className="mt-2 flex flex-col gap-1">
+                                <div className="text-[10px] text-muted-foreground font-semibold">
+                                  Public PoC repositories:
+                                </div>
+                                {cve.pocTopRepos.slice(0, 3).map((r) => (
+                                  <a
+                                    key={r.url}
+                                    href={r.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-[10px] text-emerald-500 hover:underline flex items-center gap-1"
+                                  >
+                                    <span>★ {r.stars}</span>
+                                    <span className="font-mono">{r.name}</span>
+                                  </a>
                                 ))}
                               </div>
                             )}

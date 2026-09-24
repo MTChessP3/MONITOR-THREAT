@@ -17,6 +17,9 @@
 
 import { NextResponse } from "next/server";
 import { getCached, setCached, cacheKey } from "@/lib/cache";
+import { isKev } from "@/app/api/cisa-kev/route";
+import { getEpssBatch } from "@/app/api/epss/route";
+import { getPocBatch } from "@/app/api/poc-check/route";
 
 interface CveDetail {
   id: string; // e.g. CVE-2024-3400
@@ -32,6 +35,20 @@ interface CveDetail {
   cwe?: string; // e.g. CWE-78
   references?: Array<{ url: string; source?: string; tags?: string[] }>;
   affectedProducts?: string[];
+  // Exploitation enrichment
+  inKev?: boolean; // CISA KEV — known exploited in the wild
+  kevEntry?: {
+    dateAdded: string;
+    dueDate: string;
+    knownRansomwareCampaignUse: "Known" | "Unknown";
+    requiredAction: string;
+    shortDescription: string;
+  };
+  epss?: number; // 0..1 probability of exploitation in next 30 days
+  epssPercentile?: number; // 0..1 rank vs. all CVEs
+  pocAvailable?: boolean; // GitHub repos exist with this CVE in name/description
+  pocRepoCount?: number;
+  pocTopRepos?: Array<{ name: string; url: string; stars: number; description?: string }>;
   // Convenience flags
   isRecent: boolean; // published in the last 2 months
   ageDays?: number; // days since published
@@ -46,7 +63,12 @@ interface CveAssessment {
   highCount: number;
   mediumCount: number;
   lowCount: number;
+  kevCount: number; // in CISA KEV — known exploited in the wild
+  highEpssCount: number; // EPSS percentile >= 0.95 (very likely to be exploited)
+  pocCount: number; // at least one public PoC repo on GitHub
   topSeverity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "NONE";
+  kevCatalogVersion?: string;
+  kevCatalogCount?: number;
   cves: CveDetail[];
   shodanOk: boolean;
   error?: string;
@@ -220,6 +242,9 @@ export async function GET(request: Request) {
       highCount: 0,
       mediumCount: 0,
       lowCount: 0,
+      kevCount: 0,
+      highEpssCount: 0,
+      pocCount: 0,
       topSeverity: "NONE",
       cves: [],
       shodanOk: false,
@@ -238,6 +263,9 @@ export async function GET(request: Request) {
       highCount: 0,
       mediumCount: 0,
       lowCount: 0,
+      kevCount: 0,
+      highEpssCount: 0,
+      pocCount: 0,
       topSeverity: "NONE",
       cves: [],
       shodanOk: true,
@@ -268,21 +296,100 @@ export async function GET(request: Request) {
     await new Promise((r) => setTimeout(r, NVD_CALL_DELAY_MS));
   }
 
-  // Sort by severity (CRITICAL > HIGH > MEDIUM > LOW > unknown), then by published date desc
+  // 3. Enrich with CISA KEV in parallel — fast, single in-memory catalog check
+  // Pre-load the catalog so the first batch of lookups is warm.
+  await Promise.all(enriched.map(async (c) => {
+    const kevEntry = await isKev(c.id);
+    if (kevEntry) {
+      c.inKev = true;
+      c.kevEntry = {
+        dateAdded: kevEntry.dateAdded,
+        dueDate: kevEntry.dueDate,
+        knownRansomwareCampaignUse: kevEntry.knownRansomwareCampaignUse,
+        requiredAction: kevEntry.requiredAction,
+        shortDescription: kevEntry.shortDescription,
+      };
+    } else {
+      c.inKev = false;
+    }
+  }));
+
+  // 4. Enrich with EPSS in one batched call — fast (1 HTTP request for up to 100 CVEs)
+  try {
+    const epssResults = await getEpssBatch(enriched.map((c) => c.id));
+    const epssMap = new Map(epssResults.map((e) => [e.cve, e]));
+    for (const c of enriched) {
+      const epss = epssMap.get(c.id);
+      if (epss) {
+        c.epss = epss.epss;
+        c.epssPercentile = epss.percentile;
+      }
+    }
+  } catch {
+    // EPSS is best-effort enrichment
+  }
+
+  // 5. Enrich with PoC availability — GitHub search API. To stay under the
+  // unauthenticated rate limit (10 req/min), only check the top 10 CVEs by
+  // CVSS severity (which are the most interesting anyway).
+  const cveIdsForPoc = enriched
+    .filter((c) => c.cvssSeverity === "CRITICAL" || c.cvssSeverity === "HIGH")
+    .slice(0, 10)
+    .map((c) => c.id);
+  if (cveIdsForPoc.length > 0) {
+    try {
+      const pocResults = await getPocBatch(cveIdsForPoc);
+      const pocMap = new Map(pocResults.map((p) => [p.cve, p]));
+      for (const c of enriched) {
+        const poc = pocMap.get(c.id);
+        if (poc) {
+          c.pocAvailable = poc.pocAvailable;
+          c.pocRepoCount = poc.totalRepos;
+          c.pocTopRepos = poc.topRepos.map((r) => ({
+            name: r.name,
+            url: r.url,
+            stars: r.stars,
+            description: r.description,
+          }));
+        } else {
+          c.pocAvailable = false;
+          c.pocRepoCount = 0;
+        }
+      }
+    } catch {
+      // best-effort
+    }
+  }
+
+  // Sort: KEV first (most urgent), then by severity, then by EPSS percentile,
+  // then by recency, then by published date desc.
   const severityOrder = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 } as const;
   enriched.sort((a, b) => {
+    // CISA KEV always floats to the top
+    const ka = a.inKev ? 1 : 0;
+    const kb = b.inKev ? 1 : 0;
+    if (kb !== ka) return kb - ka;
+    // Then by severity
     const sa = a.cvssSeverity ? severityOrder[a.cvssSeverity] : 0;
     const sb = b.cvssSeverity ? severityOrder[b.cvssSeverity] : 0;
     if (sb !== sa) return sb - sa;
-    // Recent first
+    // Then by EPSS percentile desc
+    const ea = a.epssPercentile || 0;
+    const eb = b.epssPercentile || 0;
+    if (eb !== ea) return eb - ea;
+    // Then by PoC availability (PoC available first)
+    const pa = a.pocAvailable ? 1 : 0;
+    const pb = b.pocAvailable ? 1 : 0;
+    if (pb !== pa) return pb - pa;
+    // Then by recency
     if (a.isRecent !== b.isRecent) return a.isRecent ? -1 : 1;
     // Then by CVSS score desc
     if ((b.cvssScore || 0) !== (a.cvssScore || 0))
       return (b.cvssScore || 0) - (a.cvssScore || 0);
     // Then by published date desc
-    const pa = a.publishedDate ? new Date(a.publishedDate).getTime() : 0;
-    const pb = b.publishedDate ? new Date(b.publishedDate).getTime() : 0;
-    return pb - pa;
+    const pda = a.publishedDate ? new Date(a.publishedDate).getTime() : 0;
+    const pdb = b.publishedDate ? new Date(b.publishedDate).getTime() : 0;
+    return pdb - pda;
   });
 
   const criticalCount = enriched.filter((c) => c.cvssSeverity === "CRITICAL").length;
@@ -290,11 +397,18 @@ export async function GET(request: Request) {
   const mediumCount = enriched.filter((c) => c.cvssSeverity === "MEDIUM").length;
   const lowCount = enriched.filter((c) => c.cvssSeverity === "LOW").length;
   const recentCves = enriched.filter((c) => c.isRecent).length;
+  const kevCount = enriched.filter((c) => c.inKev).length;
+  const highEpssCount = enriched.filter((c) => (c.epssPercentile || 0) >= 0.95).length;
+  const pocCount = enriched.filter((c) => c.pocAvailable).length;
   const topSeverity =
     criticalCount > 0 ? "CRITICAL" :
     highCount > 0 ? "HIGH" :
     mediumCount > 0 ? "MEDIUM" :
     lowCount > 0 ? "LOW" : "NONE";
+
+  // Pull KEV catalog stats for the panel header
+  const { getKevStats } = await import("@/app/api/cisa-kev/route");
+  const kevStats = await getKevStats();
 
   const result: CveAssessment = {
     ip,
@@ -305,7 +419,12 @@ export async function GET(request: Request) {
     highCount,
     mediumCount,
     lowCount,
+    kevCount,
+    highEpssCount,
+    pocCount,
     topSeverity: topSeverity as CveAssessment["topSeverity"],
+    kevCatalogVersion: kevStats.loaded ? kevStats.version : undefined,
+    kevCatalogCount: kevStats.loaded ? kevStats.count : undefined,
     cves: enriched,
     shodanOk: true,
   };
