@@ -1810,49 +1810,8 @@ export { DnsDumpView } from "@/components/views/dns-dump-view";
 // ---------- URL Scanner (re-export from dedicated file) ----------
 export { UrlScannerView } from "@/components/views/url-scanner-view";
 
-// ---------- URL Sandbox (placeholder) ----------
-export function UrlSandboxView() {
-  return (
-    <ModuleShell
-      name="URL Sandbox"
-      description="Isolated sandbox execution: network behavior, file system activity and process tree."
-      icon={Box}
-      category="INFRASTRUCTURE"
-    >
-      <SearchBar label="URL or file" placeholder="https://example.com/sample.exe" />
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-        <Panel title="Network Activity">
-          <EmptyModuleState
-            icon={Network}
-            name="No samples"
-            description="Submit a URL or upload a file to see DNS queries, HTTP requests and C2 traffic."
-          />
-        </Panel>
-        <Panel title="Filesystem Activity">
-          <EmptyModuleState
-            icon={Box}
-            name="No samples"
-            description="See file creation, modification, deletion and persistence changes."
-          />
-        </Panel>
-        <Panel title="Process Tree">
-          <EmptyModuleState
-            icon={Box}
-            name="No samples"
-            description="Process spawn tree with arguments, exit codes and child processes."
-          />
-        </Panel>
-        <Panel title="Behavioral Summary">
-          <EmptyModuleState
-            icon={Box}
-            name="No samples"
-            description="MITRE ATT&CK mapping and behavioral verdict after execution."
-          />
-        </Panel>
-      </div>
-    </ModuleShell>
-  );
-}
+// ---------- URL Sandbox (re-export from dedicated file) ----------
+export { UrlSandboxView } from "@/components/views/url-sandbox-view";
 
 // ---------- TakeDown URL (mock) ----------
 export function TakedownUrlView() {
