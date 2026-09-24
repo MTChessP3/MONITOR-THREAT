@@ -117,7 +117,7 @@ interface SandboxResult {
 }
 
 const SANDBOX_DURATION = 20000;
-const SCREENSHOT_INTERVAL = 2000; // every 2s = 10 screenshots
+const SCREENSHOT_INTERVAL = 6000; // 3 screenshots: ~6s, ~12s, ~18s
 
 // ---------- Sandbox Engine ----------
 
@@ -286,58 +286,73 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   window.addEventListener("message", messageHandler);
 
   // NUEVO: Tracking de redirecciones del popup — monitorea location.href cada 500ms
-  let lastKnownUrl = url;
-  const redirectInterval = setInterval(() => {
-    let currentUrl: string | null = null;
+  // IMPORTANTE: el popup carga desde /api/sandbox/proxy?url=<target>, por lo que
+  // location.href siempre empieza siendo la URL del proxy. Debemos:
+  // 1. Ignorar la URL inicial del proxy (es nuestro dominio, no un redirect)
+  // 2. Solo detectar redirects REALES: cuando el proxy cambia la URL del target
+  //    (porque la página hace window.location = "otro sitio" o meta refresh)
+  // 3. Extraer la URL del target del parámetro ?url= del proxy
+  const originalHost = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  let lastKnownTargetUrl = url; // la URL del TARGET, no la del proxy
+
+  const extractTargetFromProxy = (proxyHref: string): string => {
+    // Si la URL es /api/sandbox/proxy?url=..., extraer el parámetro url
     try {
-      currentUrl = popup.location?.href || null;
+      const u = new URL(proxyHref);
+      if (u.pathname.includes("/api/sandbox/proxy")) {
+        const target = u.searchParams.get("url");
+        if (target) return target;
+      }
+      return proxyHref; // no es proxy, devolver tal cual
     } catch {
-      // Cross-origin: no podemos leer location.href. Intentamos con document.title
-      // como indicador indirecto de que la página cambió.
-      try {
-        const newTitle = popup.document?.title;
-        if (newTitle && newTitle !== finalTitle) {
-          finalTitle = newTitle;
+      return proxyHref;
+    }
+  };
+
+  const redirectInterval = setInterval(() => {
+    let proxyUrl: string | null = null;
+    try {
+      proxyUrl = popup.location?.href || null;
+    } catch {
+      // No podemos leer location.href — el proxy es same-origin, así que
+      // si no podemos leerlo es porque el popup fue cerrado o navegó fuera
+    }
+
+    if (proxyUrl) {
+      const currentTarget = extractTargetFromProxy(proxyUrl);
+      if (currentTarget !== lastKnownTargetUrl) {
+        // ¡Redirect REAL detectado! El target cambió de URL.
+        let crossDomain = false;
+        try {
+          const oldHost = new URL(lastKnownTargetUrl).hostname;
+          const newHost = new URL(currentTarget).hostname;
+          crossDomain = oldHost !== newHost;
+        } catch {}
+
+        // Solo registrar si el nuevo target NO es nuestro proxy (evita falsos positivos)
+        if (!currentTarget.includes("/api/sandbox/proxy")) {
+          redirects.push({
+            from: lastKnownTargetUrl,
+            to: currentTarget,
+            timestamp: new Date().toISOString(),
+            method: "location-change",
+            crossDomain,
+          });
+
           timeline.push({
             time: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
             timestamp: new Date().toISOString(),
-            type: "title-change",
-            description: `Page title changed to "${newTitle}" — possible redirect (cross-origin, can't read URL)`,
-            severity: "warning",
+            type: "redirect",
+            description: crossDomain
+              ? `REDIRECCIÓN CROSS-DOMAIN: ${lastKnownTargetUrl.slice(0, 60)} → ${currentTarget.slice(0, 60)}`
+              : `Redirección: ${lastKnownTargetUrl.slice(0, 60)} → ${currentTarget.slice(0, 60)}`,
+            severity: crossDomain ? "danger" : "warning",
           });
+
+          lastKnownTargetUrl = currentTarget;
+          finalUrl = currentTarget;
         }
-      } catch { /* fully blocked */ }
-    }
-    if (currentUrl && currentUrl !== lastKnownUrl) {
-      // ¡Redirección detectada!
-      let crossDomain = false;
-      try {
-        const oldHost = new URL(lastKnownUrl).hostname;
-        const newHost = new URL(currentUrl).hostname;
-        crossDomain = oldHost !== newHost;
-      } catch {}
-
-      redirects.push({
-        from: lastKnownUrl,
-        to: currentUrl,
-        timestamp: new Date().toISOString(),
-        method: "location-change",
-        crossDomain,
-      });
-
-      timeline.push({
-        time: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
-        timestamp: new Date().toISOString(),
-        type: "redirect",
-        description: crossDomain
-          ? `REDIRECCIÓN CROSS-DOMAIN: ${lastKnownUrl.slice(0, 60)} → ${currentUrl.slice(0, 60)}`
-          : `Redirección: ${lastKnownUrl.slice(0, 60)} → ${currentUrl.slice(0, 60)}`,
-        severity: crossDomain ? "danger" : "warning",
-      });
-
-      lastKnownUrl = currentUrl;
-      finalUrl = currentUrl;
-      lastPopupUrl = currentUrl;
+      }
     }
   }, 500);
 
@@ -791,23 +806,74 @@ function downloadPdf(d: SandboxResult) {
     y = (doc as any).lastAutoTable.finalY + 18;
   };
 
-  // Screenshots
+  // Screenshots — only first 3 (inicio, medio, final)
   if (d.screenshots.length > 0) {
-    sectionHeading("Screenshots");
-    for (const s of d.screenshots.slice(0, 5)) {
+    sectionHeading("Screenshots (inicio, medio, final)");
+    for (const s of d.screenshots.slice(0, 3)) {
       if (y > pageHeight - 300) { doc.addPage(); y = margin + 6; }
       try {
         const imgWidth = contentWidth;
         const imgHeight = imgWidth * (720 / 1280);
-        doc.addImage(s, "PNG", margin, y, imgWidth, Math.min(imgHeight, 300));
-        y += Math.min(imgHeight, 300) + 10;
+        doc.addImage(s, "PNG", margin, y, imgWidth, Math.min(imgHeight, 250));
+        y += Math.min(imgHeight, 250) + 10;
       } catch {}
     }
   }
 
-  // Risk Assessment
-  sectionHeading("Risk Assessment");
-  kvTable([["Risk score", `${d.riskScore} / 100`], ["Classification", d.riskClassification], ["Execution duration", "20 seconds"], ["Verdict", d.verdict]]);
+  // Resumen Ejecutivo (PRIORITARIO — al inicio del informe)
+  sectionHeading("Resumen Ejecutivo");
+  kvTable([
+    ["Comportamiento", d.behavior],
+    ["URL original", d.url.slice(0, 200)],
+    ["URL final", d.finalUrl !== d.url ? d.finalUrl.slice(0, 200) : "(sin cambios)"],
+    ["Redirecciones", `${d.redirects.length} (${d.redirects.filter(r => r.crossDomain).length} cross-domain)`],
+    ["Ventanas nuevas", String(d.popups.reduce((s, p) => s + p.count, 0))],
+    ["Vínculos externos", String(d.externalLinks.filter(l => !l.sameDomain).length)],
+    ["Crypto mining", d.cryptoMining.length > 0 ? `SÍ — ${d.cryptoMining.map(c => c.miner).join(", ")}` : "no"],
+    ["Eval/Function()", `${d.evalCalls.length} llamada(s)`],
+    ["Form auto-submit", d.formAutoSubmit ? "SÍ — robo de credenciales" : "no"],
+    ["Fingerprinting", [d.webglFingerprint ? "WebGL" : "", d.canvasFingerprint ? "Canvas" : ""].filter(Boolean).join(", ") || "no"],
+    ["Resumen", d.summary],
+  ]);
+
+  // Redirecciones (PRIORITARIO)
+  if (d.redirects.length > 0) {
+    sectionHeading("Redirecciones Detectadas");
+    autoTable(doc, { startY: y, head: [["Tiempo", "URL Origen", "→", "URL Destino", "Cross-Domain"]],
+      body: d.redirects.map(r => [r.timestamp.slice(11, 19), r.from.slice(0, 100), "→", r.to.slice(0, 100), r.crossDomain ? "SÍ" : "no"]),
+      theme: "grid", margin: { left: margin, right: margin },
+      styles: { fontSize: 8, cellPadding: 4, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
+      headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold", fontSize: 10 },
+    });
+    // @ts-ignore
+    y = (doc as any).lastAutoTable.finalY + 18;
+  }
+
+  // Timeline de Eventos (PRIORITARIO)
+  sectionHeading("Timeline de Eventos");
+  autoTable(doc, { startY: y, head: [["Tiempo", "Tipo", "Severidad", "Descripción"]],
+    body: d.timeline.slice(0, 30).map(e => [e.time, e.type, e.severity, e.description.slice(0, 150)]),
+    theme: "grid", margin: { left: margin, right: margin },
+    styles: { fontSize: 8, cellPadding: 4, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
+    headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold", fontSize: 10 },
+    columnStyles: { 0: { cellWidth: 40 }, 1: { cellWidth: 70 }, 2: { cellWidth: 60 } },
+  });
+  // @ts-ignore
+  y = (doc as any).lastAutoTable.finalY + 18;
+
+  // Vínculos Externos (PRIORITARIO)
+  if (d.externalLinks.filter(l => !l.sameDomain).length > 0) {
+    sectionHeading("Vínculos Externos Detectados");
+    autoTable(doc, { startY: y, head: [["Dominio", "Texto", "URL"]],
+      body: d.externalLinks.filter(l => !l.sameDomain).slice(0, 20).map(l => [l.domain, l.text.slice(0, 60), l.href.slice(0, 120)]),
+      theme: "grid", margin: { left: margin, right: margin },
+      styles: { fontSize: 8, cellPadding: 4, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
+      headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold", fontSize: 10 },
+      columnStyles: { 0: { cellWidth: 120 } },
+    });
+    // @ts-ignore
+    y = (doc as any).lastAutoTable.finalY + 18;
+  }
 
   // 1. Network
   sectionHeading("1. Network Activity");
