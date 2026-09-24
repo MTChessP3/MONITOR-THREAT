@@ -150,9 +150,15 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   let lastPopupUrl = url;
   let behavior: BehaviorType = "NORMAL";
 
-  // Open target in a new window (avoids X-Frame-Options/CSP)
-  onProgress(0, "Opening URL in sandbox window...");
-  const popup = window.open(url, "_blank", "width=1280,height=720,scrollbars=yes,resizable=yes,noopener=no");
+  // NUEVO: Usar el proxy en lugar de la URL directa.
+  // El proxy descarga la página server-side, le inyecta el script de
+  // monitoreo, y la sirve desde nuestro propio dominio (same-origin).
+  // Esto elimina TODOS los errores de cross-origin.
+  const proxyUrl = `/api/sandbox/proxy?url=${encodeURIComponent(url)}`;
+
+  // Open target via proxy (same-origin → monitoring hooks work!)
+  onProgress(0, "Opening URL via sandbox proxy...");
+  const popup = window.open(proxyUrl, "_blank", "width=1280,height=720,scrollbars=yes,resizable=yes,noopener=no");
 
   if (!popup) {
     return {
@@ -187,99 +193,11 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
     setTimeout(() => { clearInterval(checkLoaded); resolve(); }, 10000);
   });
 
-  onProgress(2000, "Injecting monitoring hooks...");
+  onProgress(2000, "Monitoring hooks injected by proxy — waiting for page events...");
 
-  // Try to inject monitoring hooks (only works for same-origin)
-  try {
-    const win = popup;
-    const doc = popup.document;
-
-    if (doc && doc.body) {
-      finalTitle = doc.title || "";
-      loaded = true;
-
-      // Inject monitoring script
-      const monitorScript = doc.createElement("script");
-      monitorScript.textContent = `
-        (function() {
-          var origLog = console.log, origWarn = console.warn, origError = console.error, origInfo = console.info;
-          console.log = function() { parent.postMessage({type:'console', level:'log', msg: Array.from(arguments).map(String).join(' ')}, '*'); origLog.apply(console, arguments); };
-          console.warn = function() { parent.postMessage({type:'console', level:'warn', msg: Array.from(arguments).map(String).join(' ')}, '*'); origWarn.apply(console, arguments); };
-          console.error = function() { parent.postMessage({type:'console', level:'error', msg: Array.from(arguments).map(String).join(' ')}, '*'); origError.apply(console, arguments); };
-          console.info = function() { parent.postMessage({type:'console', level:'info', msg: Array.from(arguments).map(String).join(' ')}, '*'); origInfo.apply(console, arguments); };
-          window.onerror = function(msg, src, line, col) { parent.postMessage({type:'error', msg: msg + ' (' + src + ':' + line + ':' + col + ')'}, '*'); return false; };
-          var origOpen = window.open; window.open = function(u) { parent.postMessage({type:'popup', url: u || '(unknown)'}, '*'); };
-          var origEval = window.eval; window.eval = function(code) { parent.postMessage({type:'eval', code: String(code).slice(0,300)}, '*'); try { return origEval.call(window, code); } catch(e) {} };
-          var origFunc = Function; window.Function = function() { parent.postMessage({type:'eval', code: 'Function(' + Array.from(arguments).map(String).join(',') + ')'}, '*'); return new origFunc(...arguments); };
-          var observer = new MutationObserver(function(muts) {
-            for (var m of muts) {
-              var added = [];
-              m.addedNodes.forEach(function(n) { added.push(n.nodeName + (n.attributes ? '[' + Array.from(n.attributes).map(function(a) { return a.name; }).join(',') + ']' : '')); });
-              if (added.length > 0 || m.type === 'attributes') {
-                parent.postMessage({type:'mutation', mtype: m.type, target: m.target.nodeName, added: added.slice(0,5)}, '*');
-              }
-            }
-          });
-          observer.observe(document, {childList:true, subtree:true, attributes:true});
-          // Detect form auto-submit
-          var forms = document.querySelectorAll('form');
-          for (var f of forms) {
-            if (f.hasAttribute('onload') || f.querySelector('input[type=submit][autofocus]')) {
-              parent.postMessage({type:'formAutoSubmit'}, '*');
-            }
-          }
-          // Detect crypto mining
-          var scripts = document.querySelectorAll('script[src]');
-          for (var s of scripts) {
-            var src = s.src.toLowerCase();
-            if (src.includes('coinhive') || src.includes('coin-hive') || src.includes('cryptonight') || src.includes('webminer') || src.includes('monero') || src.includes('crypto-loot') || src.includes('deepminer')) {
-              parent.postMessage({type:'crypto', script: s.src, miner: 'CoinHive/CryptoNight'}, '*');
-            }
-          }
-          // Detect WebGL fingerprinting
-          var c = document.createElement('canvas'); var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
-          if (gl) { var orig = gl.getParameter; gl.getParameter = function(p) { if (p==0x9245||p==0x9246||p==0x9247||p==0x9248) { parent.postMessage({type:'webglFp'}, '*'); } return orig.call(gl, p); }; }
-          // Detect Canvas fingerprinting
-          var c2 = document.createElement('canvas'); var ctx2 = c2.getContext('2d');
-          if (ctx2) { var orig2 = ctx2.getImageData; ctx2.getImageData = function() { parent.postMessage({type:'canvasFp'}, '*'); return orig2.apply(ctx2, arguments); }; }
-          // Detect service worker
-          if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-            parent.postMessage({type:'serviceWorker'}, '*');
-          }
-          // Send localStorage and sessionStorage
-          try { for (var i=0; i<localStorage.length; i++) { var k=localStorage.key(i); parent.postMessage({type:'storage', stype:'localStorage', key:k, value:localStorage.getItem(k).slice(0,200)}, '*'); } } catch(e) {}
-          try { for (var i=0; i<sessionStorage.length; i++) { var k=sessionStorage.key(i); parent.postMessage({type:'storage', stype:'sessionStorage', key:k, value:sessionStorage.getItem(k).slice(0,200)}, '*'); } } catch(e) {}
-          // Send cookies
-          parent.postMessage({type:'cookies', cookies: document.cookie}, '*');
-        })();
-      `;
-      doc.body.appendChild(monitorScript);
-
-      // PerformanceObserver for network (inject into popup)
-      const perfScript = doc.createElement("script");
-      perfScript.textContent = `
-        try {
-          var po = new PerformanceObserver(function(list) {
-            for (var entry of list.getEntries()) {
-              parent.postMessage({type:'network', url: entry.name, itype: entry.initiatorType || 'other', dur: Math.round(entry.duration), size: entry.transferSize || 0}, '*');
-            }
-          });
-          po.observe({entryTypes: ['resource', 'navigation']});
-        } catch(e) {}
-      `;
-      doc.body.appendChild(perfScript);
-
-      // Detect hidden redirect (meta refresh or JS redirect)
-      const metaRefresh = doc.querySelector('meta[http-equiv="refresh"]');
-      if (metaRefresh) {
-        const content = metaRefresh.getAttribute("content") || "";
-        const match = content.match(/url=(.+)/i);
-        if (match) hiddenRedirect = match[1];
-      }
-    }
-  } catch (e) {
-    errors.push(`Cross-origin: Cannot inject monitoring hooks — ${e}`);
-  }
+  // The proxy already injected the monitoring script server-side.
+  // We just need to listen for postMessage events from the popup.
+  // No need to manually inject anything — the proxy did it for us.
 
   // Listen for postMessage from popup
   const messageHandler = (event: MessageEvent) => {
@@ -333,6 +251,35 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
             cookies.push({ name: name || "", value: rest.join("=").slice(0, 200), domain: new URL(url).hostname, secure: url.startsWith("https"), httpOnly: false });
           }
         } catch {}
+        break;
+      case "sandboxReady":
+        loaded = true;
+        timeline.push({
+          time: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
+          timestamp: new Date().toISOString(),
+          type: "ready",
+          description: "Monitoring active — page loaded via proxy",
+          severity: "info",
+        });
+        break;
+      case "link":
+        if (!externalLinks.some(l => l.href === d.href)) {
+          externalLinks.push({ href: d.href, text: d.text || "", domain: d.domain || "", sameDomain: !!d.sameDomain });
+        }
+        break;
+      case "finalDom":
+        finalDom = d.html || "";
+        finalTitle = d.title || "";
+        break;
+      case "hiddenRedirect":
+        if (d.url) hiddenRedirect = d.url;
+        timeline.push({
+          time: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
+          timestamp: new Date().toISOString(),
+          type: "redirect",
+          description: `HIDDEN REDIRECT via meta-refresh to: ${d.url}`,
+          severity: "warning",
+        });
         break;
     }
   };
