@@ -1804,57 +1804,8 @@ export { DomainIntelView } from "@/components/views/domain-intel-view";
 // import in src/app/page.tsx still resolves.
 export { DomainForensicsView } from "@/components/views/domain-forensics-view";
 
-// ---------- DNS Dump (mock) ----------
-export function DnsDumpView() {
-  const records = [
-    { type: "A", name: "@", value: "185.220.101.34", ttl: 3600 },
-    { type: "AAAA", name: "@", value: "2001:db8::1", ttl: 3600 },
-    { type: "MX", name: "@", value: "10 mail.example.com", ttl: 3600 },
-    { type: "NS", name: "@", value: "ns1.example.com", ttl: 86400 },
-    { type: "TXT", name: "@", value: "v=spf1 include:_spf.example.com ~all", ttl: 3600 },
-    { type: "SOA", name: "@", value: "ns1.example.com admin.example.com", ttl: 3600 },
-    { type: "CNAME", name: "www", value: "example.com", ttl: 3600 },
-    { type: "SRV", name: "_sip._tcp", value: "10 5060 sip.example.com", ttl: 3600 },
-    { type: "CAA", name: "@", value: "0 issue letsencrypt.org", ttl: 3600 },
-    { type: "PTR", name: "1.0.0.0", value: "host.example.com", ttl: 3600 },
-  ];
-  return (
-    <ModuleShell
-      name="DNS Dump"
-      description="Full dump of DNS records for a domain across all record types."
-      icon={Server}
-      category="INFRASTRUCTURE"
-    >
-      <SearchBar label="Domain" placeholder="example.com" />
-      <Panel title="Records" className="mt-4">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-20">Type</TableHead>
-              <TableHead className="w-32">Name</TableHead>
-              <TableHead>Value</TableHead>
-              <TableHead className="w-24">TTL</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {records.map((r, i) => (
-              <TableRow key={i}>
-                <TableCell>
-                  <Badge variant="outline" className="font-mono">
-                    {r.type}
-                  </Badge>
-                </TableCell>
-                <TableCell className="font-mono text-sm">{r.name}</TableCell>
-                <TableCell className="font-mono text-sm">{r.value}</TableCell>
-                <TableCell className="font-mono text-sm">{r.ttl}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Panel>
-    </ModuleShell>
-  );
-}
+// ---------- DNS Dump (re-export from dedicated file) ----------
+export { DnsDumpView } from "@/components/views/dns-dump-view";
 
 // ---------- URL Scanner (mock) ----------
 export function UrlScannerView() {
