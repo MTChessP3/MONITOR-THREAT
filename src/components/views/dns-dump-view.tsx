@@ -699,14 +699,14 @@ export function DnsDumpView() {
                     <div className="text-[10px]">unique IPs</div>
                   </div>
                 </div>
-                {data.passiveDns.firstSeen && <FieldRow label="First seen" value={data.passiveDns.firstSeen.slice(0, 10)} mono />}
-                {data.passiveDns.lastSeen && <FieldRow label="Last seen" value={data.passiveDns.lastSeen.slice(0, 10)} mono />}
+                {data.passiveDns.firstSeen && <FieldRow label="First seen" value={String(data.passiveDns.firstSeen).slice(0, 10)} mono />}
+                {data.passiveDns.lastSeen && <FieldRow label="Last seen" value={String(data.passiveDns.lastSeen).slice(0, 10)} mono />}
                 <Separator />
                 <div className="pt-2 max-h-32 overflow-y-auto">
                   {data.passiveDns.resolutions.slice(0, 10).map((r, i) => (
                     <div key={i} className="text-xs flex justify-between py-1 border-b border-border/30">
                       <span className="font-mono">{r.ip}</span>
-                      <span className="text-muted-foreground">{r.date.slice(0, 10)}</span>
+                      <span className="text-muted-foreground">{r.date ? String(r.date).slice(0, 10) : "-"}</span>
                     </div>
                   ))}
                 </div>
