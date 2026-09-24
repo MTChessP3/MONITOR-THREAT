@@ -77,6 +77,13 @@ interface UrlScanResult {
   content: ContentExtraction;
   virusTotal: VtUrlResult;
   openPhish: { checked: boolean; isPhishing: boolean; matchCount: number; matches: string[] };
+  urlscanIo: {
+    available: boolean; totalScans: number; screenshot?: string; server?: string;
+    ip?: string; asn?: string; asnName?: string; title?: string;
+    domainAgeDays?: number; umbrellaRank?: number; tlsIssuer?: string;
+    redirected?: string; verdictUrl?: string; scanTime?: string;
+    malicious?: boolean; error?: string;
+  } | null;
 }
 
 // ---------- PDF ----------
@@ -588,8 +595,64 @@ export function UrlScannerView() {
             )}
           </Panel>
 
+          {/* 6. urlscan.io */}
+          {data.urlscanIo?.available && (
+            <Panel title="6. urlscan.io Sandbox Analysis" className="md:col-span-2" action={
+              data.urlscanIo.verdictUrl ? (
+                <a href={data.urlscanIo.verdictUrl} target="_blank" rel="noreferrer"
+                  className="text-xs text-cyan-500 hover:underline flex items-center gap-1">
+                  Full report <ExternalLink className="w-3 h-3" />
+                </a>
+              ) : undefined
+            }>
+              {data.urlscanIo.screenshot ? (
+                <div className="flex flex-col gap-3">
+                  <div className="rounded-md overflow-hidden border border-border bg-muted/20">
+                    <img src={data.urlscanIo.screenshot} alt="urlscan.io screenshot"
+                      className="w-full h-auto" style={{ maxHeight: "400px", objectFit: "contain" }} />
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    <div className={`rounded p-2 border ${data.urlscanIo.malicious ? "border-red-500/40 bg-red-500/10 text-red-400" : "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"}`}>
+                      <div className="text-lg font-bold font-mono">{data.urlscanIo.malicious ? "MALICIOUS" : "CLEAN"}</div>
+                      <div className="text-[10px]">urlscan verdict</div>
+                    </div>
+                    <div className="rounded p-2 border border-border bg-muted/20">
+                      <div className="text-lg font-bold font-mono">{data.urlscanIo.totalScans}</div>
+                      <div className="text-[10px]">total public scans</div>
+                    </div>
+                    {data.urlscanIo.domainAgeDays && (
+                      <div className="rounded p-2 border border-border bg-muted/20">
+                        <div className="text-lg font-bold font-mono">{data.urlscanIo.domainAgeDays}d</div>
+                        <div className="text-[10px]">domain age</div>
+                      </div>
+                    )}
+                    {data.urlscanIo.umbrellaRank && (
+                      <div className="rounded p-2 border border-border bg-muted/20">
+                        <div className="text-lg font-bold font-mono">#{data.urlscanIo.umbrellaRank}</div>
+                        <div className="text-[10px]">Umbrella rank</div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-4 text-xs">
+                    {data.urlscanIo.server && <div><span className="text-muted-foreground">Server:</span> {data.urlscanIo.server}</div>}
+                    {data.urlscanIo.ip && <div><span className="text-muted-foreground">IP:</span> <span className="font-mono">{data.urlscanIo.ip}</span></div>}
+                    {data.urlscanIo.asnName && <div><span className="text-muted-foreground">ASN:</span> <span className="font-mono">{data.urlscanIo.asnName}</span></div>}
+                    {data.urlscanIo.tlsIssuer && <div><span className="text-muted-foreground">TLS issuer:</span> {data.urlscanIo.tlsIssuer}</div>}
+                    {data.urlscanIo.redirected && <div><span className="text-muted-foreground">Redirected:</span> <span className="text-orange-500">{data.urlscanIo.redirected}</span></div>}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  {data.urlscanIo.error === "no_public_scans"
+                    ? "No public scans found on urlscan.io. Submit a new scan at urlscan.io for a full analysis."
+                    : data.urlscanIo.error || "No screenshot available."}
+                </p>
+              )}
+            </Panel>
+          )}
+
           <div className="md:col-span-2 text-[10px] text-muted-foreground font-mono">
-            Query timestamp: {data.timestamp} · Powered by URL parsing, HTTP fetch, content extraction, VirusTotal URL API, OpenPhish feed.
+            Query timestamp: {data.timestamp} · Powered by URL parsing, HTTP fetch, content extraction, VirusTotal URL API, OpenPhish feed, urlscan.io.
           </div>
         </div>
       )}

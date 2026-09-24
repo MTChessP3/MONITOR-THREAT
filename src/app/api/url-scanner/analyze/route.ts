@@ -127,6 +127,26 @@ interface UrlScanResult {
     matchCount: number;
     matches: string[];
   };
+  urlscanIo: UrlScanResult_urlscan | null;
+  error?: string;
+}
+
+interface UrlScanResult_urlscan {
+  available: boolean;
+  totalScans: number;
+  screenshot?: string;
+  server?: string;
+  ip?: string;
+  asn?: string;
+  asnName?: string;
+  title?: string;
+  domainAgeDays?: number;
+  umbrellaRank?: number;
+  tlsIssuer?: string;
+  redirected?: string;
+  verdictUrl?: string;
+  scanTime?: string;
+  malicious?: boolean;
   error?: string;
 }
 
@@ -734,6 +754,76 @@ function computeRiskScore(
   return { score, classification, verdict };
 }
 
+// ---------- urlscan.io Check ----------
+
+interface UrlScanResult {
+  available: boolean;
+  totalScans: number;
+  screenshot?: string;
+  server?: string;
+  ip?: string;
+  asn?: string;
+  asnName?: string;
+  title?: string;
+  domainAgeDays?: number;
+  umbrellaRank?: number;
+  tlsIssuer?: string;
+  redirected?: string;
+  verdictUrl?: string;
+  scanTime?: string;
+  malicious?: boolean;
+  error?: string;
+}
+
+async function checkUrlscanIo(url: string): Promise<UrlScanResult> {
+  try {
+    // Extract domain from URL for the search query
+    const parsed = new URL(url);
+    const domain = parsed.hostname;
+    const searchUrl = `https://urlscan.io/api/v1/search/?q=domain:${encodeURIComponent(domain)}&size=1`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(searchUrl, {
+      signal: controller.signal,
+      headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" },
+    });
+    clearTimeout(timeout);
+    if (!res.ok) {
+      return { available: false, totalScans: 0, error: `urlscan_error_${res.status}` };
+    }
+    const data = await res.json();
+    const results = data.results || [];
+    const total = data.total || 0;
+    if (results.length === 0) {
+      return { available: true, totalScans: total, error: "no_public_scans" };
+    }
+    const r = results[0];
+    const page = r.page || {};
+    const task = r.task || {};
+    const verdicts = r.verdicts || {};
+    const overall = verdicts.overall || {};
+    return {
+      available: true,
+      totalScans: total,
+      screenshot: r.screenshot || undefined,
+      server: page.server || undefined,
+      ip: page.ip || undefined,
+      asn: page.asn ? String(page.asn) : undefined,
+      asnName: page.asnname || undefined,
+      title: page.title || undefined,
+      domainAgeDays: page.domainAgeDays || undefined,
+      umbrellaRank: page.umbrellaRank || undefined,
+      tlsIssuer: page.tlsIssuer || undefined,
+      redirected: page.redirected || undefined,
+      verdictUrl: `https://urlscan.io/result/${r._id}/`,
+      scanTime: task.time || undefined,
+      malicious: overall.malicious || false,
+    };
+  } catch (err: any) {
+    return { available: false, totalScans: 0, error: "urlscan_unreachable" };
+  }
+}
+
 // ---------- Main endpoint ----------
 
 export async function GET(request: Request) {
@@ -764,10 +854,11 @@ export async function GET(request: Request) {
     // Remove body from fetch result (don't send to client)
     const { body, ...fetchWithoutBody } = fetchResult;
 
-    // 4. VirusTotal URL report (in parallel with OpenPhish)
-    const [vtResult, openPhishResult] = await Promise.all([
+    // 4. VirusTotal URL report + OpenPhish + urlscan.io (all in parallel)
+    const [vtResult, openPhishResult, urlscanResult] = await Promise.all([
       getVtUrlReport(parse.fullUrl),
       checkOpenPhish(parse.fullUrl),
+      checkUrlscanIo(parse.fullUrl),
     ]);
 
     // 5. Compute risk score
@@ -787,6 +878,7 @@ export async function GET(request: Request) {
       content,
       virusTotal: vtResult,
       openPhish: openPhishResult,
+      urlscanIo: urlscanResult,
     };
 
     return NextResponse.json(result);
