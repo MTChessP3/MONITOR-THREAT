@@ -1790,72 +1790,12 @@ export function IpIntelView() {
   );
 }
 
-// ---------- Domain Intel (mock) ----------
-export function DomainIntelView() {
-  const r = DOMAIN_INTEL_RESULT;
-  return (
-    <ModuleShell
-      name="Domain Intel"
-      description="WHOIS, DNS, subdomains, SSL certificates and historical records."
-      icon={Globe}
-      category="INFRASTRUCTURE"
-    >
-      <SearchBar label="Domain" placeholder="example.com" />
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-        <Panel title="WHOIS">
-          <FieldRow label="Domain" value={r.domain} mono />
-          <FieldRow label="Registered" value={r.registered} mono />
-          <FieldRow label="Registrar" value={r.registrar} />
-          <FieldRow label="Registrant country" value={r.registrantCountry} mono />
-          <FieldRow label="Nameservers" value={r.nameservers.join(", ")} mono />
-        </Panel>
-        <Panel title="DNS Records">
-          <FieldRow label="A" value={r.dns.A.join(", ")} mono />
-          <FieldRow label="MX" value={r.dns.MX.join(", ")} mono />
-          <FieldRow label="NS" value={r.dns.NS.join(", ")} mono />
-          <FieldRow label="TXT" value={r.dns.TXT[0]} mono />
-        </Panel>
-        <Panel title="SSL Certificate">
-          <FieldRow label="Issuer" value={r.ssl.issuer} />
-          <FieldRow label="Valid from" value={r.ssl.validFrom} mono />
-          <FieldRow label="Valid to" value={r.ssl.validTo} mono />
-          <FieldRow label="Serial" value={r.ssl.serial} mono />
-        </Panel>
-        <Panel title="Subdomains">
-          <div className="flex flex-col gap-1">
-            {r.subdomains.map((s) => (
-              <span key={s} className="font-mono text-xs px-2 py-1 rounded bg-muted/40">
-                {s}
-              </span>
-            ))}
-          </div>
-        </Panel>
-      </div>
-      <Panel title="History" className="mt-4">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Date</TableHead>
-              <TableHead>Event</TableHead>
-              <TableHead>From</TableHead>
-              <TableHead>To</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {r.history.map((h) => (
-              <TableRow key={h.date + h.event}>
-                <TableCell className="font-mono">{h.date}</TableCell>
-                <TableCell>{h.event}</TableCell>
-                <TableCell className="font-mono text-xs">{h.from}</TableCell>
-                <TableCell className="font-mono text-xs">{h.to}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Panel>
-    </ModuleShell>
-  );
-}
+// ---------- Domain Intel (re-export from dedicated file) ----------
+// The DomainIntelView is now in src/components/views/domain-intel-view.tsx
+// because it grew to ~700 lines with all the real-data panels and the PDF
+// report generator. Re-export it here so the existing import in
+// src/app/page.tsx still resolves.
+export { DomainIntelView } from "@/components/views/domain-intel-view";
 
 // ---------- Domain Forensics (placeholder) ----------
 export function DomainForensicsView() {
