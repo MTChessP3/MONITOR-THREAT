@@ -131,14 +131,29 @@ interface ReputationResult {
     available: boolean;
     error?: string;
   };
+  abuseipdb: {
+    available: boolean;
+    abuseConfidenceScore: number;
+    totalReports: number;
+    numDistinctUsers: number;
+    lastReportedAt?: string;
+    countryCode?: string;
+    usageType?: string;
+    isp?: string;
+    domain?: string;
+    isWhitelisted?: boolean;
+    classification: "BENIGN" | "SUSPICIOUS" | "MALICIOUS";
+    recentReports: Array<{
+      reporter: string;
+      reportedAt: string;
+      categories: number[];
+      comment?: string;
+    }>;
+    error?: string;
+  };
   signals: Array<{ source: string; weight: number; detail: string }>;
   tags: string[];
   threatIntel: Array<{ source: string; verdict: string; details?: string }>;
-  abuseipdb?: {
-    score: number;
-    totalReports: number;
-    abuseConfidenceScore: number;
-  } | null;
   error?: string;
 }
 
@@ -416,8 +431,102 @@ function downloadPdfReport(d: AggregateResult) {
     y += 22;
   }
 
-  // ---------- 5. DNSBL / Blacklist Summary ----------
-  sectionHeading("5. DNSBL / Blacklist Summary");
+  // ---------- 5. Reputation — AbuseIPDB ----------
+  sectionHeading("5. Reputation — AbuseIPDB");
+  const ab = d.reputation?.abuseipdb;
+  if (ab?.available) {
+    const abColor = classifyColorRgb(ab.classification || "");
+    // Composite score card
+    const abCardH = 60;
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(abColor[0], abColor[1], abColor[2]);
+    doc.setLineWidth(2);
+    doc.roundedRect(margin, y, contentWidth, abCardH, 6, 6, "FD");
+    doc.setLineWidth(0.5);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    doc.text("ABUSE CONFIDENCE", margin + 14, y + 16);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(26);
+    doc.setTextColor(abColor[0], abColor[1], abColor[2]);
+    doc.text(`${ab.abuseConfidenceScore}%`, margin + 14, y + 44);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`Classification: ${ab.classification}`, margin + 150, y + 18);
+    doc.text(
+      `${ab.totalReports} reports by ${ab.numDistinctUsers} distinct users in last 90 days`,
+      margin + 150,
+      y + 32
+    );
+    if (ab.lastReportedAt) {
+      doc.text(
+        `Last report: ${new Date(ab.lastReportedAt).toLocaleString()}`,
+        margin + 150,
+        y + 46
+      );
+    }
+    if (ab.isWhitelisted) {
+      doc.setTextColor(22, 163, 74);
+      doc.text("Whitelisted by AbuseIPDB", margin + 150, y + 58);
+    }
+    y += abCardH + 18;
+
+    // Network metadata
+    kvTable([
+      ["Country", ab.countryCode || "-"],
+      ["Usage type", ab.usageType || "-"],
+      ["ISP", ab.isp || "-"],
+      ["Domain", ab.domain || "-"],
+    ]);
+
+    // Recent reports
+    if (ab.recentReports.length > 0) {
+      if (y > pageHeight - 100) {
+        doc.addPage();
+        y = margin + 6;
+      }
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`Recent reports (${ab.recentReports.length})`, margin, y);
+      y += 8;
+      autoTable(doc, {
+        startY: y,
+        head: [["Reporter", "Date", "Comment"]],
+        body: ab.recentReports.map((r: any) => [
+          r.reporter,
+          r.reportedAt ? r.reportedAt.slice(0, 16).replace("T", " ") : "-",
+          r.comment || `Categories: ${(r.categories || []).join(", ")}`,
+        ]),
+        theme: "grid",
+        margin: { left: margin, right: margin },
+        styles: { fontSize: 9, cellPadding: 5, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
+        headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold", fontSize: 10 },
+        columnStyles: { 0: { cellWidth: 90 }, 1: { cellWidth: 130 } },
+      });
+      // @ts-ignore
+      y = (doc as any).lastAutoTable.finalY + 18;
+    }
+    doc.setFontSize(9);
+    doc.setTextColor(8, 145, 178);
+    doc.textWithLink(
+      `Open full AbuseIPDB report ↗`,
+      margin,
+      y,
+      { url: `https://www.abuseipdb.com/check/${encodeURIComponent(d.ip)}` }
+    );
+    y += 22;
+  } else {
+    doc.setTextColor(148, 163, 184);
+    doc.text(`AbuseIPDB not available: ${ab?.error || "no data"}`, margin, y);
+    y += 22;
+  }
+
+  // ---------- 6. DNSBL / Blacklist Summary ----------
+  sectionHeading("6. DNSBL / Blacklist Summary");
   const bl = d.blacklists;
   if (bl && !bl.error) {
     const s = bl.summary;
@@ -487,8 +596,8 @@ function downloadPdfReport(d: AggregateResult) {
     y += 22;
   }
 
-  // ---------- 6. Threat Intel Sources ----------
-  sectionHeading("6. Threat Intel Sources");
+  // ---------- 7. Threat Intel Sources ----------
+  sectionHeading("7. Threat Intel Sources");
   if (rep?.threatIntel && rep.threatIntel.length > 0) {
     autoTable(doc, {
       startY: y,
@@ -508,8 +617,8 @@ function downloadPdfReport(d: AggregateResult) {
     y += 22;
   }
 
-  // ---------- 7. Additional Signals ----------
-  sectionHeading("7. Additional Signals");
+  // ---------- 8. Additional Signals ----------
+  sectionHeading("8. Additional Signals");
   if (rep?.signals && rep.signals.length > 0) {
     autoTable(doc, {
       startY: y,
@@ -529,8 +638,8 @@ function downloadPdfReport(d: AggregateResult) {
     y += 22;
   }
 
-  // ---------- 8. Methodology & Sources ----------
-  sectionHeading("8. Methodology & Sources");
+  // ---------- 9. Methodology & Sources ----------
+  sectionHeading("9. Methodology & Sources");
   doc.setFontSize(10);
   doc.setTextColor(51, 65, 85);
   const methodology =
@@ -1055,6 +1164,164 @@ export function IpIntelView() {
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">No data.</p>
+            )}
+          </Panel>
+
+          {/* Reputation — AbuseIPDB powered */}
+          <Panel
+            title="Reputation — AbuseIPDB"
+            className="md:col-span-2"
+            action={
+              data.reputation?.abuseipdb?.available ? (
+                <a
+                  href={`https://www.abuseipdb.com/check/${data.ip}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-cyan-500 hover:underline flex items-center gap-1"
+                >
+                  AbuseIPDB report <ExternalLink className="w-3 h-3" />
+                </a>
+              ) : undefined
+            }
+          >
+            {data.reputation?.abuseipdb?.available ? (
+              <div className="flex flex-col gap-3">
+                <div className="flex items-start gap-4">
+                  <div className="flex flex-col items-center gap-1 shrink-0">
+                    <div
+                      className={`text-4xl font-mono font-bold leading-none ${
+                        data.reputation.abuseipdb.classification === "MALICIOUS"
+                          ? "text-red-500"
+                          : data.reputation.abuseipdb.classification === "SUSPICIOUS"
+                          ? "text-yellow-500"
+                          : "text-emerald-500"
+                      }`}
+                    >
+                      {data.reputation.abuseipdb.abuseConfidenceScore}
+                      <span className="text-base text-muted-foreground">%</span>
+                    </div>
+                    <Badge
+                      variant={
+                        data.reputation.abuseipdb.classification === "MALICIOUS"
+                          ? "destructive"
+                          : data.reputation.abuseipdb.classification === "SUSPICIOUS"
+                          ? "default"
+                          : "secondary"
+                      }
+                      className="font-mono text-xs"
+                    >
+                      {data.reputation.abuseipdb.classification}
+                    </Badge>
+                    <div className="text-[10px] text-muted-foreground">
+                      abuse confidence
+                    </div>
+                  </div>
+                  <div className="flex-1 flex flex-col gap-3">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                      {[
+                        { label: "Total reports", n: data.reputation.abuseipdb.totalReports },
+                        { label: "Distinct users", n: data.reputation.abuseipdb.numDistinctUsers },
+                        {
+                          label: "Last report",
+                          n: data.reputation.abuseipdb.lastReportedAt
+                            ? data.reputation.abuseipdb.lastReportedAt.slice(0, 10)
+                            : "—",
+                        },
+                        {
+                          label: "Whitelisted",
+                          n: data.reputation.abuseipdb.isWhitelisted ? "yes" : "no",
+                        },
+                      ].map((b) => (
+                        <div
+                          key={b.label}
+                          className="rounded p-2 border border-border bg-muted/20"
+                        >
+                          <div className="text-sm font-mono font-bold leading-none">
+                            {b.n}
+                          </div>
+                          <div className="text-[10px] text-muted-foreground mt-0.5">
+                            {b.label}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap gap-3 text-xs">
+                      {data.reputation.abuseipdb.usageType && (
+                        <div>
+                          <span className="text-muted-foreground">Usage type:</span>{" "}
+                          <span className="font-mono">{data.reputation.abuseipdb.usageType}</span>
+                        </div>
+                      )}
+                      {data.reputation.abuseipdb.isp && (
+                        <div>
+                          <span className="text-muted-foreground">ISP:</span>{" "}
+                          <span>{data.reputation.abuseipdb.isp}</span>
+                        </div>
+                      )}
+                      {data.reputation.abuseipdb.domain && (
+                        <div>
+                          <span className="text-muted-foreground">Domain:</span>{" "}
+                          <span className="font-mono">{data.reputation.abuseipdb.domain}</span>
+                        </div>
+                      )}
+                      {data.reputation.abuseipdb.countryCode && (
+                        <div>
+                          <span className="text-muted-foreground">Country:</span>{" "}
+                          <span className="font-mono">{data.reputation.abuseipdb.countryCode}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                {data.reputation.abuseipdb.recentReports.length > 0 && (
+                  <>
+                    <Separator />
+                    <div>
+                      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+                        Recent reports (top {data.reputation.abuseipdb.recentReports.length})
+                      </div>
+                      <div className="max-h-44 overflow-y-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="w-20">Reporter</TableHead>
+                              <TableHead className="w-32">Date</TableHead>
+                              <TableHead>Comment</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {data.reputation.abuseipdb.recentReports.map((r, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="font-mono text-xs">
+                                  {r.reporter}
+                                </TableCell>
+                                <TableCell className="font-mono text-xs">
+                                  {r.reportedAt.slice(0, 16).replace("T", " ")}
+                                </TableCell>
+                                <TableCell className="text-xs text-muted-foreground">
+                                  {r.comment || `Categories: ${r.categories.join(", ")}`}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>
+                  AbuseIPDB not available:{" "}
+                  <code className="text-xs">
+                    {data.reputation?.abuseipdb?.error || "no_data"}
+                  </code>
+                  . Set <code className="text-xs">ABUSEIPDB_API_KEY</code> env var to
+                  enable.
+                </span>
+              </div>
             )}
           </Panel>
 

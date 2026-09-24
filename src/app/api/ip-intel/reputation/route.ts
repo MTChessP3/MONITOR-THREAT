@@ -2,13 +2,36 @@
 //
 // Primary signal: VirusTotal v3 (last_analysis_stats + community votes + reputation)
 // Secondary signals:
+//  - AbuseIPDB v2 (abuse confidence, total reports, last report, recent reports)
 //  - multirbl.valli.org / DNSBL blacklists
 //  - Shodan InternetDB tags (tor, scanner, malware, vulnerable)
-//  - AbuseIPDB (optional — needs ABUSEIPDB_API_KEY)
 //
 // Final score = weighted combination of all signals, capped at 100.
 
 import { NextResponse } from "next/server";
+
+interface AbuseRecentReport {
+  reporter: string;
+  reportedAt: string;
+  categories: number[];
+  comment?: string;
+}
+
+interface AbuseIpdbBlock {
+  available: boolean;
+  abuseConfidenceScore: number;
+  totalReports: number;
+  numDistinctUsers: number;
+  lastReportedAt?: string;
+  countryCode?: string;
+  usageType?: string;
+  isp?: string;
+  domain?: string;
+  isWhitelisted?: boolean;
+  classification: "BENIGN" | "SUSPICIOUS" | "MALICIOUS";
+  recentReports: AbuseRecentReport[];
+  error?: string;
+}
 
 interface ReputationResult {
   ip: string;
@@ -33,6 +56,8 @@ interface ReputationResult {
     available: boolean;
     error?: string;
   };
+  // AbuseIPDB block — full data, shown alongside VT in the report
+  abuseipdb: AbuseIpdbBlock;
   // Secondary signals
   signals: Array<{
     source: string;
@@ -45,11 +70,6 @@ interface ReputationResult {
     verdict: string;
     details?: string;
   }>;
-  abuseipdb?: {
-    score: number;
-    totalReports: number;
-    abuseConfidenceScore: number;
-  } | null;
 }
 
 function classify(score: number): "BENIGN" | "SUSPICIOUS" | "MALICIOUS" {
@@ -81,7 +101,8 @@ export async function GET(request: Request) {
   const base = new URL(request.url).origin;
   const ipEnc = encodeURIComponent(ip);
 
-  // Parallel: VirusTotal (primary) + blacklists + shodan + abuseipdb
+  // Parallel: VirusTotal (primary) + blacklists + shodan + abuseipdb (now via
+  // the dedicated endpoint so we get full data, not just the inline minimum).
   const [vtRes, blacklistRes, shodanRes, abuseipdbRes] = await Promise.all([
     fetch(`${base}/api/ip-intel/virustotal?ip=${ipEnc}`).then((r) =>
       r.ok ? r.json() : Promise.resolve({ error: "virustotal_failed" })
@@ -92,37 +113,9 @@ export async function GET(request: Request) {
     fetch(`${base}/api/ip-intel/ports?ip=${ipEnc}`).then((r) =>
       r.ok ? r.json() : Promise.resolve(null)
     ),
-    (async () => {
-      const apiKey = process.env.ABUSEIPDB_API_KEY;
-      if (!apiKey) return null;
-      try {
-        const c = new AbortController();
-        const t = setTimeout(() => c.abort(), 8000);
-        const r = await fetch(
-          `https://api.abuseipdb.com/api/v2/check?ipAddress=${ipEnc}&maxAgeInDays=90`,
-          {
-            signal: c.signal,
-            headers: {
-              Key: apiKey,
-              Accept: "application/json",
-              "User-Agent": "MONITOR-THREAT/2.0",
-            },
-          }
-        );
-        clearTimeout(t);
-        if (!r.ok) return null;
-        const d = (await r.json())?.data;
-        if (!d) return null;
-        return {
-          score: d.abuseConfidenceScore || 0,
-          totalReports: d.totalReports || 0,
-          lastReportedAt: d.lastReportedAt,
-          abuseConfidenceScore: d.abuseConfidenceScore || 0,
-        };
-      } catch {
-        return null;
-      }
-    })(),
+    fetch(`${base}/api/ip-intel/abuseipdb?ip=${ipEnc}`).then((r) =>
+      r.ok ? r.json() : Promise.resolve(null)
+    ),
   ]);
 
   // --- VirusTotal block ---
@@ -264,32 +257,58 @@ export async function GET(request: Request) {
     });
   }
 
+  // --- AbuseIPDB block (full data) ---
+  const abuseipdbBlock: AbuseIpdbBlock = (() => {
+    if (!abuseipdbRes || !abuseipdbRes.available) {
+      return {
+        available: false,
+        abuseConfidenceScore: 0,
+        totalReports: 0,
+        numDistinctUsers: 0,
+        recentReports: [],
+        classification: "BENIGN" as const,
+        error: abuseipdbRes?.error || "not_configured",
+      };
+    }
+    return {
+      available: true,
+      abuseConfidenceScore: abuseipdbRes.abuseConfidenceScore ?? 0,
+      totalReports: abuseipdbRes.totalReports ?? 0,
+      numDistinctUsers: abuseipdbRes.numDistinctUsers ?? 0,
+      lastReportedAt: abuseipdbRes.lastReportedAt,
+      countryCode: abuseipdbRes.countryCode,
+      usageType: abuseipdbRes.usageType,
+      isp: abuseipdbRes.isp,
+      domain: abuseipdbRes.domain,
+      isWhitelisted: abuseipdbRes.isWhitelisted,
+      classification: abuseipdbRes.classification ?? "BENIGN",
+      recentReports: abuseipdbRes.recentReports ?? [],
+    };
+  })();
+
   // AbuseIPDB signal
-  if (abuseipdbRes) {
-    const ab = abuseipdbRes as NonNullable<ReputationResult["abuseipdb"]>;
-    if (ab.abuseConfidenceScore > 0) {
+  if (abuseipdbBlock.available) {
+    if (abuseipdbBlock.abuseConfidenceScore > 0) {
       signals.push({
         source: "AbuseIPDB",
-        weight: Math.min(Math.floor(ab.abuseConfidenceScore * 0.5), 40),
-        detail: `Abuse confidence: ${ab.abuseConfidenceScore}% · ${ab.totalReports} report(s) in last 90 days`,
+        weight: Math.min(Math.floor(abuseipdbBlock.abuseConfidenceScore * 0.5), 40),
+        detail: `Abuse confidence: ${abuseipdbBlock.abuseConfidenceScore}% · ${abuseipdbBlock.totalReports} report(s) by ${abuseipdbBlock.numDistinctUsers} user(s) in last 90 days`,
       });
       tags.push("abuse-reported");
     }
+    if (abuseipdbBlock.isWhitelisted) {
+      tags.push("abuse-whitelisted");
+    }
     threatIntel.push({
       source: "AbuseIPDB",
-      verdict:
-        ab.abuseConfidenceScore >= 75
-          ? "malicious"
-          : ab.abuseConfidenceScore >= 25
-          ? "suspicious"
-          : "clean",
-      details: `${ab.totalReports} reports, ${ab.abuseConfidenceScore}% confidence`,
+      verdict: abuseipdbBlock.classification.toLowerCase(),
+      details: `${abuseipdbBlock.totalReports} reports by ${abuseipdbBlock.numDistinctUsers} users · ${abuseipdbBlock.abuseConfidenceScore}% confidence · last report: ${abuseipdbBlock.lastReportedAt ? abuseipdbBlock.lastReportedAt.slice(0, 10) : "—"}`,
     });
   } else {
     threatIntel.push({
       source: "AbuseIPDB",
-      verdict: "not_configured",
-      details: "Set ABUSEIPDB_API_KEY env var to enable",
+      verdict: "unavailable",
+      details: abuseipdbBlock.error || "no data",
     });
   }
 
@@ -306,10 +325,10 @@ export async function GET(request: Request) {
     score,
     classification: classify(score),
     virusTotal: vtBlock,
+    abuseipdb: abuseipdbBlock,
     signals,
     tags: [...new Set(tags)],
     threatIntel,
-    abuseipdb: abuseipdbRes || null,
   };
 
   return NextResponse.json(result);
