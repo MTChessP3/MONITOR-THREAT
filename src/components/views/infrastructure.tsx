@@ -186,44 +186,48 @@ function downloadPdfReport(d: AggregateResult) {
 
   // ---------- Header ----------
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(18);
+  doc.setFontSize(22);
   doc.setTextColor(15, 23, 42);
-  doc.text("IP Intelligence Report", margin, y + 6);
-  doc.setFontSize(10);
+  doc.text("IP Intelligence Report", margin, y + 8);
+  doc.setFontSize(11);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(220, 38, 38);
-  doc.text("MONITOR-THREAT", margin, y + 22);
+  doc.text("MONITOR-THREAT", margin, y + 26);
   doc.setTextColor(100, 116, 139);
-  doc.text("Cyber Threat Intelligence Platform · v2.0", margin + 100, y + 22);
+  doc.text("Cyber Threat Intelligence Platform · v2.0", margin + 105, y + 26);
 
   // Right side: meta
   const ts = new Date(d.timestamp).toLocaleString();
-  doc.setFontSize(9);
+  doc.setFontSize(10);
   doc.setTextColor(71, 85, 105);
-  doc.text(`Report generated: ${ts}`, pageWidth - margin, y + 6, { align: "right" });
-  doc.text(`Target IP: ${d.ip}`, pageWidth - margin, y + 18, { align: "right" });
+  doc.text(`Report generated: ${ts}`, pageWidth - margin, y + 8, { align: "right" });
+  doc.text(`Target IP: ${d.ip}`, pageWidth - margin, y + 22, { align: "right" });
 
-  y += 30;
+  y += 48;
   doc.setDrawColor(220, 220, 220);
+  doc.setLineWidth(0.5);
   doc.line(margin, y, pageWidth - margin, y);
-  y += 18;
+  y += 28;
 
   // ---------- Helper: section heading ----------
   const sectionHeading = (label: string) => {
-    if (y > pageHeight - 80) {
+    // Always start a new page for each numbered section — clean, no cramped layouts.
+    if (y > margin + 20) {
       doc.addPage();
       y = margin;
     }
+    // Extra breathing room before the heading
+    y += 10;
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(12);
+    doc.setFontSize(14);
     doc.setTextColor(220, 38, 38);
     doc.text(label, margin, y);
     doc.setDrawColor(220, 38, 38);
     doc.setLineWidth(1);
-    doc.line(margin, y + 3, pageWidth - margin, y + 3);
-    y += 14;
+    doc.line(margin, y + 4, pageWidth - margin, y + 4);
+    y += 20;
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
+    doc.setFontSize(10);
     doc.setTextColor(51, 65, 85);
   };
 
@@ -235,12 +239,12 @@ function downloadPdfReport(d: AggregateResult) {
       body: rows.map(([k, v]) => [k, v]),
       theme: "striped",
       margin: { left: margin, right: margin },
-      styles: { fontSize: 9, cellPadding: 4, textColor: [30, 41, 59] },
-      headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold" },
-      columnStyles: { 0: { cellWidth: contentWidth * 0.35, fontStyle: "bold", textColor: [100, 116, 139] } },
+      styles: { fontSize: 10, cellPadding: 6, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
+      headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold", fontSize: 10 },
+      columnStyles: { 0: { cellWidth: contentWidth * 0.32, fontStyle: "bold", textColor: [100, 116, 139] } },
     });
     // @ts-ignore — autoTable augments doc with lastAutoTable
-    y = (doc as any).lastAutoTable.finalY + 12;
+    y = (doc as any).lastAutoTable.finalY + 18;
   };
 
   // ---------- 1. Executive Summary ----------
@@ -250,52 +254,63 @@ function downloadPdfReport(d: AggregateResult) {
   const vt = rep?.virusTotal;
   const verdictColor = classifyColorRgb(rep?.classification || "");
 
-  // Three summary cards in a row
-  const cardW = (contentWidth - 20) / 3;
-  const cardH = 50;
+  // Three summary cards in a row — taller, with bigger labels and value text.
+  const cardGap = 16;
+  const cardW = (contentWidth - cardGap * 2) / 3;
+  const cardH = 72;
   // Card 1: composite score
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(220, 220, 220);
-  doc.roundedRect(margin, y, cardW, cardH, 4, 4, "FD");
-  doc.setFontSize(8);
+  doc.setLineWidth(0.5);
+  doc.roundedRect(margin, y, cardW, cardH, 6, 6, "FD");
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
   doc.setTextColor(100, 116, 139);
-  doc.text("COMPOSITE SCORE", margin + 8, y + 14);
+  doc.text("COMPOSITE SCORE", margin + 12, y + 18);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(20);
+  doc.setFontSize(26);
   doc.setTextColor(15, 23, 42);
-  doc.text(`${rep?.score ?? "-"}/100`, margin + 8, y + 38);
+  doc.text(`${rep?.score ?? "-"}`, margin + 12, y + 48);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.setTextColor(148, 163, 184);
+  doc.text("/100", margin + 12 + doc.getTextWidth(`${rep?.score ?? "-"}`) * 1.05, y + 48);
 
-  // Card 2: classification (color-coded)
+  // Card 2: classification (color-coded, bold border)
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(verdictColor[0], verdictColor[1], verdictColor[2]);
-  doc.setLineWidth(1.5);
-  doc.roundedRect(margin + cardW + 10, y, cardW, cardH, 4, 4, "FD");
-  doc.setLineWidth(0.2);
+  doc.setLineWidth(2);
+  doc.roundedRect(margin + cardW + cardGap, y, cardW, cardH, 6, 6, "FD");
+  doc.setLineWidth(0.5);
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
+  doc.setFontSize(9);
   doc.setTextColor(100, 116, 139);
-  doc.text("CLASSIFICATION", margin + cardW + 18, y + 14);
+  doc.text("CLASSIFICATION", margin + cardW + cardGap + 12, y + 18);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(20);
+  doc.setFontSize(22);
   doc.setTextColor(verdictColor[0], verdictColor[1], verdictColor[2]);
-  doc.text(rep?.classification || "—", margin + cardW + 18, y + 38);
+  doc.text(rep?.classification || "—", margin + cardW + cardGap + 12, y + 48);
 
   // Card 3: VT engines
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(220, 220, 220);
-  doc.roundedRect(margin + (cardW + 10) * 2, y, cardW, cardH, 4, 4, "FD");
+  doc.roundedRect(margin + (cardW + cardGap) * 2, y, cardW, cardH, 6, 6, "FD");
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
+  doc.setFontSize(9);
   doc.setTextColor(100, 116, 139);
-  doc.text("VIRUSTOTAL ENGINES", margin + (cardW + 10) * 2 + 8, y + 14);
+  doc.text("VIRUSTOTAL ENGINES", margin + (cardW + cardGap) * 2 + 12, y + 18);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(20);
+  doc.setFontSize(26);
   doc.setTextColor(15, 23, 42);
-  doc.text(`${vt?.flaggedEnginesCount ?? "-"}/${vt?.totalEngines ?? "-"}`, margin + (cardW + 10) * 2 + 8, y + 38);
+  doc.text(
+    `${vt?.flaggedEnginesCount ?? "-"}/${vt?.totalEngines ?? "-"}`,
+    margin + (cardW + cardGap) * 2 + 12,
+    y + 48
+  );
 
-  y += cardH + 12;
+  y += cardH + 24;
 
-  // Verdict narrative
+  // Verdict narrative — more space around it
   const verdict =
     rep?.classification === "MALICIOUS"
       ? "Multiple sources agree this IP is associated with malicious activity. Immediate containment and investigation are recommended."
@@ -303,11 +318,11 @@ function downloadPdfReport(d: AggregateResult) {
       ? "Some sources flagged this IP. Investigate before allowing traffic from this host."
       : "No source flagged this IP as malicious. Treat as benign unless new intelligence emerges.";
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
+  doc.setFontSize(10);
   doc.setTextColor(51, 65, 85);
   const wrapped = doc.splitTextToSize(verdict, contentWidth);
   doc.text(wrapped, margin, y);
-  y += wrapped.length * 11 + 8;
+  y += wrapped.length * 14 + 18;
 
   // ---------- 2. Geolocation & ASN ----------
   sectionHeading("2. Geolocation & ASN");
@@ -326,14 +341,14 @@ function downloadPdfReport(d: AggregateResult) {
       ["Timezone", geo.timezone || "-"],
       ["rDNS", geo.reverse || "-"],
     ]);
-    doc.setFontSize(8);
+    doc.setFontSize(9);
     doc.setTextColor(148, 163, 184);
     doc.text(`Source: ${geo.provider || "ipwho.is"}`, margin, y);
-    y += 14;
+    y += 22;
   } else {
     doc.setTextColor(148, 163, 184);
     doc.text(`Geolocation lookup failed: ${geo?.error || "no data"}`, margin, y);
-    y += 14;
+    y += 22;
   }
 
   // ---------- 3. Open Ports & Services ----------
@@ -352,18 +367,18 @@ function downloadPdfReport(d: AggregateResult) {
       ["Known CVEs", (ports.vulns || []).slice(0, 15).join(", ") || "none"],
       ["CPEs", (ports.cpes || []).slice(0, 5).join(", ") || "-"],
     ]);
-    doc.setFontSize(8);
+    doc.setFontSize(9);
     doc.setTextColor(148, 163, 184);
     doc.text(
       `Source: Shodan InternetDB · ${ports.ports?.length || 0} ports · ${ports.hostnames?.length || 0} hostnames · ${ports.vulns?.length || 0} CVEs`,
       margin,
       y
     );
-    y += 14;
+    y += 22;
   } else {
     doc.setTextColor(148, 163, 184);
     doc.text(`Shodan lookup failed: ${ports?.error || "no data"}`, margin, y);
-    y += 14;
+    y += 22;
   }
 
   // ---------- 4. Reputation — VirusTotal ----------
@@ -384,7 +399,7 @@ function downloadPdfReport(d: AggregateResult) {
       ],
       ["Last analysis", vt.lastAnalysisDate ? new Date(vt.lastAnalysisDate).toLocaleString() : "-"],
     ]);
-    doc.setFontSize(8);
+    doc.setFontSize(9);
     doc.setTextColor(8, 145, 178);
     doc.textWithLink(
       `Open full VirusTotal report ↗`,
@@ -392,11 +407,11 @@ function downloadPdfReport(d: AggregateResult) {
       y,
       { url: `https://www.virustotal.com/gui/ip-address/${encodeURIComponent(d.ip)}` }
     );
-    y += 14;
+    y += 22;
   } else {
     doc.setTextColor(148, 163, 184);
     doc.text(`VirusTotal not available: ${vt?.error || "no data"}`, margin, y);
-    y += 14;
+    y += 22;
   }
 
   // ---------- 5. DNSBL / Blacklist Summary ----------
@@ -424,10 +439,10 @@ function downloadPdfReport(d: AggregateResult) {
         y = margin;
       }
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(10);
+      doc.setFontSize(11);
       doc.setTextColor(15, 23, 42);
       doc.text(`Flagged DNSBL zones (${blListed.length})`, margin, y);
-      y += 4;
+      y += 8;
       autoTable(doc, {
         startY: y,
         head: [["Status", "Zone", "Reason"]],
@@ -438,36 +453,36 @@ function downloadPdfReport(d: AggregateResult) {
         ]),
         theme: "grid",
         margin: { left: margin, right: margin },
-        styles: { fontSize: 8, cellPadding: 3, textColor: [30, 41, 59] },
-        headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold" },
-        columnStyles: { 0: { cellWidth: 90 }, 1: { cellWidth: 160 } },
+        styles: { fontSize: 9, cellPadding: 5, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
+        headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold", fontSize: 10 },
+        columnStyles: { 0: { cellWidth: 100 }, 1: { cellWidth: 170 } },
       });
       // @ts-ignore
       y = (doc as any).lastAutoTable.finalY + 8;
       if (blListed.length > 30) {
-        doc.setFontSize(8);
+        doc.setFontSize(9);
         doc.setTextColor(148, 163, 184);
         doc.text(
           `+ ${blListed.length - 30} more — see full report on multirbl.valli.org.`,
           margin,
           y
         );
-        y += 12;
+        y += 16;
       }
     } else {
-      doc.setFontSize(9);
+      doc.setFontSize(10);
       doc.setTextColor(148, 163, 184);
       doc.text("No DNSBL zone flagged this IP.", margin, y);
-      y += 14;
+      y += 22;
     }
-    doc.setFontSize(8);
+    doc.setFontSize(9);
     doc.setTextColor(8, 145, 178);
     doc.textWithLink("Open full multirbl.valli.org report ↗", margin, y, { url: bl.embedded_url });
-    y += 14;
+    y += 22;
   } else {
     doc.setTextColor(148, 163, 184);
     doc.text(`Blacklist lookup failed: ${bl?.error || "no data"}`, margin, y);
-    y += 14;
+    y += 22;
   }
 
   // ---------- 6. Threat Intel Sources ----------
@@ -479,16 +494,16 @@ function downloadPdfReport(d: AggregateResult) {
       body: rep.threatIntel.map((t) => [t.source, t.verdict, t.details || "-"]),
       theme: "grid",
       margin: { left: margin, right: margin },
-      styles: { fontSize: 8, cellPadding: 3, textColor: [30, 41, 59] },
-      headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold" },
-      columnStyles: { 0: { cellWidth: 110, fontStyle: "bold" }, 1: { cellWidth: 90 } },
+      styles: { fontSize: 9, cellPadding: 5, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
+      headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold", fontSize: 10 },
+      columnStyles: { 0: { cellWidth: 120, fontStyle: "bold" }, 1: { cellWidth: 100 } },
     });
     // @ts-ignore
-    y = (doc as any).lastAutoTable.finalY + 14;
+    y = (doc as any).lastAutoTable.finalY + 18;
   } else {
     doc.setTextColor(148, 163, 184);
     doc.text("No threat intel data.", margin, y);
-    y += 14;
+    y += 22;
   }
 
   // ---------- 7. Additional Signals ----------
@@ -500,26 +515,26 @@ function downloadPdfReport(d: AggregateResult) {
       body: rep.signals.map((s) => [s.source, `+${s.weight}`, s.detail]),
       theme: "grid",
       margin: { left: margin, right: margin },
-      styles: { fontSize: 8, cellPadding: 3, textColor: [30, 41, 59] },
-      headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold" },
-      columnStyles: { 0: { cellWidth: 110, fontStyle: "bold" }, 1: { cellWidth: 50 } },
+      styles: { fontSize: 9, cellPadding: 5, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
+      headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold", fontSize: 10 },
+      columnStyles: { 0: { cellWidth: 120, fontStyle: "bold" }, 1: { cellWidth: 60 } },
     });
     // @ts-ignore
-    y = (doc as any).lastAutoTable.finalY + 14;
+    y = (doc as any).lastAutoTable.finalY + 18;
   } else {
     doc.setTextColor(148, 163, 184);
     doc.text("No additional signals.", margin, y);
-    y += 14;
+    y += 22;
   }
 
   // ---------- 8. Methodology & Sources ----------
   sectionHeading("8. Methodology & Sources");
-  doc.setFontSize(9);
+  doc.setFontSize(10);
   doc.setTextColor(51, 65, 85);
   const methodology =
     "This report was generated by aggregating live data from the following open and free-tier intelligence services:";
   doc.text(doc.splitTextToSize(methodology, contentWidth), margin, y);
-  y += 22;
+  y += 24;
 
   autoTable(doc, {
     startY: y,
@@ -533,14 +548,14 @@ function downloadPdfReport(d: AggregateResult) {
     ],
     theme: "grid",
     margin: { left: margin, right: margin },
-    styles: { fontSize: 8, cellPadding: 3, textColor: [30, 41, 59] },
-    headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold" },
-    columnStyles: { 0: { cellWidth: 130, fontStyle: "bold" } },
+    styles: { fontSize: 9, cellPadding: 5, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
+    headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold", fontSize: 10 },
+    columnStyles: { 0: { cellWidth: 140, fontStyle: "bold" } },
   });
   // @ts-ignore
-  y = (doc as any).lastAutoTable.finalY + 14;
+  y = (doc as any).lastAutoTable.finalY + 20;
 
-  doc.setFontSize(8);
+  doc.setFontSize(9);
   doc.setTextColor(100, 116, 139);
   doc.text(
     doc.splitTextToSize(
@@ -550,7 +565,7 @@ function downloadPdfReport(d: AggregateResult) {
     margin,
     y
   );
-  y += 28;
+  y += 32;
 
   // ---------- Footer on every page ----------
   const pageCount = doc.getNumberOfPages();
@@ -561,10 +576,10 @@ function downloadPdfReport(d: AggregateResult) {
     doc.text(
       `MONITOR-THREAT v2.0  ·  Generated ${ts}  ·  Page ${i} of ${pageCount}`,
       pageWidth / 2,
-      pageHeight - 18,
+      pageHeight - 22,
       { align: "center" }
     );
-    doc.text("This report is for informational purposes only and does not constitute legal advice.", pageWidth / 2, pageHeight - 8, { align: "center" });
+    doc.text("This report is for informational purposes only and does not constitute legal advice.", pageWidth / 2, pageHeight - 10, { align: "center" });
   }
 
   // ---------- Trigger download ----------
