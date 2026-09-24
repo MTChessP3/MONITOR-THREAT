@@ -83,6 +83,43 @@ const MONITOR_SCRIPT = `
   if (meta) { parent.postMessage({type:'hiddenRedirect', url: (meta.getAttribute('content')||'').match(/url=(.+)/i) ? RegExp.$1 : ''}, '*'); }
   // Notify parent that monitoring is active
   parent.postMessage({type:'sandboxReady'}, '*');
+
+  // SELF-SCREENSHOT: load html2canvas from CDN and capture screenshots
+  // The popup captures ITSELF (same-origin = no CORS issues) and sends
+  // the PNG data to the parent via postMessage.
+  function loadScript(src) {
+    return new Promise(function(resolve, reject) {
+      var s = document.createElement('script');
+      s.src = src; s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+
+  loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js')
+    .then(function() {
+      // html2canvas loaded — capture screenshots at 6s, 12s, 18s
+      var times = [6000, 12000, 18000];
+      times.forEach(function(delay) {
+        setTimeout(function() {
+          try {
+            html2canvas(document.body, {
+              width: 1280, height: 720, windowWidth: 1280, windowHeight: 720,
+              useCORS: true, allowTaint: true, logging: false, scale: 1,
+              backgroundColor: '#ffffff'
+            }).then(function(canvas) {
+              parent.postMessage({type:'screenshot', dataUrl: canvas.toDataURL('image/png'), delay: delay}, '*');
+            }).catch(function(e) {
+              parent.postMessage({type:'screenshotError', delay: delay, error: String(e).slice(0,200)}, '*');
+            });
+          } catch(e) {
+            parent.postMessage({type:'screenshotError', delay: delay, error: String(e).slice(0,200)}, '*');
+          }
+        }, delay);
+      });
+    })
+    .catch(function(e) {
+      parent.postMessage({type:'screenshotError', delay: 0, error: 'Failed to load html2canvas: ' + String(e).slice(0,200)}, '*');
+    });
 })();
 </script>
 `;

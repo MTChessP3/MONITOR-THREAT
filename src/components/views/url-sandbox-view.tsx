@@ -281,6 +281,39 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
           severity: "warning",
         });
         break;
+      case "screenshot":
+        // Screenshot capturado por el popup mismo (via html2canvas inyectado por el proxy)
+        if (d.dataUrl) {
+          screenshots.push(d.dataUrl);
+          onProgress(Date.now() - startTime, `Screenshot capturado a los ${(d.delay / 1000).toFixed(0)}s`);
+          // Dibujar en el canvas de video
+          try {
+            const img = new Image();
+            img.onload = () => {
+              if (videoCtx) {
+                videoCtx.fillStyle = "#ffffff";
+                videoCtx.fillRect(0, 0, 1280, 720);
+                videoCtx.drawImage(img, 0, 0, 1280, 720);
+                videoCtx.fillStyle = "rgba(0,0,0,0.7)";
+                videoCtx.fillRect(0, 0, 1280, 30);
+                videoCtx.fillStyle = "#00ff00";
+                videoCtx.font = "14px monospace";
+                videoCtx.fillText(`Sandbox — ${(d.delay / 1000).toFixed(0)}s / 20s — ${url.slice(0, 60)}`, 10, 20);
+              }
+            };
+            img.src = d.dataUrl;
+          } catch {}
+        }
+        break;
+      case "screenshotError":
+        timeline.push({
+          time: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
+          timestamp: new Date().toISOString(),
+          type: "screenshot-error",
+          description: `Screenshot falló a los ${(d.delay / 1000).toFixed(0)}s: ${d.error || "unknown"}`,
+          severity: "warning",
+        });
+        break;
     }
   };
   window.addEventListener("message", messageHandler);
@@ -369,14 +402,17 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   // Modificamos el handler de popups para añadir al timeline
   const originalPopupHandler = messageHandler;
 
-  onProgress(3000, "Capturing screenshots of rendered page...");
+  onProgress(3000, "Waiting for page to render — screenshots are self-captured by the popup...");
 
-  // Strategy: use html2canvas on the popup's document.body.
-  // Since the proxy serves the page from our own domain (same-origin),
-  // html2canvas CAN access the DOM and render a real screenshot.
-  // No getDisplayMedia needed — no permission prompts, no black screens.
+  // Screenshots are now captured BY THE POPUP ITSELF.
+  // The proxy injects html2canvas (via CDN) into the popup's page, and
+  // the popup calls html2canvas(document.body) on ITSELF at 6s, 12s, 18s.
+  // Results are sent back to us via postMessage({type:'screenshot', dataUrl:...}).
+  // This works because the popup is same-origin (served by our proxy) and
+  // html2canvas runs INSIDE the popup with full access to its own DOM.
+  // No cross-origin issues, no black screens, no permission prompts.
 
-  // Canvas for video recording (we draw screenshots into it)
+  // Canvas for video recording (we draw received screenshots into it)
   const videoCanvas = document.createElement("canvas");
   videoCanvas.width = 1280;
   videoCanvas.height = 720;
@@ -387,49 +423,6 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) videoChunks.push(e.data); };
   mediaRecorder.start();
 
-  // Capture screenshots at 6s, 12s, 18s using html2canvas
-  const screenshotTimes = [6000, 12000, 18000];
-
-  const captureScreenshot = async (delayMs: number) => {
-    await new Promise(r => setTimeout(r, delayMs));
-    onProgress(Date.now() - startTime, `Screenshot at ${(delayMs / 1000).toFixed(0)}s...`);
-    try {
-      if (popup.document && popup.document.body) {
-        const canvas = await html2canvas(popup.document.body, {
-          width: 1280, height: 720, windowWidth: 1280, windowHeight: 720,
-          useCORS: true, allowTaint: false, logging: false, scale: 1,
-          backgroundColor: "#ffffff",
-        });
-        const dataUrl = canvas.toDataURL("image/png");
-        screenshots.push(dataUrl);
-        // Draw this screenshot into the video canvas
-        const img = new Image();
-        img.onload = () => {
-          videoCtx.fillStyle = "#ffffff";
-          videoCtx.fillRect(0, 0, 1280, 720);
-          videoCtx.drawImage(img, 0, 0, 1280, 720);
-          // Add a timestamp overlay on the video frame
-          videoCtx.fillStyle = "rgba(0,0,0,0.7)";
-          videoCtx.fillRect(0, 0, 1280, 30);
-          videoCtx.fillStyle = "#00ff00";
-          videoCtx.font = "14px monospace";
-          videoCtx.fillText(`MONITOR-THREAT Sandbox — ${(delayMs / 1000).toFixed(0)}s / 20s — ${url.slice(0, 60)}`, 10, 20);
-        };
-        img.src = dataUrl;
-      }
-    } catch {
-      // If html2canvas fails (rare with same-origin), draw a white placeholder
-      videoCtx.fillStyle = "#ffffff";
-      videoCtx.fillRect(0, 0, 1280, 720);
-      videoCtx.fillStyle = "#999";
-      videoCtx.font = "16px monospace";
-      videoCtx.fillText(`Screenshot at ${(delayMs / 1000).toFixed(0)}s — page content unavailable`, 20, 360);
-    }
-  };
-
-  // Capture screenshots at 3 time points (non-blocking)
-  const screenshotPromises = screenshotTimes.map(t => captureScreenshot(t));
-
   // Progress bar + live stats in video
   const progressInterval = setInterval(() => {
     const elapsed = Date.now() - startTime;
@@ -439,7 +432,7 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
     videoCtx.fillRect(0, 690, 1280, 30);
     videoCtx.fillStyle = "#00ff00";
     videoCtx.font = "12px monospace";
-    videoCtx.fillText(`Time: ${(elapsed / 1000).toFixed(1)}s / 20s | Network: ${network.length} | Console: ${consoleLog.length} | Errors: ${errors.length} | Popups: ${popups.length}`, 10, 710);
+    videoCtx.fillText(`Time: ${(elapsed / 1000).toFixed(1)}s / 20s | Network: ${network.length} | Console: ${consoleLog.length} | Errors: ${errors.length} | Popups: ${popups.length} | Screenshots: ${screenshots.length}`, 10, 710);
   }, 500);
 
   // Wait for SANDBOX_DURATION
@@ -448,9 +441,6 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   clearInterval(progressInterval);
   clearInterval(redirectInterval);
   window.removeEventListener("message", messageHandler);
-
-  // Wait for any pending screenshots
-  await Promise.allSettled(screenshotPromises);
 
   // Stop video recording
   await new Promise<void>(resolve => {
