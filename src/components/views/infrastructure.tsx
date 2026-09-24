@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   ExternalLink,
   ShieldAlert,
+  Printer,
 } from "lucide-react";
 
 import {
@@ -161,9 +162,346 @@ const CATEGORY_BADGE: Record<BlacklistEntry["category"], { label: string; cls: s
   failed: { label: "FAILED", cls: "bg-zinc-700 text-zinc-400" },
 };
 
+// ---------- Printable HTML report ----------
+// Builds a self-contained, print-friendly HTML report from a successful
+// aggregate query and opens it in a new window. The user can then use the
+// browser's "Save as PDF" (or print) dialog to export it.
+
+function classifyColor(c: string): string {
+  if (c === "MALICIOUS") return "#dc2626";
+  if (c === "SUSPICIOUS") return "#ca8a04";
+  return "#16a34a";
+}
+
+function escapeHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildReportHtml(d: AggregateResult): string {
+  const vt = d.reputation?.virusTotal;
+  const geo = d.geo;
+  const ports = d.ports;
+  const bl = d.blacklists;
+  const rep = d.reputation;
+  const ts = new Date(d.timestamp).toLocaleString();
+
+  // VT stats row
+  const vtStats = vt?.lastAnalysisStats;
+  const vtStatsHtml = vtStats
+    ? `
+      <table class="stats-grid">
+        <tr>
+          <td><div class="stat stat-mal">${vtStats.malicious}</div><div class="lbl">Malicious</div></td>
+          <td><div class="stat stat-sus">${vtStats.suspicious}</div><div class="lbl">Suspicious</div></td>
+          <td><div class="stat stat-und">${vtStats.undetected}</div><div class="lbl">Undetected</div></td>
+          <td><div class="stat stat-har">${vtStats.harmless}</div><div class="lbl">Harmless</div></td>
+          <td><div class="stat stat-tmo">${vtStats.timeout}</div><div class="lbl">Timeout</div></td>
+        </tr>
+      </table>`
+    : "";
+
+  // Blacklist summary
+  const blSummary = bl?.summary;
+  const blSummaryHtml = blSummary
+    ? `
+      <table class="stats-grid">
+        <tr>
+          <td><div class="stat stat-mal">${blSummary.blacklisted}</div><div class="lbl">Blacklisted</div></td>
+          <td><div class="stat stat-sus">${blSummary.brownlisted}</div><div class="lbl">Brownlisted</div></td>
+          <td><div class="stat stat-und">${blSummary.yellowlisted}</div><div class="lbl">Yellowlisted</div></td>
+          <td><div class="stat stat-har">${blSummary.whitelisted}</div><div class="lbl">Whitelisted</div></td>
+          <td><div class="stat stat-tmo">${blSummary.notListed}</div><div class="lbl">Not listed</div></td>
+        </tr>
+      </table>`
+    : "";
+
+  // Flagged DNSBL entries (only listed ones, top 20)
+  const blListed = (bl?.entries || []).filter(
+    (e) => e.category === "black" || e.category === "brown" || e.category === "yellow"
+  );
+  const blEntriesHtml = blListed.length
+    ? `
+        <h3>Flagged DNSBL zones (${blListed.length})</h3>
+        <table class="data-table">
+          <thead>
+            <tr><th>Status</th><th>Zone</th><th>Reason</th></tr>
+          </thead>
+          <tbody>
+            ${blListed
+              .slice(0, 20)
+              .map(
+                (e) => `<tr>
+              <td><span class="badge badge-${e.category}">${escapeHtml(
+                CATEGORY_BADGE[e.category].label
+              )}</span></td>
+              <td><code>${escapeHtml(e.zone)}</code></td>
+              <td>${escapeHtml(e.reason || e.result)}</td>
+            </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+        ${blListed.length > 20 ? `<p class="muted">+ ${blListed.length - 20} more (see full report on multirbl.valli.org).</p>` : ""}`
+    : `<p class="muted">No DNSBL zone flagged this IP.</p>`;
+
+  // Threat intel table
+  const tiHtml = (rep?.threatIntel || [])
+    .map(
+      (t) => `<tr>
+      <td><code>${escapeHtml(t.source)}</code></td>
+      <td><span class="badge badge-${t.verdict === "malicious" || t.verdict === "blacklisted" ? "black" : t.verdict === "suspicious" || t.verdict === "tagged" ? "yellow" : "white"}">${escapeHtml(t.verdict)}</span></td>
+      <td>${escapeHtml(t.details || "-")}</td>
+    </tr>`
+    )
+    .join("");
+
+  // Secondary signals
+  const sigHtml = (rep?.signals || [])
+    .map(
+      (s) => `<tr>
+      <td><code>${escapeHtml(s.source)}</code></td>
+      <td>+${s.weight}</td>
+      <td>${escapeHtml(s.detail)}</td>
+    </tr>`
+    )
+    .join("");
+
+  // Ports
+  const portsHtml = (ports?.ports || [])
+    .map((p) => `<span class="port">:${escapeHtml(String(p))}${PORT_SERVICES[p] ? ` <em>${escapeHtml(PORT_SERVICES[p])}</em>` : ""}</span>`)
+    .join(" ");
+
+  const hostnamesHtml = (ports?.hostnames || [])
+    .map((h) => `<code>${escapeHtml(h)}</code>`)
+    .join(", ");
+
+  const vulnsHtml = (ports?.vulns || []).length
+    ? (ports?.vulns || [])
+        .slice(0, 15)
+        .map((v) => `<span class="cve">${escapeHtml(v)}</span>`)
+        .join(" ")
+    : "";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>IP Intel Report — ${escapeHtml(d.ip)}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1a1a1a; margin: 32px; line-height: 1.5; }
+  h1 { font-size: 22px; margin: 0 0 4px 0; }
+  h2 { font-size: 16px; margin: 24px 0 8px 0; padding-bottom: 4px; border-bottom: 2px solid #dc2626; }
+  h3 { font-size: 13px; margin: 16px 0 6px 0; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 1px solid #ddd; margin-bottom: 16px; }
+  .brand { font-size: 12px; color: #666; }
+  .brand strong { color: #dc2626; font-size: 14px; letter-spacing: 0.5px; }
+  .meta { font-size: 11px; color: #666; text-align: right; }
+  .summary { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  .summary-card { border: 1px solid #ddd; border-radius: 6px; padding: 10px 14px; }
+  .summary-card .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+  .summary-card .value { font-size: 18px; font-weight: 700; margin-top: 2px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .verdict { text-align: center; border: 2px solid; }
+  .verdict .value { font-size: 28px; }
+  .stats-grid { width: 100%; border-collapse: separate; border-spacing: 6px; margin: 8px 0; }
+  .stats-grid td { text-align: center; border: 1px solid #ddd; border-radius: 4px; padding: 6px; }
+  .stat { font-size: 20px; font-weight: 700; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .stat-mal { color: #dc2626; }
+  .stat-sus { color: #ea580c; }
+  .stat-und { color: #ca8a04; }
+  .stat-har { color: #16a34a; }
+  .stat-tmo { color: #6b7280; }
+  .lbl { font-size: 10px; color: #666; text-transform: uppercase; }
+  .data-table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 11px; }
+  .data-table th, .data-table td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; vertical-align: top; }
+  .data-table th { background: #f5f5f5; font-weight: 600; }
+  .kv { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .kv td { border: 1px solid #eee; padding: 4px 8px; }
+  .kv td:first-child { background: #fafafa; font-weight: 600; width: 30%; color: #555; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-family: ui-monospace, "SF Mono", Menlo, monospace; text-transform: uppercase; color: #fff; }
+  .badge-black { background: #dc2626; }
+  .badge-brown { background: #ea580c; }
+  .badge-yellow { background: #ca8a04; color: #000; }
+  .badge-white { background: #16a34a; }
+  .badge-neutral { background: #0891b2; }
+  .badge-not_listed { background: #d4d4d4; color: #666; }
+  .badge-failed { background: #525252; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; background: #f5f5f5; padding: 1px 4px; border-radius: 2px; }
+  .port { display: inline-block; padding: 2px 6px; margin: 2px; border: 1px solid #ddd; border-radius: 3px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; }
+  .port em { color: #666; font-style: normal; font-size: 10px; margin-left: 4px; }
+  .cve { display: inline-block; padding: 1px 5px; margin: 2px; background: #fee2e2; color: #991b1b; border-radius: 2px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; }
+  .muted { color: #666; font-size: 10px; }
+  .map-link { font-size: 11px; color: #0891b2; text-decoration: none; }
+  .section-note { font-size: 10px; color: #999; margin-top: 4px; }
+  @media print {
+    body { margin: 12mm; }
+    h2 { page-break-after: avoid; }
+    h3 { page-break-after: avoid; }
+    table { page-break-inside: avoid; }
+  }
+  @page { margin: 18mm; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>IP Intelligence Report</h1>
+      <div class="brand"><strong>MONITOR-THREAT</strong> · Cyber Threat Intelligence Platform · v2.0</div>
+    </div>
+    <div class="meta">
+      <div><strong>Report generated:</strong> ${ts}</div>
+      <div><strong>Target IP:</strong> <code>${escapeHtml(d.ip)}</code></div>
+    </div>
+  </div>
+
+  <!-- 1. Executive Summary -->
+  <h2>1. Executive Summary</h2>
+  <div class="summary">
+    <div class="summary-card">
+      <div class="label">Composite Score</div>
+      <div class="value">${rep?.score ?? "-"}/100</div>
+    </div>
+    <div class="summary-card verdict" style="border-color: ${classifyColor(rep?.classification || "")};">
+      <div class="label">Classification</div>
+      <div class="value" style="color: ${classifyColor(rep?.classification || "")};">${escapeHtml(rep?.classification || "—")}</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">VirusTotal Engines</div>
+      <div class="value">${vt?.flaggedEnginesCount ?? "-"}/${vt?.totalEngines ?? "-"}</div>
+    </div>
+  </div>
+  <p>Report for IP address <code>${escapeHtml(d.ip)}</code>, correlated across VirusTotal, multirbl.valli.org (DNSBL), Shodan InternetDB and ipwho.is geolocation. ${
+    rep?.classification === "MALICIOUS"
+      ? "Multiple sources agree this IP is associated with malicious activity. Immediate containment and investigation are recommended."
+      : rep?.classification === "SUSPICIOUS"
+      ? "Some sources flagged this IP. Investigate before allowing traffic from this host."
+      : "No source flagged this IP as malicious. Treat as benign unless new intelligence emerges."
+  }</p>
+
+  <!-- 2. Geolocation & ASN -->
+  <h2>2. Geolocation & ASN</h2>
+  ${geo && !geo.error ? `
+  <table class="kv">
+    <tr><td>IP</td><td><code>${escapeHtml(geo.ip)}</code></td></tr>
+    <tr><td>Country</td><td>${escapeHtml(geo.flagEmoji || "")} ${escapeHtml(geo.country)} (${escapeHtml(geo.countryCode)})</td></tr>
+    <tr><td>Region</td><td>${escapeHtml(geo.region || "-")}</td></tr>
+    <tr><td>City</td><td>${escapeHtml(geo.city)}</td></tr>
+    <tr><td>Coordinates</td><td><code>${geo.latitude}, ${geo.longitude}</code> · <a class="map-link" href="https://www.openstreetmap.org/?mlat=${geo.latitude}&mlon=${geo.longitude}#map=12/${geo.latitude}/${geo.longitude}" target="_blank">View on OpenStreetMap ↗</a></td></tr>
+    <tr><td>ASN</td><td><code>AS${escapeHtml(String(geo.asn || "-"))}</code></td></tr>
+    <tr><td>Organization</td><td>${escapeHtml(geo.organization || "-")}</td></tr>
+    <tr><td>ISP</td><td>${escapeHtml(geo.isp || "-")}</td></tr>
+    ${geo.domain ? `<tr><td>Domain</td><td><code>${escapeHtml(geo.domain)}</code></td></tr>` : ""}
+    <tr><td>Timezone</td><td>${escapeHtml(geo.timezone || "-")}</td></tr>
+    ${geo.reverse ? `<tr><td>rDNS</td><td><code>${escapeHtml(geo.reverse)}</code></td></tr>` : ""}
+  </table>
+  <div class="section-note">Source: ${escapeHtml(geo.provider || "ipwho.is")}</div>
+  ` : `<p class="muted">Geolocation lookup failed: ${escapeHtml(geo?.error || "no data")}</p>`}
+
+  <!-- 3. Open Ports & Services -->
+  <h2>3. Open Ports & Services</h2>
+  ${ports && !ports.error ? `
+  <p><strong>Open ports (${ports.ports?.length || 0}):</strong> ${portsHtml || "<em class='muted'>none recorded</em>"}</p>
+  ${hostnamesHtml ? `<p><strong>Hostnames:</strong> ${hostnamesHtml}</p>` : ""}
+  ${vulnsHtml ? `<p><strong>Known CVEs:</strong> ${vulnsHtml}</p>` : ""}
+  <div class="section-note">Source: Shodan InternetDB · ${ports.ports?.length || 0} ports · ${ports.hostnames?.length || 0} hostnames · ${ports.vulns?.length || 0} known CVEs</div>
+  ` : `<p class="muted">Shodan lookup failed: ${escapeHtml(ports?.error || "no data")}</p>`}
+
+  <!-- 4. Reputation (VirusTotal) -->
+  <h2>4. Reputation — VirusTotal</h2>
+  ${vt?.available ? `
+  <table class="kv">
+    <tr><td>VT Score (composite)</td><td><strong style="color: ${classifyColor(vt.classification)};">${vt.score}/100 — ${escapeHtml(vt.classification)}</strong></td></tr>
+    <tr><td>Flagging engines</td><td>${vt.flaggedEnginesCount} / ${vt.totalEngines}</td></tr>
+    <tr><td>Community reputation</td><td>${vt.reputation > 0 ? "+" : ""}${vt.reputation}</td></tr>
+    <tr><td>Community votes</td><td>${vt.totalVotes.harmless} harmless · ${vt.totalVotes.malicious} malicious</td></tr>
+    ${vt.lastAnalysisDate ? `<tr><td>Last analysis</td><td>${new Date(vt.lastAnalysisDate).toLocaleString()}</td></tr>` : ""}
+  </table>
+  ${vtStatsHtml}
+  <div class="section-note"><a class="map-link" href="https://www.virustotal.com/gui/ip-address/${encodeURIComponent(d.ip)}" target="_blank">Open full VirusTotal report ↗</a></div>
+  ` : `<p class="muted">VirusTotal not available: ${escapeHtml(vt?.error || "no data")}</p>`}
+
+  <!-- 5. DNSBL / Blacklist Summary -->
+  <h2>5. DNSBL / Blacklist Summary</h2>
+  ${bl && !bl.error ? `
+  ${blSummaryHtml}
+  <table class="kv">
+    <tr><td>Total zones checked</td><td>${bl.summary.total}</td></tr>
+    <tr><td>Not listed</td><td>${bl.summary.notListed}</td></tr>
+    <tr><td>Failed queries</td><td>${bl.summary.failed}</td></tr>
+  </table>
+  ${blEntriesHtml}
+  <div class="section-note"><a class="map-link" href="${escapeHtml(bl.embedded_url)}" target="_blank">Open full multirbl.valli.org report ↗</a></div>
+  ` : `<p class="muted">Blacklist lookup failed: ${escapeHtml(bl?.error || "no data")}</p>`}
+
+  <!-- 6. Threat Intel Sources -->
+  <h2>6. Threat Intel Sources</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>Source</th><th>Verdict</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+      ${tiHtml || `<tr><td colspan="3" class="muted">No threat intel data.</td></tr>`}
+    </tbody>
+  </table>
+
+  <!-- 7. Additional Signals -->
+  <h2>7. Additional Signals</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>Source</th><th>Weight</th><th>Detail</th></tr>
+    </thead>
+    <tbody>
+      ${sigHtml || `<tr><td colspan="3" class="muted">No additional signals.</td></tr>`}
+    </tbody>
+  </table>
+
+  <!-- 8. Methodology -->
+  <h2>8. Methodology & Sources</h2>
+  <p>This report was generated by aggregating live data from the following open and free-tier intelligence services:</p>
+  <ul style="font-size: 11px; padding-left: 18px;">
+    <li><strong>ipwho.is / ip-api.com</strong> — IP geolocation and ASN (free, no API key).</li>
+    <li><strong>multirbl.valli.org</strong> — DNSBL lookup across 200+ blacklist zones, plus direct DNSBL DNS checks against 15 well-known zones (Spamhaus, SpamCop, SORBS, Barracuda, UCEProtect, CBL, Mailspike, SpamRats, …).</li>
+    <li><strong>Shodan InternetDB</strong> — open ports, hostnames, tags and known CVEs (free, no API key).</li>
+    <li><strong>VirusTotal v3</strong> — last analysis stats, per-engine verdicts, community votes and reputation score.</li>
+    <li><strong>AbuseIPDB</strong> — abuse reports in the last 90 days (optional, when ABUSEIPDB_API_KEY is configured).</li>
+  </ul>
+  <p class="section-note">Composite score = VirusTotal score (primary) + weighted signals from DNSBL, Shodan and AbuseIPDB (capped at 100). Classification thresholds: BENIGN &lt; 5, SUSPICIOUS 5–19, MALICIOUS ≥ 20.</p>
+
+  <div style="margin-top: 32px; padding-top: 12px; border-top: 1px solid #ddd; font-size: 10px; color: #999; text-align: center;">
+    MONITOR-THREAT v2.0 · Generated ${ts} · This report is for informational purposes only and does not constitute legal advice.
+  </div>
+</body>
+</html>`;
+}
+
+function printReport(d: AggregateResult | null) {
+  if (!d) return;
+  const html = buildReportHtml(d);
+  const w = window.open("", "_blank", "noopener,noreferrer,width=1024,height=768");
+  if (!w) {
+    alert(
+      "Please allow pop-ups to open the print report window. The browser blocked it."
+    );
+    return;
+  }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  // Give the document a beat to render before triggering print.
+  setTimeout(() => {
+    w.focus();
+    w.print();
+  }, 400);
+}
+
 // ---------- IP Intel (real APIs) ----------
 export function IpIntelView() {
-  const [input, setInput] = React.useState("8.8.8.8");
+  const [input, setInput] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [data, setData] = React.useState<AggregateResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -199,10 +537,8 @@ export function IpIntelView() {
     }
   }
 
-  React.useEffect(() => {
-    analyze("8.8.8.8");
-    return () => abortRef.current?.abort();
-  }, []);
+  // No auto-query on mount — the user must enter an IP and click Analyze.
+  // This way the module does not get stuck on the last query of a previous session.
 
   return (
     <ModuleShell
@@ -224,12 +560,13 @@ export function IpIntelView() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && analyze(input)}
+            autoFocus
           />
           <Button
             type="button"
             size="sm"
             onClick={() => analyze(input)}
-            disabled={loading}
+            disabled={loading || !input.trim()}
           >
             {loading ? (
               <>
@@ -242,6 +579,17 @@ export function IpIntelView() {
                 Analyze
               </>
             )}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => printReport(data)}
+            disabled={!data}
+            title={data ? "Open a printable HTML report in a new window" : "Run an analysis first"}
+          >
+            <Printer className="w-3.5 h-3.5 mr-2" />
+            Imprimir informe HTML
           </Button>
         </div>
       </div>
@@ -758,19 +1106,6 @@ export function IpIntelView() {
               <p className="text-sm text-muted-foreground">No data.</p>
             )}
           </Panel>
-
-          {/* Tags */}
-          {data.tags && data.tags.length > 0 && (
-            <Panel title="Tags" className="md:col-span-2">
-              <div className="flex flex-wrap gap-1.5">
-                {data.tags.map((t) => (
-                  <Badge key={t} variant="secondary" className="font-mono">
-                    #{t}
-                  </Badge>
-                ))}
-              </div>
-            </Panel>
-          )}
 
           <div className="md:col-span-2 text-[10px] text-muted-foreground font-mono">
             Query timestamp: {data.timestamp} · Powered by VirusTotal, ipwho.is, multirbl.valli.org,
