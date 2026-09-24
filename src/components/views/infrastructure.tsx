@@ -210,22 +210,24 @@ function downloadPdfReport(d: AggregateResult) {
   y += 28;
 
   // ---------- Helper: section heading ----------
+  // Flow naturally down the page; only break to a new page when there's
+  // not enough room for the heading + at least one row of content.
   const sectionHeading = (label: string) => {
-    // Always start a new page for each numbered section — clean, no cramped layouts.
-    if (y > margin + 20) {
+    if (y > pageHeight - margin - 120) {
       doc.addPage();
-      y = margin;
+      y = margin + 6;
+    } else {
+      // proportional breathing room between sections — not a forced new page
+      y += 20;
     }
-    // Extra breathing room before the heading
-    y += 10;
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(14);
+    doc.setFontSize(13);
     doc.setTextColor(220, 38, 38);
     doc.text(label, margin, y);
     doc.setDrawColor(220, 38, 38);
     doc.setLineWidth(1);
     doc.line(margin, y + 4, pageWidth - margin, y + 4);
-    y += 20;
+    y += 16;
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
     doc.setTextColor(51, 65, 85);
