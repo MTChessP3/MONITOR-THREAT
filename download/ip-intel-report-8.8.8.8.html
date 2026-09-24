@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>IP Intel Report — 8.8.8.8</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1a1a1a; margin: 32px; line-height: 1.5; }
+  h1 { font-size: 22px; margin: 0 0 4px 0; }
+  h2 { font-size: 16px; margin: 24px 0 8px 0; padding-bottom: 4px; border-bottom: 2px solid #dc2626; }
+  h3 { font-size: 13px; margin: 16px 0 6px 0; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 1px solid #ddd; margin-bottom: 16px; }
+  .brand { font-size: 12px; color: #666; }
+  .brand strong { color: #dc2626; font-size: 14px; letter-spacing: 0.5px; }
+  .meta { font-size: 11px; color: #666; text-align: right; }
+  .summary { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  .summary-card { border: 1px solid #ddd; border-radius: 6px; padding: 10px 14px; }
+  .summary-card .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+  .summary-card .value { font-size: 18px; font-weight: 700; margin-top: 2px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .verdict { text-align: center; border: 2px solid; }
+  .verdict .value { font-size: 28px; }
+  .stats-grid { width: 100%; border-collapse: separate; border-spacing: 6px; margin: 8px 0; }
+  .stats-grid td { text-align: center; border: 1px solid #ddd; border-radius: 4px; padding: 6px; }
+  .stat { font-size: 20px; font-weight: 700; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .stat-mal { color: #dc2626; }
+  .stat-sus { color: #ea580c; }
+  .stat-und { color: #ca8a04; }
+  .stat-har { color: #16a34a; }
+  .stat-tmo { color: #6b7280; }
+  .lbl { font-size: 10px; color: #666; text-transform: uppercase; }
+  .data-table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 11px; }
+  .data-table th, .data-table td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; vertical-align: top; }
+  .data-table th { background: #f5f5f5; font-weight: 600; }
+  .kv { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .kv td { border: 1px solid #eee; padding: 4px 8px; }
+  .kv td:first-child { background: #fafafa; font-weight: 600; width: 30%; color: #555; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-family: ui-monospace, "SF Mono", Menlo, monospace; text-transform: uppercase; color: #fff; }
+  .badge-black { background: #dc2626; }
+  .badge-brown { background: #ea580c; }
+  .badge-yellow { background: #ca8a04; color: #000; }
+  .badge-white { background: #16a34a; }
+  .badge-neutral { background: #0891b2; }
+  .badge-not_listed { background: #d4d4d4; color: #666; }
+  .badge-failed { background: #525252; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; background: #f5f5f5; padding: 1px 4px; border-radius: 2px; }
+  .port { display: inline-block; padding: 2px 6px; margin: 2px; border: 1px solid #ddd; border-radius: 3px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; }
+  .port em { color: #666; font-style: normal; font-size: 10px; margin-left: 4px; }
+  .cve { display: inline-block; padding: 1px 5px; margin: 2px; background: #fee2e2; color: #991b1b; border-radius: 2px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; }
+  .muted { color: #666; font-size: 10px; }
+  .map-link { font-size: 11px; color: #0891b2; text-decoration: none; }
+  .section-note { font-size: 10px; color: #999; margin-top: 4px; }
+  @media print {
+    body { margin: 12mm; }
+    h2 { page-break-after: avoid; }
+    h3 { page-break-after: avoid; }
+    table { page-break-inside: avoid; }
+  }
+  @page { margin: 18mm; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>IP Intelligence Report</h1>
+      <div class="brand"><strong>MONITOR-THREAT</strong> · Cyber Threat Intelligence Platform · v2.0</div>
+    </div>
+    <div class="meta">
+      <div><strong>Report generated:</strong> 9/24/2026, 2:16:03 AM</div>
+      <div><strong>Target IP:</strong> <code>8.8.8.8</code></div>
+    </div>
+  </div>
+
+  <!-- 1. Executive Summary -->
+  <h2>1. Executive Summary</h2>
+  <div class="summary">
+    <div class="summary-card">
+      <div class="label">Composite Score</div>
+      <div class="value">0/100</div>
+    </div>
+    <div class="summary-card verdict" style="border-color: #16a34a;">
+      <div class="label">Classification</div>
+      <div class="value" style="color: #16a34a;">BENIGN</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">VirusTotal Engines</div>
+      <div class="value">0/89</div>
+    </div>
+  </div>
+  <p>Report for IP address <code>8.8.8.8</code>, correlated across VirusTotal, multirbl.valli.org (DNSBL), Shodan InternetDB and ipwho.is geolocation. No source flagged this IP as malicious. Treat as benign unless new intelligence emerges.</p>
+
+  <!-- 2. Geolocation & ASN -->
+  <h2>2. Geolocation & ASN</h2>
+  
+  <table class="kv">
+    <tr><td>IP</td><td><code>8.8.8.8</code></td></tr>
+    <tr><td>Country</td><td>🇺🇸 United States (US)</td></tr>
+    <tr><td>Region</td><td>California</td></tr>
+    <tr><td>City</td><td>San Jose</td></tr>
+    <tr><td>Coordinates</td><td><code>37.3393939, -121.8949553</code> · <a class="map-link" href="https://www.openstreetmap.org/?mlat=37.3393939&mlon=-121.8949553#map=12/37.3393939/-121.8949553" target="_blank">View on OpenStreetMap ↗</a></td></tr>
+    <tr><td>ASN</td><td><code>AS15169</code></td></tr>
+    <tr><td>Organization</td><td>Google LLC</td></tr>
+    <tr><td>ISP</td><td>Google LLC</td></tr>
+    <tr><td>Domain</td><td><code>google.com</code></td></tr>
+    <tr><td>Timezone</td><td>America/Los_Angeles</td></tr>
+    
+  </table>
+  <div class="section-note">Source: ipwho.is</div>
+  
+
+  <!-- 3. Open Ports & Services -->
+  <h2>3. Open Ports & Services</h2>
+  
+  <p><strong>Open ports (2):</strong> <span class="port">:53 <em>DNS</em></span> <span class="port">:443 <em>HTTPS</em></span></p>
+  <p><strong>Hostnames:</strong> <code>dns.google</code>, <code>nationalgeographic.ee</code></p>
+  
+  <div class="section-note">Source: Shodan InternetDB · 2 ports · 2 hostnames · 0 known CVEs</div>
+  
+
+  <!-- 4. Reputation (VirusTotal) -->
+  <h2>4. Reputation — VirusTotal</h2>
+  
+  <table class="kv">
+    <tr><td>VT Score (composite)</td><td><strong style="color: #16a34a;">0/100 — BENIGN</strong></td></tr>
+    <tr><td>Flagging engines</td><td>0 / 89</td></tr>
+    <tr><td>Community reputation</td><td>+561</td></tr>
+    <tr><td>Community votes</td><td>294 harmless · 59 malicious</td></tr>
+    <tr><td>Last analysis</td><td>9/24/2026, 1:11:35 AM</td></tr>
+  </table>
+  
+      <table class="stats-grid">
+        <tr>
+          <td><div class="stat stat-mal">0</div><div class="lbl">Malicious</div></td>
+          <td><div class="stat stat-sus">0</div><div class="lbl">Suspicious</div></td>
+          <td><div class="stat stat-und">36</div><div class="lbl">Undetected</div></td>
+          <td><div class="stat stat-har">53</div><div class="lbl">Harmless</div></td>
+          <td><div class="stat stat-tmo">0</div><div class="lbl">Timeout</div></td>
+        </tr>
+      </table>
+  <div class="section-note"><a class="map-link" href="https://www.virustotal.com/gui/ip-address/8.8.8.8" target="_blank">Open full VirusTotal report ↗</a></div>
+  
+
+  <!-- 5. DNSBL / Blacklist Summary -->
+  <h2>5. DNSBL / Blacklist Summary</h2>
+  
+  
+      <table class="stats-grid">
+        <tr>
+          <td><div class="stat stat-mal">0</div><div class="lbl">Blacklisted</div></td>
+          <td><div class="stat stat-sus">0</div><div class="lbl">Brownlisted</div></td>
+          <td><div class="stat stat-und">0</div><div class="lbl">Yellowlisted</div></td>
+          <td><div class="stat stat-har">0</div><div class="lbl">Whitelisted</div></td>
+          <td><div class="stat stat-tmo">15</div><div class="lbl">Not listed</div></td>
+        </tr>
+      </table>
+  <table class="kv">
+    <tr><td>Total zones checked</td><td>15</td></tr>
+    <tr><td>Not listed</td><td>15</td></tr>
+    <tr><td>Failed queries</td><td>0</td></tr>
+  </table>
+  <p class="muted">No DNSBL zone flagged this IP.</p>
+  <div class="section-note"><a class="map-link" href="https://multirbl.valli.org/lookup/8.8.8.8.html" target="_blank">Open full multirbl.valli.org report ↗</a></div>
+  
+
+  <!-- 6. Threat Intel Sources -->
+  <h2>6. Threat Intel Sources</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>Source</th><th>Verdict</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+      <td><code>VirusTotal</code></td>
+      <td><span class="badge badge-white">benign</span></td>
+      <td>0/89 engines · 294/59 community votes · reputation 561</td>
+    </tr><tr>
+      <td><code>multirbl.valli.org</code></td>
+      <td><span class="badge badge-white">clean</span></td>
+      <td>15 DNSBL zones checked</td>
+    </tr><tr>
+      <td><code>Shodan InternetDB</code></td>
+      <td><span class="badge badge-white">benign</span></td>
+      <td>0 tags, 2 open ports</td>
+    </tr><tr>
+      <td><code>AbuseIPDB</code></td>
+      <td><span class="badge badge-white">not_configured</span></td>
+      <td>Set ABUSEIPDB_API_KEY env var to enable</td>
+    </tr>
+    </tbody>
+  </table>
+
+  <!-- 7. Additional Signals -->
+  <h2>7. Additional Signals</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>Source</th><th>Weight</th><th>Detail</th></tr>
+    </thead>
+    <tbody>
+      <tr><td colspan="3" class="muted">No additional signals.</td></tr>
+    </tbody>
+  </table>
+
+  <!-- 8. Methodology -->
+  <h2>8. Methodology & Sources</h2>
+  <p>This report was generated by aggregating live data from the following open and free-tier intelligence services:</p>
+  <ul style="font-size: 11px; padding-left: 18px;">
+    <li><strong>ipwho.is / ip-api.com</strong> — IP geolocation and ASN (free, no API key).</li>
+    <li><strong>multirbl.valli.org</strong> — DNSBL lookup across 200+ blacklist zones, plus direct DNSBL DNS checks against 15 well-known zones (Spamhaus, SpamCop, SORBS, Barracuda, UCEProtect, CBL, Mailspike, SpamRats, …).</li>
+    <li><strong>Shodan InternetDB</strong> — open ports, hostnames, tags and known CVEs (free, no API key).</li>
+    <li><strong>VirusTotal v3</strong> — last analysis stats, per-engine verdicts, community votes and reputation score.</li>
+    <li><strong>AbuseIPDB</strong> — abuse reports in the last 90 days (optional, when ABUSEIPDB_API_KEY is configured).</li>
+  </ul>
+  <p class="section-note">Composite score = VirusTotal score (primary) + weighted signals from DNSBL, Shodan and AbuseIPDB (capped at 100). Classification thresholds: BENIGN &lt; 5, SUSPICIOUS 5–19, MALICIOUS ≥ 20.</p>
+
+  <div style="margin-top: 32px; padding-top: 12px; border-top: 1px solid #ddd; font-size: 10px; color: #999; text-align: center;">
+    MONITOR-THREAT v2.0 · Generated 9/24/2026, 2:16:03 AM · This report is for informational purposes only and does not constitute legal advice.
+  </div>
+</body>
+</html>
