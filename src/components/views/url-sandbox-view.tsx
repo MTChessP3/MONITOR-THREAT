@@ -48,6 +48,38 @@ interface PopupEntry { url: string; count: number; }
 interface EvalEntry { code: string; timestamp: string; }
 interface CryptoEntry { script: string; miner: string; }
 
+// NUEVOS: tracking de redirecciones, timeline, vínculos externos, comportamiento
+interface RedirectEntry {
+  from: string;
+  to: string;
+  timestamp: string;
+  method: string; // "meta-refresh" | "js-location" | "window.location" | "window.open" | "http-redirect" | "href-change"
+  crossDomain: boolean;
+}
+
+interface TimelineEvent {
+  time: string; // elapsed seconds (e.g. "1.2s")
+  timestamp: string; // ISO
+  type: string; // "load" | "redirect" | "popup" | "error" | "eval" | "crypto" | "form-submit" | "mutation" | "console-error"
+  description: string;
+  severity: "info" | "warning" | "danger";
+}
+
+interface ExternalLink {
+  href: string;
+  text: string;
+  domain: string;
+  sameDomain: boolean;
+}
+
+type BehaviorType =
+  | "NORMAL"
+  | "REDIRECT_CHAIN"
+  | "POPUP_SPAM"
+  | "PHISHING_REDIRECT"
+  | "CRYPTO_MINING"
+  | "MIXED_THREAT";
+
 interface SandboxResult {
   url: string;
   timestamp: string;
@@ -56,6 +88,7 @@ interface SandboxResult {
   videoBlobUrl?: string;
   finalDom: string;
   finalTitle: string;
+  finalUrl: string; // NUEVO: URL final después de redirects
   network: NetworkEntry[];
   console: ConsoleEntry[];
   errors: string[];
@@ -71,6 +104,12 @@ interface SandboxResult {
   formAutoSubmit: boolean;
   hiddenRedirect: string | null;
   serviceWorker: boolean;
+  // NUEVOS:
+  redirects: RedirectEntry[];
+  timeline: TimelineEvent[];
+  externalLinks: ExternalLink[];
+  behavior: BehaviorType;
+  summary: string; // resumen ejecutivo en lenguaje natural
   riskScore: number;
   riskClassification: "SAFE" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
   verdict: string;
@@ -102,7 +141,14 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   let serviceWorker = false;
   let finalDom = "";
   let finalTitle = "";
+  let finalUrl = url;
   let loaded = false;
+  // NUEVOS:
+  const redirects: RedirectEntry[] = [];
+  const timeline: TimelineEvent[] = [];
+  const externalLinks: ExternalLink[] = [];
+  let lastPopupUrl = url;
+  let behavior: BehaviorType = "NORMAL";
 
   // Open target in a new window (avoids X-Frame-Options/CSP)
   onProgress(0, "Opening URL in sandbox window...");
@@ -292,6 +338,75 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   };
   window.addEventListener("message", messageHandler);
 
+  // NUEVO: Tracking de redirecciones del popup — monitorea location.href cada 500ms
+  let lastKnownUrl = url;
+  const redirectInterval = setInterval(() => {
+    let currentUrl: string | null = null;
+    try {
+      currentUrl = popup.location?.href || null;
+    } catch {
+      // Cross-origin: no podemos leer location.href. Intentamos con document.title
+      // como indicador indirecto de que la página cambió.
+      try {
+        const newTitle = popup.document?.title;
+        if (newTitle && newTitle !== finalTitle) {
+          finalTitle = newTitle;
+          timeline.push({
+            time: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
+            timestamp: new Date().toISOString(),
+            type: "title-change",
+            description: `Page title changed to "${newTitle}" — possible redirect (cross-origin, can't read URL)`,
+            severity: "warning",
+          });
+        }
+      } catch { /* fully blocked */ }
+    }
+    if (currentUrl && currentUrl !== lastKnownUrl) {
+      // ¡Redirección detectada!
+      let crossDomain = false;
+      try {
+        const oldHost = new URL(lastKnownUrl).hostname;
+        const newHost = new URL(currentUrl).hostname;
+        crossDomain = oldHost !== newHost;
+      } catch {}
+
+      redirects.push({
+        from: lastKnownUrl,
+        to: currentUrl,
+        timestamp: new Date().toISOString(),
+        method: "location-change",
+        crossDomain,
+      });
+
+      timeline.push({
+        time: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
+        timestamp: new Date().toISOString(),
+        type: "redirect",
+        description: crossDomain
+          ? `REDIRECCIÓN CROSS-DOMAIN: ${lastKnownUrl.slice(0, 60)} → ${currentUrl.slice(0, 60)}`
+          : `Redirección: ${lastKnownUrl.slice(0, 60)} → ${currentUrl.slice(0, 60)}`,
+        severity: crossDomain ? "danger" : "warning",
+      });
+
+      lastKnownUrl = currentUrl;
+      finalUrl = currentUrl;
+      lastPopupUrl = currentUrl;
+    }
+  }, 500);
+
+  // Timeline: evento de carga inicial
+  timeline.push({
+    time: "0.0s",
+    timestamp: new Date(startTime).toISOString(),
+    type: "load",
+    description: `Sandbox started — URL: ${url}`,
+    severity: "info",
+  });
+
+  // NUEVO: Hook para detectar window.open con redirección cross-domain
+  // Modificamos el handler de popups para añadir al timeline
+  const originalPopupHandler = messageHandler;
+
   onProgress(3000, "Requesting screen capture permission...");
 
   // Strategy: use getDisplayMedia() to capture the real screen (including the popup).
@@ -392,6 +507,7 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
     clearInterval(screenshotInterval);
     clearInterval(overlayInterval);
     clearInterval(progressInterval);
+    clearInterval(redirectInterval);
     window.removeEventListener("message", messageHandler);
 
     // Stop recording
@@ -469,6 +585,7 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
 
     clearInterval(drawInterval);
     clearInterval(progressInterval);
+    clearInterval(redirectInterval);
     window.removeEventListener("message", messageHandler);
 
     if (mediaRecorder && mediaRecorder.state !== "inactive") {
@@ -497,6 +614,144 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   // Close popup
   try { popup.close(); } catch {}
 
+  // NUEVO: Extraer vínculos externos del DOM final
+  try {
+    if (finalDom) {
+      const linkMatches = finalDom.matchAll(/<a[^>]+href=["'`]([^"'`]+)["'`][^>]*>([^<]*)<\/a>/gi);
+      const baseUrl = finalUrl || url;
+      let originHost = "";
+      try { originHost = new URL(baseUrl).hostname; } catch {}
+      for (const m of linkMatches) {
+        const href = m[1];
+        const text = m[2]?.trim() || "";
+        if (!href || href.startsWith("#") || href.startsWith("javascript:") || href.startsWith("mailto:")) continue;
+        try {
+          const absUrl = new URL(href, baseUrl).href;
+          const linkHost = new URL(absUrl).hostname;
+          const sameDomain = linkHost === originHost;
+          if (!externalLinks.some(l => l.href === absUrl)) {
+            externalLinks.push({ href: absUrl, text: text.slice(0, 80), domain: linkHost, sameDomain });
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // NUEVO: Determinar comportamiento (behavior)
+  if (cryptoMining.length > 0) {
+    behavior = "CRYPTO_MINING";
+  } else if (redirects.some(r => r.crossDomain) && popups.length > 0) {
+    behavior = "PHISHING_REDIRECT";
+  } else if (redirects.length >= 2) {
+    behavior = "REDIRECT_CHAIN";
+  } else if (popups.length >= 3) {
+    behavior = "POPUP_SPAM";
+  } else if (cryptoMining.length > 0 && redirects.length > 0 && popups.length > 0) {
+    behavior = "MIXED_THREAT";
+  }
+
+  // NUEVO: Añadir eventos al timeline desde los datos capturados
+  for (const err of errors.slice(0, 10)) {
+    timeline.push({
+      time: "?",
+      timestamp: new Date().toISOString(),
+      type: "error",
+      description: `JS Error: ${err.slice(0, 150)}`,
+      severity: "warning",
+    });
+  }
+  for (const p of popups.slice(0, 5)) {
+    let crossDomain = false;
+    try {
+      const popHost = new URL(p.url).hostname;
+      const urlHost = new URL(url).hostname;
+      crossDomain = popHost !== urlHost;
+    } catch {}
+    timeline.push({
+      time: "?",
+      timestamp: new Date().toISOString(),
+      type: "popup",
+      description: crossDomain
+        ? `NUEVA VENTANA cross-domain: window.open("${p.url.slice(0, 80)}") — ${p.count}x`
+        : `Nueva ventana: window.open("${p.url.slice(0, 80)}") — ${p.count}x`,
+      severity: crossDomain ? "danger" : "warning",
+    });
+  }
+  for (const e of evalCalls.slice(0, 5)) {
+    timeline.push({
+      time: e.timestamp ? `${((new Date(e.timestamp).getTime() - startTime) / 1000).toFixed(1)}s` : "?",
+      timestamp: e.timestamp,
+      type: "eval",
+      description: `EVAL/Function(): ${e.code.slice(0, 150)}`,
+      severity: "warning",
+    });
+  }
+  for (const c of cryptoMining) {
+    timeline.push({
+      time: "?",
+      timestamp: new Date().toISOString(),
+      type: "crypto",
+      description: `CRYPTO MINING: ${c.miner} — ${c.script.slice(0, 100)}`,
+      severity: "danger",
+    });
+  }
+  if (formAutoSubmit) {
+    timeline.push({
+      time: "?",
+      timestamp: new Date().toISOString(),
+      type: "form-submit",
+      description: "FORM AUTO-SUBMIT detected — form submits automatically on page load (phishing credential harvester)",
+      severity: "danger",
+    });
+  }
+  if (hiddenRedirect) {
+    timeline.push({
+      time: "?",
+      timestamp: new Date().toISOString(),
+      type: "redirect",
+      description: `HIDDEN REDIRECT via meta-refresh to: ${hiddenRedirect}`,
+      severity: "warning",
+    });
+  }
+
+  // Ordenar timeline por timestamp
+  timeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  // NUEVO: Resumen ejecutivo en lenguaje natural
+  let summary = "";
+  if (redirects.length > 0) {
+    const crossDomainRedirects = redirects.filter(r => r.crossDomain);
+    if (crossDomainRedirects.length > 0) {
+      summary += `La URL original (${url.slice(0, 50)}) redirigió a ${redirects.length} URL(s) diferente(s), incluyendo ${crossDomainRedirects.length} redirección(es) a OTRO dominio. `;
+      summary += `URL final: ${finalUrl.slice(0, 80)}. `;
+    } else {
+      summary += `La URL redirigió ${redirects.length} veces dentro del mismo dominio. URL final: ${finalUrl.slice(0, 80)}. `;
+    }
+  } else {
+    summary += `La URL no redirigió. `;
+  }
+  if (popups.length > 0) {
+    const crossDomainPopups = popups.filter(p => {
+      try { return new URL(p.url).hostname !== new URL(url).hostname; } catch { return false; }
+    });
+    if (crossDomainPopups.length > 0) {
+      summary += `Se abrieron ${popups.reduce((s, p) => s + p.count, 0)} ventana(s) nueva(s), ${crossDomainPopups.length} hacia OTRO dominio. `;
+    } else {
+      summary += `Se abrieron ${popups.reduce((s, p) => s + p.count, 0)} ventana(s) nueva(s). `;
+    }
+  }
+  if (externalLinks.filter(l => !l.sameDomain).length > 0) {
+    summary += `Se detectaron ${externalLinks.filter(l => !l.sameDomain).length} vínculo(s) externo(s) a ${[...new Set(externalLinks.filter(l => !l.sameDomain).map(l => l.domain))].slice(0, 5).join(", ")}. `;
+  }
+  if (cryptoMining.length > 0) summary += `Se detectó crypto mining (${cryptoMining.map(c => c.miner).join(", ")}). `;
+  if (evalCalls.length > 0) summary += `Se ejecutaron ${evalCalls.length} llamada(s) eval/Function() (código ofuscado). `;
+  if (formAutoSubmit) summary += `Se detectó auto-submit de formulario (posible robo de credenciales). `;
+  if (webglFingerprint || canvasFingerprint) summary += `Se detectó fingerprinting del browser. `;
+  if (errors.length > 5) summary += `Se capturaron ${errors.length} errores de JavaScript. `;
+  if (summary === `La URL no redirigió. ` && popups.length === 0 && externalLinks.filter(l => !l.sameDomain).length === 0) {
+    summary = `La URL se cargó normalmente sin redirecciones, ventanas nuevas, ni vínculos sospechosos. Comportamiento: NORMAL.`;
+  }
+
   // Compute risk score
   let score = 0;
   if (errors.length > 0) score += Math.min(errors.length * 5, 30);
@@ -509,6 +764,11 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   if (formAutoSubmit) score += 15;
   if (hiddenRedirect) score += 10;
   if (serviceWorker) score += 5;
+  // NUEVO: redirects cross-domain = riesgo alto
+  if (redirects.some(r => r.crossDomain)) score += 30;
+  else if (redirects.length > 0) score += 10;
+  // NUEVO: vínculos externos sospechosos
+  if (externalLinks.filter(l => !l.sameDomain).length > 5) score += 10;
   score = Math.min(100, score);
 
   let classification: SandboxResult["riskClassification"];
@@ -519,24 +779,26 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   else classification = "SAFE";
 
   let verdict = "";
-  if (cryptoMining.length > 0) verdict += `${cryptoMining.length} crypto miner(s) detected! `;
-  if (popups.length > 0) verdict += `${popups.reduce((s, p) => s + p.count, 0)} popup(s) opened. `;
-  if (evalCalls.length > 0) verdict += `${evalCalls.length} eval/Function() call(s) — obfuscated code. `;
-  if (webglFingerprint) verdict += "WebGL fingerprinting detected. ";
-  if (canvasFingerprint) verdict += "Canvas fingerprinting detected. ";
-  if (formAutoSubmit) verdict += "Auto-submitting form detected. ";
-  if (hiddenRedirect) verdict += `Hidden redirect to ${hiddenRedirect}. `;
-  if (errors.length > 5) verdict += `${errors.length} JavaScript errors. `;
-  if (domMutations.length > 10) verdict += `${domMutations.length} DOM mutations. `;
-  if (!verdict) verdict = "No significant malicious behavior detected during the 20-second sandbox execution.";
+  if (redirects.length > 0) verdict += `${redirects.length} redirección(es) detectada(s). `;
+  if (redirects.some(r => r.crossDomain)) verdict += `Redirección cross-domain — phishing indicator. `;
+  if (popups.length > 0) verdict += `${popups.reduce((s, p) => s + p.count, 0)} ventana(s) nueva(s). `;
+  if (cryptoMining.length > 0) verdict += `${cryptoMining.length} crypto miner(s). `;
+  if (evalCalls.length > 0) verdict += `${evalCalls.length} eval/Function() call(s). `;
+  if (webglFingerprint) verdict += "WebGL fingerprinting. ";
+  if (canvasFingerprint) verdict += "Canvas fingerprinting. ";
+  if (formAutoSubmit) verdict += "Auto-submit de formulario. ";
+  if (hiddenRedirect) verdict += `Redirect oculto a ${hiddenRedirect}. `;
+  if (externalLinks.filter(l => !l.sameDomain).length > 0) verdict += `${externalLinks.filter(l => !l.sameDomain).length} vínculo(s) externo(s). `;
+  if (!verdict) verdict = "No se detectó comportamiento malicioso durante la ejecución de 20 segundos.";
 
   return {
     url, timestamp: new Date(startTime).toISOString(), duration: SANDBOX_DURATION,
-    screenshots, videoBlobUrl, finalDom, finalTitle,
+    screenshots, videoBlobUrl, finalDom, finalTitle, finalUrl,
     network, console: consoleLog, errors, domMutations, cookies,
     localStorage: localStorageEntries, sessionStorage: sessionStorageEntries,
     popups, evalCalls, cryptoMining,
     webglFingerprint, canvasFingerprint, formAutoSubmit, hiddenRedirect, serviceWorker,
+    redirects, timeline, externalLinks, behavior, summary,
     riskScore: score, riskClassification: classification, verdict, loaded,
   };
 }
@@ -842,6 +1104,119 @@ export function UrlSandboxView() {
               </div>
             </div>
           </Panel>
+
+          {/* NUEVO: Resumen Ejecutivo */}
+          <Panel title="Resumen Ejecutivo" className="md:col-span-2">
+            <div className="flex items-start gap-4 mb-3">
+              <div className="shrink-0">
+                <Badge
+                  variant={data.behavior === "NORMAL" ? "secondary" : data.behavior === "MIXED_THREAT" || data.behavior === "PHISHING_REDIRECT" ? "destructive" : "default"}
+                  className="font-mono text-xs"
+                >
+                  {data.behavior}
+                </Badge>
+              </div>
+              <div className="flex-1">
+                <p className="text-sm">{data.summary}</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2">
+              <div className={`rounded p-2 border ${data.redirects.length > 0 ? "border-orange-500/40 bg-orange-500/10 text-orange-400" : "border-border bg-muted/20"}`}>
+                <div className="text-xl font-bold font-mono">{data.redirects.length}</div>
+                <div className="text-[10px]">redirecciones</div>
+              </div>
+              <div className={`rounded p-2 border ${data.popups.length > 0 ? "border-red-500/40 bg-red-500/10 text-red-400" : "border-border bg-muted/20"}`}>
+                <div className="text-xl font-bold font-mono">{data.popups.reduce((s, p) => s + p.count, 0)}</div>
+                <div className="text-[10px]">ventanas nuevas</div>
+              </div>
+              <div className={`rounded p-2 border ${data.externalLinks.filter(l => !l.sameDomain).length > 0 ? "border-purple-500/40 bg-purple-500/10 text-purple-400" : "border-border bg-muted/20"}`}>
+                <div className="text-xl font-bold font-mono">{data.externalLinks.filter(l => !l.sameDomain).length}</div>
+                <div className="text-[10px]">vínculos externos</div>
+              </div>
+              <div className="rounded p-2 border border-border bg-muted/20">
+                <div className="text-xl font-bold font-mono text-cyan-400 break-all">{data.finalUrl !== data.url ? "→ " + data.finalUrl.slice(0, 40) : "sin cambios"}</div>
+                <div className="text-[10px]">URL final</div>
+              </div>
+            </div>
+          </Panel>
+
+          {/* NUEVO: Timeline */}
+          <Panel title={`Timeline de Eventos (${data.timeline.length})`} className="md:col-span-2">
+            <div className="max-h-64 overflow-y-auto">
+              {data.timeline.length > 0 ? (
+                data.timeline.map((e, i) => (
+                  <div key={i} className={`text-xs py-2 border-b border-border/30 flex items-start gap-3 ${
+                    e.severity === "danger" ? "text-red-400" : e.severity === "warning" ? "text-orange-400" : "text-muted-foreground"
+                  }`}>
+                    <span className="font-mono text-[10px] shrink-0 w-12">{e.time}</span>
+                    <Badge variant={e.severity === "danger" ? "destructive" : e.severity === "warning" ? "default" : "outline"} className="text-[9px] font-mono shrink-0">
+                      {e.type}
+                    </Badge>
+                    <span className="flex-1">{e.description}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground">No se capturaron eventos.</p>
+              )}
+            </div>
+          </Panel>
+
+          {/* NUEVO: Redirecciones detectadas */}
+          {data.redirects.length > 0 && (
+            <Panel title={`Redirecciones Detectadas (${data.redirects.length})`} className="md:col-span-2">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-16">Tiempo</TableHead>
+                    <TableHead>URL Origen</TableHead>
+                    <TableHead className="w-8 text-center">→</TableHead>
+                    <TableHead>URL Destino</TableHead>
+                    <TableHead className="w-24">Cross-Domain</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.redirects.map((r, i) => (
+                    <TableRow key={i} className={r.crossDomain ? "bg-red-500/5" : ""}>
+                      <TableCell className="font-mono text-xs">{r.timestamp.slice(11, 19)}</TableCell>
+                      <TableCell className="font-mono text-xs break-all">{r.from.slice(0, 100)}</TableCell>
+                      <TableCell className="text-center text-muted-foreground">→</TableCell>
+                      <TableCell className="font-mono text-xs break-all">{r.to.slice(0, 100)}</TableCell>
+                      <TableCell>
+                        {r.crossDomain ? (
+                          <Badge variant="destructive" className="text-[9px] font-mono">SÍ — phishing risk</Badge>
+                        ) : (
+                          <Badge variant="secondary" className="text-[9px] font-mono">no</Badge>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Panel>
+          )}
+
+          {/* NUEVO: Vínculos Externos */}
+          {data.externalLinks.length > 0 && (
+            <Panel title={`Vínculos Detectados (${data.externalLinks.length})`} className="md:col-span-2">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                {data.externalLinks.slice(0, 30).map((l, i) => (
+                  <div key={i} className={`rounded p-2 border text-xs ${l.sameDomain ? "border-border bg-muted/20" : "border-purple-500/40 bg-purple-500/5"}`}>
+                    <div className="flex items-center gap-1 mb-1">
+                      {l.sameDomain ? (
+                        <Badge variant="secondary" className="text-[9px] font-mono">interno</Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[9px] font-mono text-purple-400 border-purple-500/40">externo</Badge>
+                      )}
+                      <span className="font-mono text-[10px] text-muted-foreground truncate">{l.domain}</span>
+                    </div>
+                    <a href={l.href} target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline break-all">
+                      {l.text || l.href.slice(0, 60)}
+                    </a>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          )}
 
           {/* Screenshots */}
           {data.screenshots.length > 0 && (
