@@ -3,6 +3,7 @@
 // Returns the full last_analysis_stats + per-engine results + community votes + reputation score.
 
 import { NextResponse } from "next/server";
+import { getCached, setCached, cacheKey } from "@/lib/cache";
 
 interface VtResult {
   ip: string;
@@ -80,9 +81,14 @@ export async function GET(request: Request) {
     );
   }
 
+  // Cache check — VT has a strict 4 req/min rate limit
+  const cacheK = cacheKey("virustotal", ip);
+  const cached = getCached<VtResult>(cacheK);
+  if (cached) return NextResponse.json({ ...cached, cached: true });
+
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const timeout = setTimeout(() => controller.abort(), 6000);
     const res = await fetch(
       `https://www.virustotal.com/api/v3/ip_addresses/${encodeURIComponent(ip)}`,
       {
@@ -200,6 +206,7 @@ export async function GET(request: Request) {
       tags: a.tags,
     };
 
+    setCached(cacheK, result);
     return NextResponse.json(result);
   } catch (err: any) {
     return NextResponse.json(

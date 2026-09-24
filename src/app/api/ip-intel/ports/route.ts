@@ -2,6 +2,7 @@
 // https://internetdb.shodan.io/
 
 import { NextResponse } from "next/server";
+import { getCached, setCached, cacheKey } from "@/lib/cache";
 
 interface PortInfo {
   port: number;
@@ -67,9 +68,14 @@ export async function GET(request: Request) {
     );
   }
 
+  // Cache check
+  const cacheK = cacheKey("ports", ip);
+  const cached = getCached<InternetDbResult>(cacheK);
+  if (cached) return NextResponse.json({ ...cached, cached: true });
+
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 4000);
     const res = await fetch(`https://internetdb.shodan.io/${ip}`, {
       signal: controller.signal,
       headers: { "User-Agent": "MONITOR-THREAT/2.0" },
@@ -106,6 +112,7 @@ export async function GET(request: Request) {
       provider: "shodan-internetdb",
     };
 
+    setCached(cacheK, result);
     return NextResponse.json(result);
   } catch (err: any) {
     return NextResponse.json(

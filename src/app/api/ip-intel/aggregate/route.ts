@@ -3,6 +3,7 @@
 // JSON envelope. The frontend uses this for one-shot rendering.
 
 import { NextResponse } from "next/server";
+import { getCached, setCached, cacheKey } from "@/lib/cache";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -14,6 +15,11 @@ export async function GET(request: Request) {
       { status: 400 }
     );
   }
+
+  // Cache the aggregate envelope too — gives instant repeat queries.
+  const cacheK = cacheKey("aggregate", ip);
+  const cached = getCached<any>(cacheK);
+  if (cached) return NextResponse.json({ ...cached, cached: true });
 
   const base = new URL(request.url).origin;
   const ipEnc = encodeURIComponent(ip);
@@ -38,7 +44,7 @@ export async function GET(request: Request) {
   if (reputation && Array.isArray(reputation.tags)) tags.push(...reputation.tags);
   if (ports && Array.isArray(ports.tags)) tags.push(...ports.tags);
 
-  return NextResponse.json({
+  const result = {
     ip,
     geo,
     blacklists,
@@ -46,5 +52,8 @@ export async function GET(request: Request) {
     reputation,
     tags: [...new Set(tags)],
     timestamp: new Date().toISOString(),
-  });
+  };
+
+  setCached(cacheK, result);
+  return NextResponse.json(result);
 }

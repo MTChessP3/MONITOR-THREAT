@@ -2,6 +2,7 @@
 // Uses ipwho.is (free, no API key, HTTPS) with ip-api.com as fallback.
 
 import { NextResponse } from "next/server";
+import { getCached, setCached, cacheKey } from "@/lib/cache";
 
 interface GeoResult {
   ip: string;
@@ -100,10 +101,15 @@ export async function GET(request: Request) {
     );
   }
 
+  // Cache check — saves a network roundtrip on repeat queries
+  const cacheK = cacheKey("geo", ip);
+  const cached = getCached<GeoResult>(cacheK);
+  if (cached) return NextResponse.json({ ...cached, cached: true });
+
   for (const provider of FALLBACK_PROVIDERS) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
+      const timeout = setTimeout(() => controller.abort(), 4000);
       const res = await fetch(provider.url(ip), {
         signal: controller.signal,
         headers: { "User-Agent": "MONITOR-THREAT/2.0 (IP Intel)" },
@@ -117,6 +123,7 @@ export async function GET(request: Request) {
       if ("status" in data && data.status === "fail") continue;
 
       const result: GeoResult = provider.transform(data);
+      setCached(cacheK, result);
       return NextResponse.json(result);
     } catch (err) {
       continue;

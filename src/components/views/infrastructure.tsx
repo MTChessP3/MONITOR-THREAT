@@ -162,341 +162,415 @@ const CATEGORY_BADGE: Record<BlacklistEntry["category"], { label: string; cls: s
   failed: { label: "FAILED", cls: "bg-zinc-700 text-zinc-400" },
 };
 
-// ---------- Printable HTML report ----------
-// Builds a self-contained, print-friendly HTML report from a successful
-// aggregate query and opens it in a new window. The user can then use the
-// browser's "Save as PDF" (or print) dialog to export it.
+// ---------- PDF report generator (jsPDF) ----------
+// Generates a structured PDF report directly in the browser and triggers
+// a download. No popup window, no print dialog — the file lands in the
+// user's Downloads folder as `MONITOR-THREAT-IP-Intel-<ip>-<timestamp>.pdf`.
 
-function classifyColor(c: string): string {
-  if (c === "MALICIOUS") return "#dc2626";
-  if (c === "SUSPICIOUS") return "#ca8a04";
-  return "#16a34a";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
+
+function classifyColorRgb(c: string): [number, number, number] {
+  if (c === "MALICIOUS") return [220, 38, 38];
+  if (c === "SUSPICIOUS") return [202, 138, 4];
+  return [22, 163, 74];
 }
 
-function escapeHtml(s: string): string {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+function downloadPdfReport(d: AggregateResult) {
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 40;
+  const contentWidth = pageWidth - margin * 2;
+  let y = margin;
 
-function buildReportHtml(d: AggregateResult): string {
-  const vt = d.reputation?.virusTotal;
-  const geo = d.geo;
-  const ports = d.ports;
-  const bl = d.blacklists;
-  const rep = d.reputation;
+  // ---------- Header ----------
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.setTextColor(15, 23, 42);
+  doc.text("IP Intelligence Report", margin, y + 6);
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(220, 38, 38);
+  doc.text("MONITOR-THREAT", margin, y + 22);
+  doc.setTextColor(100, 116, 139);
+  doc.text("Cyber Threat Intelligence Platform · v2.0", margin + 100, y + 22);
+
+  // Right side: meta
   const ts = new Date(d.timestamp).toLocaleString();
+  doc.setFontSize(9);
+  doc.setTextColor(71, 85, 105);
+  doc.text(`Report generated: ${ts}`, pageWidth - margin, y + 6, { align: "right" });
+  doc.text(`Target IP: ${d.ip}`, pageWidth - margin, y + 18, { align: "right" });
 
-  // VT stats row
-  const vtStats = vt?.lastAnalysisStats;
-  const vtStatsHtml = vtStats
-    ? `
-      <table class="stats-grid">
-        <tr>
-          <td><div class="stat stat-mal">${vtStats.malicious}</div><div class="lbl">Malicious</div></td>
-          <td><div class="stat stat-sus">${vtStats.suspicious}</div><div class="lbl">Suspicious</div></td>
-          <td><div class="stat stat-und">${vtStats.undetected}</div><div class="lbl">Undetected</div></td>
-          <td><div class="stat stat-har">${vtStats.harmless}</div><div class="lbl">Harmless</div></td>
-          <td><div class="stat stat-tmo">${vtStats.timeout}</div><div class="lbl">Timeout</div></td>
-        </tr>
-      </table>`
-    : "";
+  y += 30;
+  doc.setDrawColor(220, 220, 220);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 18;
 
-  // Blacklist summary
-  const blSummary = bl?.summary;
-  const blSummaryHtml = blSummary
-    ? `
-      <table class="stats-grid">
-        <tr>
-          <td><div class="stat stat-mal">${blSummary.blacklisted}</div><div class="lbl">Blacklisted</div></td>
-          <td><div class="stat stat-sus">${blSummary.brownlisted}</div><div class="lbl">Brownlisted</div></td>
-          <td><div class="stat stat-und">${blSummary.yellowlisted}</div><div class="lbl">Yellowlisted</div></td>
-          <td><div class="stat stat-har">${blSummary.whitelisted}</div><div class="lbl">Whitelisted</div></td>
-          <td><div class="stat stat-tmo">${blSummary.notListed}</div><div class="lbl">Not listed</div></td>
-        </tr>
-      </table>`
-    : "";
+  // ---------- Helper: section heading ----------
+  const sectionHeading = (label: string) => {
+    if (y > pageHeight - 80) {
+      doc.addPage();
+      y = margin;
+    }
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.setTextColor(220, 38, 38);
+    doc.text(label, margin, y);
+    doc.setDrawColor(220, 38, 38);
+    doc.setLineWidth(1);
+    doc.line(margin, y + 3, pageWidth - margin, y + 3);
+    y += 14;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(51, 65, 85);
+  };
 
-  // Flagged DNSBL entries (only listed ones, top 20)
-  const blListed = (bl?.entries || []).filter(
-    (e) => e.category === "black" || e.category === "brown" || e.category === "yellow"
-  );
-  const blEntriesHtml = blListed.length
-    ? `
-        <h3>Flagged DNSBL zones (${blListed.length})</h3>
-        <table class="data-table">
-          <thead>
-            <tr><th>Status</th><th>Zone</th><th>Reason</th></tr>
-          </thead>
-          <tbody>
-            ${blListed
-              .slice(0, 20)
-              .map(
-                (e) => `<tr>
-              <td><span class="badge badge-${e.category}">${escapeHtml(
-                CATEGORY_BADGE[e.category].label
-              )}</span></td>
-              <td><code>${escapeHtml(e.zone)}</code></td>
-              <td>${escapeHtml(e.reason || e.result)}</td>
-            </tr>`
-              )
-              .join("")}
-          </tbody>
-        </table>
-        ${blListed.length > 20 ? `<p class="muted">+ ${blListed.length - 20} more (see full report on multirbl.valli.org).</p>` : ""}`
-    : `<p class="muted">No DNSBL zone flagged this IP.</p>`;
+  // ---------- Helper: kv table ----------
+  const kvTable = (rows: Array<[string, string]>) => {
+    autoTable(doc, {
+      startY: y,
+      head: [["Field", "Value"]],
+      body: rows.map(([k, v]) => [k, v]),
+      theme: "striped",
+      margin: { left: margin, right: margin },
+      styles: { fontSize: 9, cellPadding: 4, textColor: [30, 41, 59] },
+      headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold" },
+      columnStyles: { 0: { cellWidth: contentWidth * 0.35, fontStyle: "bold", textColor: [100, 116, 139] } },
+    });
+    // @ts-ignore — autoTable augments doc with lastAutoTable
+    y = (doc as any).lastAutoTable.finalY + 12;
+  };
 
-  // Threat intel table
-  const tiHtml = (rep?.threatIntel || [])
-    .map(
-      (t) => `<tr>
-      <td><code>${escapeHtml(t.source)}</code></td>
-      <td><span class="badge badge-${t.verdict === "malicious" || t.verdict === "blacklisted" ? "black" : t.verdict === "suspicious" || t.verdict === "tagged" ? "yellow" : "white"}">${escapeHtml(t.verdict)}</span></td>
-      <td>${escapeHtml(t.details || "-")}</td>
-    </tr>`
-    )
-    .join("");
+  // ---------- 1. Executive Summary ----------
+  sectionHeading("1. Executive Summary");
 
-  // Secondary signals
-  const sigHtml = (rep?.signals || [])
-    .map(
-      (s) => `<tr>
-      <td><code>${escapeHtml(s.source)}</code></td>
-      <td>+${s.weight}</td>
-      <td>${escapeHtml(s.detail)}</td>
-    </tr>`
-    )
-    .join("");
+  const rep = d.reputation;
+  const vt = rep?.virusTotal;
+  const verdictColor = classifyColorRgb(rep?.classification || "");
 
-  // Ports
-  const portsHtml = (ports?.ports || [])
-    .map((p) => `<span class="port">:${escapeHtml(String(p))}${PORT_SERVICES[p] ? ` <em>${escapeHtml(PORT_SERVICES[p])}</em>` : ""}</span>`)
-    .join(" ");
+  // Three summary cards in a row
+  const cardW = (contentWidth - 20) / 3;
+  const cardH = 50;
+  // Card 1: composite score
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(220, 220, 220);
+  doc.roundedRect(margin, y, cardW, cardH, 4, 4, "FD");
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
+  doc.text("COMPOSITE SCORE", margin + 8, y + 14);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(20);
+  doc.setTextColor(15, 23, 42);
+  doc.text(`${rep?.score ?? "-"}/100`, margin + 8, y + 38);
 
-  const hostnamesHtml = (ports?.hostnames || [])
-    .map((h) => `<code>${escapeHtml(h)}</code>`)
-    .join(", ");
+  // Card 2: classification (color-coded)
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(verdictColor[0], verdictColor[1], verdictColor[2]);
+  doc.setLineWidth(1.5);
+  doc.roundedRect(margin + cardW + 10, y, cardW, cardH, 4, 4, "FD");
+  doc.setLineWidth(0.2);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
+  doc.text("CLASSIFICATION", margin + cardW + 18, y + 14);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(20);
+  doc.setTextColor(verdictColor[0], verdictColor[1], verdictColor[2]);
+  doc.text(rep?.classification || "—", margin + cardW + 18, y + 38);
 
-  const vulnsHtml = (ports?.vulns || []).length
-    ? (ports?.vulns || [])
-        .slice(0, 15)
-        .map((v) => `<span class="cve">${escapeHtml(v)}</span>`)
-        .join(" ")
-    : "";
+  // Card 3: VT engines
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(220, 220, 220);
+  doc.roundedRect(margin + (cardW + 10) * 2, y, cardW, cardH, 4, 4, "FD");
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
+  doc.text("VIRUSTOTAL ENGINES", margin + (cardW + 10) * 2 + 8, y + 14);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(20);
+  doc.setTextColor(15, 23, 42);
+  doc.text(`${vt?.flaggedEnginesCount ?? "-"}/${vt?.totalEngines ?? "-"}`, margin + (cardW + 10) * 2 + 8, y + 38);
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<title>IP Intel Report — ${escapeHtml(d.ip)}</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1a1a1a; margin: 32px; line-height: 1.5; }
-  h1 { font-size: 22px; margin: 0 0 4px 0; }
-  h2 { font-size: 16px; margin: 24px 0 8px 0; padding-bottom: 4px; border-bottom: 2px solid #dc2626; }
-  h3 { font-size: 13px; margin: 16px 0 6px 0; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
-  .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 1px solid #ddd; margin-bottom: 16px; }
-  .brand { font-size: 12px; color: #666; }
-  .brand strong { color: #dc2626; font-size: 14px; letter-spacing: 0.5px; }
-  .meta { font-size: 11px; color: #666; text-align: right; }
-  .summary { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 16px; }
-  .summary-card { border: 1px solid #ddd; border-radius: 6px; padding: 10px 14px; }
-  .summary-card .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
-  .summary-card .value { font-size: 18px; font-weight: 700; margin-top: 2px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-  .verdict { text-align: center; border: 2px solid; }
-  .verdict .value { font-size: 28px; }
-  .stats-grid { width: 100%; border-collapse: separate; border-spacing: 6px; margin: 8px 0; }
-  .stats-grid td { text-align: center; border: 1px solid #ddd; border-radius: 4px; padding: 6px; }
-  .stat { font-size: 20px; font-weight: 700; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-  .stat-mal { color: #dc2626; }
-  .stat-sus { color: #ea580c; }
-  .stat-und { color: #ca8a04; }
-  .stat-har { color: #16a34a; }
-  .stat-tmo { color: #6b7280; }
-  .lbl { font-size: 10px; color: #666; text-transform: uppercase; }
-  .data-table { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 11px; }
-  .data-table th, .data-table td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; vertical-align: top; }
-  .data-table th { background: #f5f5f5; font-weight: 600; }
-  .kv { width: 100%; border-collapse: collapse; font-size: 11px; }
-  .kv td { border: 1px solid #eee; padding: 4px 8px; }
-  .kv td:first-child { background: #fafafa; font-weight: 600; width: 30%; color: #555; }
-  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-family: ui-monospace, "SF Mono", Menlo, monospace; text-transform: uppercase; color: #fff; }
-  .badge-black { background: #dc2626; }
-  .badge-brown { background: #ea580c; }
-  .badge-yellow { background: #ca8a04; color: #000; }
-  .badge-white { background: #16a34a; }
-  .badge-neutral { background: #0891b2; }
-  .badge-not_listed { background: #d4d4d4; color: #666; }
-  .badge-failed { background: #525252; }
-  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; background: #f5f5f5; padding: 1px 4px; border-radius: 2px; }
-  .port { display: inline-block; padding: 2px 6px; margin: 2px; border: 1px solid #ddd; border-radius: 3px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; }
-  .port em { color: #666; font-style: normal; font-size: 10px; margin-left: 4px; }
-  .cve { display: inline-block; padding: 1px 5px; margin: 2px; background: #fee2e2; color: #991b1b; border-radius: 2px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10px; }
-  .muted { color: #666; font-size: 10px; }
-  .map-link { font-size: 11px; color: #0891b2; text-decoration: none; }
-  .section-note { font-size: 10px; color: #999; margin-top: 4px; }
-  @media print {
-    body { margin: 12mm; }
-    h2 { page-break-after: avoid; }
-    h3 { page-break-after: avoid; }
-    table { page-break-inside: avoid; }
-  }
-  @page { margin: 18mm; }
-</style>
-</head>
-<body>
-  <div class="header">
-    <div>
-      <h1>IP Intelligence Report</h1>
-      <div class="brand"><strong>MONITOR-THREAT</strong> · Cyber Threat Intelligence Platform · v2.0</div>
-    </div>
-    <div class="meta">
-      <div><strong>Report generated:</strong> ${ts}</div>
-      <div><strong>Target IP:</strong> <code>${escapeHtml(d.ip)}</code></div>
-    </div>
-  </div>
+  y += cardH + 12;
 
-  <!-- 1. Executive Summary -->
-  <h2>1. Executive Summary</h2>
-  <div class="summary">
-    <div class="summary-card">
-      <div class="label">Composite Score</div>
-      <div class="value">${rep?.score ?? "-"}/100</div>
-    </div>
-    <div class="summary-card verdict" style="border-color: ${classifyColor(rep?.classification || "")};">
-      <div class="label">Classification</div>
-      <div class="value" style="color: ${classifyColor(rep?.classification || "")};">${escapeHtml(rep?.classification || "—")}</div>
-    </div>
-    <div class="summary-card">
-      <div class="label">VirusTotal Engines</div>
-      <div class="value">${vt?.flaggedEnginesCount ?? "-"}/${vt?.totalEngines ?? "-"}</div>
-    </div>
-  </div>
-  <p>Report for IP address <code>${escapeHtml(d.ip)}</code>, correlated across VirusTotal, multirbl.valli.org (DNSBL), Shodan InternetDB and ipwho.is geolocation. ${
+  // Verdict narrative
+  const verdict =
     rep?.classification === "MALICIOUS"
       ? "Multiple sources agree this IP is associated with malicious activity. Immediate containment and investigation are recommended."
       : rep?.classification === "SUSPICIOUS"
       ? "Some sources flagged this IP. Investigate before allowing traffic from this host."
-      : "No source flagged this IP as malicious. Treat as benign unless new intelligence emerges."
-  }</p>
+      : "No source flagged this IP as malicious. Treat as benign unless new intelligence emerges.";
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(51, 65, 85);
+  const wrapped = doc.splitTextToSize(verdict, contentWidth);
+  doc.text(wrapped, margin, y);
+  y += wrapped.length * 11 + 8;
 
-  <!-- 2. Geolocation & ASN -->
-  <h2>2. Geolocation & ASN</h2>
-  ${geo && !geo.error ? `
-  <table class="kv">
-    <tr><td>IP</td><td><code>${escapeHtml(geo.ip)}</code></td></tr>
-    <tr><td>Country</td><td>${escapeHtml(geo.flagEmoji || "")} ${escapeHtml(geo.country)} (${escapeHtml(geo.countryCode)})</td></tr>
-    <tr><td>Region</td><td>${escapeHtml(geo.region || "-")}</td></tr>
-    <tr><td>City</td><td>${escapeHtml(geo.city)}</td></tr>
-    <tr><td>Coordinates</td><td><code>${geo.latitude}, ${geo.longitude}</code> · <a class="map-link" href="https://www.openstreetmap.org/?mlat=${geo.latitude}&mlon=${geo.longitude}#map=12/${geo.latitude}/${geo.longitude}" target="_blank">View on OpenStreetMap ↗</a></td></tr>
-    <tr><td>ASN</td><td><code>AS${escapeHtml(String(geo.asn || "-"))}</code></td></tr>
-    <tr><td>Organization</td><td>${escapeHtml(geo.organization || "-")}</td></tr>
-    <tr><td>ISP</td><td>${escapeHtml(geo.isp || "-")}</td></tr>
-    ${geo.domain ? `<tr><td>Domain</td><td><code>${escapeHtml(geo.domain)}</code></td></tr>` : ""}
-    <tr><td>Timezone</td><td>${escapeHtml(geo.timezone || "-")}</td></tr>
-    ${geo.reverse ? `<tr><td>rDNS</td><td><code>${escapeHtml(geo.reverse)}</code></td></tr>` : ""}
-  </table>
-  <div class="section-note">Source: ${escapeHtml(geo.provider || "ipwho.is")}</div>
-  ` : `<p class="muted">Geolocation lookup failed: ${escapeHtml(geo?.error || "no data")}</p>`}
-
-  <!-- 3. Open Ports & Services -->
-  <h2>3. Open Ports & Services</h2>
-  ${ports && !ports.error ? `
-  <p><strong>Open ports (${ports.ports?.length || 0}):</strong> ${portsHtml || "<em class='muted'>none recorded</em>"}</p>
-  ${hostnamesHtml ? `<p><strong>Hostnames:</strong> ${hostnamesHtml}</p>` : ""}
-  ${vulnsHtml ? `<p><strong>Known CVEs:</strong> ${vulnsHtml}</p>` : ""}
-  <div class="section-note">Source: Shodan InternetDB · ${ports.ports?.length || 0} ports · ${ports.hostnames?.length || 0} hostnames · ${ports.vulns?.length || 0} known CVEs</div>
-  ` : `<p class="muted">Shodan lookup failed: ${escapeHtml(ports?.error || "no data")}</p>`}
-
-  <!-- 4. Reputation (VirusTotal) -->
-  <h2>4. Reputation — VirusTotal</h2>
-  ${vt?.available ? `
-  <table class="kv">
-    <tr><td>VT Score (composite)</td><td><strong style="color: ${classifyColor(vt.classification)};">${vt.score}/100 — ${escapeHtml(vt.classification)}</strong></td></tr>
-    <tr><td>Flagging engines</td><td>${vt.flaggedEnginesCount} / ${vt.totalEngines}</td></tr>
-    <tr><td>Community reputation</td><td>${vt.reputation > 0 ? "+" : ""}${vt.reputation}</td></tr>
-    <tr><td>Community votes</td><td>${vt.totalVotes.harmless} harmless · ${vt.totalVotes.malicious} malicious</td></tr>
-    ${vt.lastAnalysisDate ? `<tr><td>Last analysis</td><td>${new Date(vt.lastAnalysisDate).toLocaleString()}</td></tr>` : ""}
-  </table>
-  ${vtStatsHtml}
-  <div class="section-note"><a class="map-link" href="https://www.virustotal.com/gui/ip-address/${encodeURIComponent(d.ip)}" target="_blank">Open full VirusTotal report ↗</a></div>
-  ` : `<p class="muted">VirusTotal not available: ${escapeHtml(vt?.error || "no data")}</p>`}
-
-  <!-- 5. DNSBL / Blacklist Summary -->
-  <h2>5. DNSBL / Blacklist Summary</h2>
-  ${bl && !bl.error ? `
-  ${blSummaryHtml}
-  <table class="kv">
-    <tr><td>Total zones checked</td><td>${bl.summary.total}</td></tr>
-    <tr><td>Not listed</td><td>${bl.summary.notListed}</td></tr>
-    <tr><td>Failed queries</td><td>${bl.summary.failed}</td></tr>
-  </table>
-  ${blEntriesHtml}
-  <div class="section-note"><a class="map-link" href="${escapeHtml(bl.embedded_url)}" target="_blank">Open full multirbl.valli.org report ↗</a></div>
-  ` : `<p class="muted">Blacklist lookup failed: ${escapeHtml(bl?.error || "no data")}</p>`}
-
-  <!-- 6. Threat Intel Sources -->
-  <h2>6. Threat Intel Sources</h2>
-  <table class="data-table">
-    <thead>
-      <tr><th>Source</th><th>Verdict</th><th>Details</th></tr>
-    </thead>
-    <tbody>
-      ${tiHtml || `<tr><td colspan="3" class="muted">No threat intel data.</td></tr>`}
-    </tbody>
-  </table>
-
-  <!-- 7. Additional Signals -->
-  <h2>7. Additional Signals</h2>
-  <table class="data-table">
-    <thead>
-      <tr><th>Source</th><th>Weight</th><th>Detail</th></tr>
-    </thead>
-    <tbody>
-      ${sigHtml || `<tr><td colspan="3" class="muted">No additional signals.</td></tr>`}
-    </tbody>
-  </table>
-
-  <!-- 8. Methodology -->
-  <h2>8. Methodology & Sources</h2>
-  <p>This report was generated by aggregating live data from the following open and free-tier intelligence services:</p>
-  <ul style="font-size: 11px; padding-left: 18px;">
-    <li><strong>ipwho.is / ip-api.com</strong> — IP geolocation and ASN (free, no API key).</li>
-    <li><strong>multirbl.valli.org</strong> — DNSBL lookup across 200+ blacklist zones, plus direct DNSBL DNS checks against 15 well-known zones (Spamhaus, SpamCop, SORBS, Barracuda, UCEProtect, CBL, Mailspike, SpamRats, …).</li>
-    <li><strong>Shodan InternetDB</strong> — open ports, hostnames, tags and known CVEs (free, no API key).</li>
-    <li><strong>VirusTotal v3</strong> — last analysis stats, per-engine verdicts, community votes and reputation score.</li>
-    <li><strong>AbuseIPDB</strong> — abuse reports in the last 90 days (optional, when ABUSEIPDB_API_KEY is configured).</li>
-  </ul>
-  <p class="section-note">Composite score = VirusTotal score (primary) + weighted signals from DNSBL, Shodan and AbuseIPDB (capped at 100). Classification thresholds: BENIGN &lt; 5, SUSPICIOUS 5–19, MALICIOUS ≥ 20.</p>
-
-  <div style="margin-top: 32px; padding-top: 12px; border-top: 1px solid #ddd; font-size: 10px; color: #999; text-align: center;">
-    MONITOR-THREAT v2.0 · Generated ${ts} · This report is for informational purposes only and does not constitute legal advice.
-  </div>
-</body>
-</html>`;
-}
-
-function printReport(d: AggregateResult | null) {
-  if (!d) return;
-  const html = buildReportHtml(d);
-  const w = window.open("", "_blank", "noopener,noreferrer,width=1024,height=768");
-  if (!w) {
-    alert(
-      "Please allow pop-ups to open the print report window. The browser blocked it."
-    );
-    return;
+  // ---------- 2. Geolocation & ASN ----------
+  sectionHeading("2. Geolocation & ASN");
+  const geo = d.geo;
+  if (geo && !geo.error) {
+    kvTable([
+      ["IP", geo.ip],
+      ["Country", `${geo.flagEmoji || ""} ${geo.country} (${geo.countryCode})`],
+      ["Region", geo.region || "-"],
+      ["City", geo.city],
+      ["Coordinates", `${geo.latitude}, ${geo.longitude}`],
+      ["ASN", `AS${geo.asn || "-"}`],
+      ["Organization", geo.organization || "-"],
+      ["ISP", geo.isp || "-"],
+      ["Domain", geo.domain || "-"],
+      ["Timezone", geo.timezone || "-"],
+      ["rDNS", geo.reverse || "-"],
+    ]);
+    doc.setFontSize(8);
+    doc.setTextColor(148, 163, 184);
+    doc.text(`Source: ${geo.provider || "ipwho.is"}`, margin, y);
+    y += 14;
+  } else {
+    doc.setTextColor(148, 163, 184);
+    doc.text(`Geolocation lookup failed: ${geo?.error || "no data"}`, margin, y);
+    y += 14;
   }
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
-  // Give the document a beat to render before triggering print.
-  setTimeout(() => {
-    w.focus();
-    w.print();
-  }, 400);
+
+  // ---------- 3. Open Ports & Services ----------
+  sectionHeading("3. Open Ports & Services");
+  const ports = d.ports;
+  if (ports && !ports.error) {
+    const portsStr =
+      (ports.ports || []).length > 0
+        ? (ports.ports || [])
+            .map((p) => `:${p}${PORT_SERVICES[p] ? ` (${PORT_SERVICES[p]})` : ""}`)
+            .join("  ")
+        : "none recorded";
+    kvTable([
+      ["Open ports", `${ports.ports?.length || 0} — ${portsStr}`],
+      ["Hostnames", (ports.hostnames || []).join(", ") || "-"],
+      ["Known CVEs", (ports.vulns || []).slice(0, 15).join(", ") || "none"],
+      ["CPEs", (ports.cpes || []).slice(0, 5).join(", ") || "-"],
+    ]);
+    doc.setFontSize(8);
+    doc.setTextColor(148, 163, 184);
+    doc.text(
+      `Source: Shodan InternetDB · ${ports.ports?.length || 0} ports · ${ports.hostnames?.length || 0} hostnames · ${ports.vulns?.length || 0} CVEs`,
+      margin,
+      y
+    );
+    y += 14;
+  } else {
+    doc.setTextColor(148, 163, 184);
+    doc.text(`Shodan lookup failed: ${ports?.error || "no data"}`, margin, y);
+    y += 14;
+  }
+
+  // ---------- 4. Reputation — VirusTotal ----------
+  sectionHeading("4. Reputation — VirusTotal");
+  if (vt?.available) {
+    const stats = vt.lastAnalysisStats;
+    kvTable([
+      ["VT Score (composite)", `${vt.score}/100 — ${vt.classification}`],
+      ["Flagging engines", `${vt.flaggedEnginesCount} / ${vt.totalEngines}`],
+      [
+        "Engine breakdown",
+        `Malicious: ${stats.malicious}  ·  Suspicious: ${stats.suspicious}  ·  Undetected: ${stats.undetected}  ·  Harmless: ${stats.harmless}  ·  Timeout: ${stats.timeout}`,
+      ],
+      ["Community reputation", `${vt.reputation > 0 ? "+" : ""}${vt.reputation}`],
+      [
+        "Community votes",
+        `${vt.totalVotes.harmless} harmless · ${vt.totalVotes.malicious} malicious`,
+      ],
+      ["Last analysis", vt.lastAnalysisDate ? new Date(vt.lastAnalysisDate).toLocaleString() : "-"],
+    ]);
+    doc.setFontSize(8);
+    doc.setTextColor(8, 145, 178);
+    doc.textWithLink(
+      `Open full VirusTotal report ↗`,
+      margin,
+      y,
+      { url: `https://www.virustotal.com/gui/ip-address/${encodeURIComponent(d.ip)}` }
+    );
+    y += 14;
+  } else {
+    doc.setTextColor(148, 163, 184);
+    doc.text(`VirusTotal not available: ${vt?.error || "no data"}`, margin, y);
+    y += 14;
+  }
+
+  // ---------- 5. DNSBL / Blacklist Summary ----------
+  sectionHeading("5. DNSBL / Blacklist Summary");
+  const bl = d.blacklists;
+  if (bl && !bl.error) {
+    const s = bl.summary;
+    kvTable([
+      ["Total zones checked", String(s.total)],
+      ["Blacklisted", String(s.blacklisted)],
+      ["Brownlisted", String(s.brownlisted)],
+      ["Yellowlisted", String(s.yellowlisted)],
+      ["Whitelisted", String(s.whitelisted)],
+      ["Not listed", String(s.notListed)],
+      ["Failed queries", String(s.failed)],
+    ]);
+
+    // Flagged zones table
+    const blListed = (bl.entries || []).filter(
+      (e) => e.category === "black" || e.category === "brown" || e.category === "yellow"
+    );
+    if (blListed.length > 0) {
+      if (y > pageHeight - 100) {
+        doc.addPage();
+        y = margin;
+      }
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(15, 23, 42);
+      doc.text(`Flagged DNSBL zones (${blListed.length})`, margin, y);
+      y += 4;
+      autoTable(doc, {
+        startY: y,
+        head: [["Status", "Zone", "Reason"]],
+        body: blListed.slice(0, 30).map((e) => [
+          CATEGORY_BADGE[e.category].label,
+          e.zone,
+          e.reason || e.result,
+        ]),
+        theme: "grid",
+        margin: { left: margin, right: margin },
+        styles: { fontSize: 8, cellPadding: 3, textColor: [30, 41, 59] },
+        headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold" },
+        columnStyles: { 0: { cellWidth: 90 }, 1: { cellWidth: 160 } },
+      });
+      // @ts-ignore
+      y = (doc as any).lastAutoTable.finalY + 8;
+      if (blListed.length > 30) {
+        doc.setFontSize(8);
+        doc.setTextColor(148, 163, 184);
+        doc.text(
+          `+ ${blListed.length - 30} more — see full report on multirbl.valli.org.`,
+          margin,
+          y
+        );
+        y += 12;
+      }
+    } else {
+      doc.setFontSize(9);
+      doc.setTextColor(148, 163, 184);
+      doc.text("No DNSBL zone flagged this IP.", margin, y);
+      y += 14;
+    }
+    doc.setFontSize(8);
+    doc.setTextColor(8, 145, 178);
+    doc.textWithLink("Open full multirbl.valli.org report ↗", margin, y, { url: bl.embedded_url });
+    y += 14;
+  } else {
+    doc.setTextColor(148, 163, 184);
+    doc.text(`Blacklist lookup failed: ${bl?.error || "no data"}`, margin, y);
+    y += 14;
+  }
+
+  // ---------- 6. Threat Intel Sources ----------
+  sectionHeading("6. Threat Intel Sources");
+  if (rep?.threatIntel && rep.threatIntel.length > 0) {
+    autoTable(doc, {
+      startY: y,
+      head: [["Source", "Verdict", "Details"]],
+      body: rep.threatIntel.map((t) => [t.source, t.verdict, t.details || "-"]),
+      theme: "grid",
+      margin: { left: margin, right: margin },
+      styles: { fontSize: 8, cellPadding: 3, textColor: [30, 41, 59] },
+      headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold" },
+      columnStyles: { 0: { cellWidth: 110, fontStyle: "bold" }, 1: { cellWidth: 90 } },
+    });
+    // @ts-ignore
+    y = (doc as any).lastAutoTable.finalY + 14;
+  } else {
+    doc.setTextColor(148, 163, 184);
+    doc.text("No threat intel data.", margin, y);
+    y += 14;
+  }
+
+  // ---------- 7. Additional Signals ----------
+  sectionHeading("7. Additional Signals");
+  if (rep?.signals && rep.signals.length > 0) {
+    autoTable(doc, {
+      startY: y,
+      head: [["Source", "Weight", "Detail"]],
+      body: rep.signals.map((s) => [s.source, `+${s.weight}`, s.detail]),
+      theme: "grid",
+      margin: { left: margin, right: margin },
+      styles: { fontSize: 8, cellPadding: 3, textColor: [30, 41, 59] },
+      headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold" },
+      columnStyles: { 0: { cellWidth: 110, fontStyle: "bold" }, 1: { cellWidth: 50 } },
+    });
+    // @ts-ignore
+    y = (doc as any).lastAutoTable.finalY + 14;
+  } else {
+    doc.setTextColor(148, 163, 184);
+    doc.text("No additional signals.", margin, y);
+    y += 14;
+  }
+
+  // ---------- 8. Methodology & Sources ----------
+  sectionHeading("8. Methodology & Sources");
+  doc.setFontSize(9);
+  doc.setTextColor(51, 65, 85);
+  const methodology =
+    "This report was generated by aggregating live data from the following open and free-tier intelligence services:";
+  doc.text(doc.splitTextToSize(methodology, contentWidth), margin, y);
+  y += 22;
+
+  autoTable(doc, {
+    startY: y,
+    head: [["Source", "Use"]],
+    body: [
+      ["ipwho.is / ip-api.com", "IP geolocation and ASN (free, no API key)"],
+      ["multirbl.valli.org", "DNSBL lookup across 200+ blacklist zones, plus direct DNSBL DNS checks against 15 well-known zones (Spamhaus, SpamCop, SORBS, Barracuda, UCEProtect, CBL, Mailspike, SpamRats, ...)"],
+      ["Shodan InternetDB", "Open ports, hostnames, tags and known CVEs (free, no API key)"],
+      ["VirusTotal v3", "Last analysis stats, per-engine verdicts, community votes and reputation score"],
+      ["AbuseIPDB", "Abuse reports in the last 90 days (optional, when ABUSEIPDB_API_KEY is configured)"],
+    ],
+    theme: "grid",
+    margin: { left: margin, right: margin },
+    styles: { fontSize: 8, cellPadding: 3, textColor: [30, 41, 59] },
+    headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontStyle: "bold" },
+    columnStyles: { 0: { cellWidth: 130, fontStyle: "bold" } },
+  });
+  // @ts-ignore
+  y = (doc as any).lastAutoTable.finalY + 14;
+
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
+  doc.text(
+    doc.splitTextToSize(
+      "Composite score = VirusTotal score (primary) + weighted signals from DNSBL, Shodan and AbuseIPDB (capped at 100). Classification thresholds: BENIGN < 5, SUSPICIOUS 5-19, MALICIOUS >= 20.",
+      contentWidth
+    ),
+    margin,
+    y
+  );
+  y += 28;
+
+  // ---------- Footer on every page ----------
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(148, 163, 184);
+    doc.text(
+      `MONITOR-THREAT v2.0  ·  Generated ${ts}  ·  Page ${i} of ${pageCount}`,
+      pageWidth / 2,
+      pageHeight - 18,
+      { align: "center" }
+    );
+    doc.text("This report is for informational purposes only and does not constitute legal advice.", pageWidth / 2, pageHeight - 8, { align: "center" });
+  }
+
+  // ---------- Trigger download ----------
+  const safeIp = d.ip.replace(/[^a-zA-Z0-9._:-]/g, "_");
+  const fname = `MONITOR-THREAT-IP-Intel-${safeIp}-${Date.now()}.pdf`;
+  doc.save(fname);
 }
 
 // ---------- IP Intel (real APIs) ----------
@@ -584,12 +658,12 @@ export function IpIntelView() {
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => printReport(data)}
+            onClick={() => downloadPdfReport(data!)}
             disabled={!data}
-            title={data ? "Open a printable HTML report in a new window" : "Run an analysis first"}
+            title={data ? "Download a structured PDF report (saves to your Downloads folder)" : "Run an analysis first"}
           >
             <Printer className="w-3.5 h-3.5 mr-2" />
-            Imprimir informe HTML
+            Imprimir informe PDF
           </Button>
         </div>
       </div>
