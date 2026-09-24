@@ -369,194 +369,96 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   // Modificamos el handler de popups para añadir al timeline
   const originalPopupHandler = messageHandler;
 
-  onProgress(3000, "Requesting screen capture permission...");
+  onProgress(3000, "Capturing screenshots of rendered page...");
 
-  // Strategy: use getDisplayMedia() to capture the real screen (including the popup).
-  // This works for ANY URL (same-origin AND cross-origin) because it captures the
-  // actual pixels on the user's screen, not the DOM of the popup.
-  //
-  // If getDisplayMedia fails (user denies or browser doesn't support), fall back
-  // to a canvas overlay that draws live stats — so the video ALWAYS exists.
-  let displayStream: MediaStream | null = null;
-  let mediaRecorder: MediaRecorder | null = null;
+  // Strategy: use html2canvas on the popup's document.body.
+  // Since the proxy serves the page from our own domain (same-origin),
+  // html2canvas CAN access the DOM and render a real screenshot.
+  // No getDisplayMedia needed — no permission prompts, no black screens.
+
+  // Canvas for video recording (we draw screenshots into it)
+  const videoCanvas = document.createElement("canvas");
+  videoCanvas.width = 1280;
+  videoCanvas.height = 720;
+  const videoCtx = videoCanvas.getContext("2d")!;
+  const videoStream = videoCanvas.captureStream(2); // 2 fps for video
+  const mediaRecorder = new MediaRecorder(videoStream, { mimeType: "video/webm;codecs=vp8" });
   const videoChunks: Blob[] = [];
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) videoChunks.push(e.data); };
+  mediaRecorder.start();
 
-  try {
-    // Ask the user to share their screen (the popup with the target URL)
-    displayStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { width: 1280, height: 720, frameRate: 10 } as any,
-      audio: false,
-    });
+  // Capture screenshots at 6s, 12s, 18s using html2canvas
+  const screenshotTimes = [6000, 12000, 18000];
 
-    onProgress(3500, "Recording screen — sandbox running...");
-
-    // Record the screen stream directly — this is REAL video of the popup
-    mediaRecorder = new MediaRecorder(displayStream, {
-      mimeType: "video/webm;codecs=vp8",
-    });
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) videoChunks.push(e.data);
-    };
-    mediaRecorder.start();
-
-    // Capture screenshots from the video stream every 2s
-    const videoTrack = displayStream.getVideoTracks()[0];
-    const captureTrack = new (window as any).MediaStreamTrackProcessor(videoTrack);
-    const reader = (captureTrack as any).readable.getReader();
-
-    // Simpler approach: use a canvas + drawImage from a video element
-    const videoEl = document.createElement("video");
-    videoEl.srcObject = displayStream;
-    videoEl.autoplay = true;
-    videoEl.muted = true;
-    await new Promise(r => { videoEl.onloadedmetadata = () => r(null); });
-
-    const screenshotCanvas = document.createElement("canvas");
-    screenshotCanvas.width = 1280;
-    screenshotCanvas.height = 720;
-    const sCtx = screenshotCanvas.getContext("2d")!;
-
-    const screenshotInterval = setInterval(() => {
-      try {
-        sCtx.drawImage(videoEl, 0, 0, 1280, 720);
-        screenshots.push(screenshotCanvas.toDataURL("image/png"));
-      } catch { /* ignore */ }
-    }, SCREENSHOT_INTERVAL);
-
-    // Also draw live stats overlay every 500ms into a separate canvas (fallback)
-    const overlayCanvas = document.createElement("canvas");
-    overlayCanvas.width = 1280;
-    overlayCanvas.height = 720;
-    const oCtx = overlayCanvas.getContext("2d")!;
-    const overlayInterval = setInterval(() => {
-      oCtx.fillStyle = "#0a0a0a";
-      oCtx.fillRect(0, 0, 1280, 720);
-      oCtx.fillStyle = "#00ff00";
-      oCtx.font = "20px monospace";
-      oCtx.fillText("MONITOR-THREAT SANDBOX", 20, 30);
-      oCtx.fillStyle = "#ffffff";
-      oCtx.font = "14px monospace";
-      oCtx.fillText(`URL: ${url.slice(0, 80)}`, 20, 60);
-      oCtx.fillText(`Time: ${((Date.now() - startTime) / 1000).toFixed(1)}s / 20s`, 20, 85);
-      oCtx.fillText(`Network: ${network.length} requests`, 20, 110);
-      oCtx.fillText(`Console: ${consoleLog.length} entries`, 20, 135);
-      oCtx.fillText(`Errors: ${errors.length}`, 20, 160);
-      oCtx.fillText(`Popups: ${popups.length}`, 20, 185);
-      oCtx.fillText(`Eval: ${evalCalls.length}`, 20, 210);
-      oCtx.fillText(`DOM mutations: ${domMutations.length}`, 20, 235);
-      oCtx.fillText(`Cookies: ${cookies.length}`, 20, 260);
-      oCtx.fillText(`localStorage: ${localStorageEntries.length}`, 20, 285);
-      oCtx.fillText(`Crypto mining: ${cryptoMining.length}`, 20, 310);
-      oCtx.fillText(`WebGL FP: ${webglFingerprint ? "YES" : "no"}`, 20, 335);
-      oCtx.fillText(`Canvas FP: ${canvasFingerprint ? "YES" : "no"}`, 20, 360);
-      // Draw a progress bar
-      const pct = (Date.now() - startTime) / SANDBOX_DURATION;
-      oCtx.fillStyle = "#333";
-      oCtx.fillRect(20, 700, 1240, 10);
-      oCtx.fillStyle = "#00ff00";
-      oCtx.fillRect(20, 700, 1240 * pct, 10);
-    }, 500);
-
-    // Update progress
-    const progressInterval = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      onProgress(elapsed, `Recording screen... ${Math.round((elapsed / SANDBOX_DURATION) * 100)}%`);
-    }, 500);
-
-    // Wait for SANDBOX_DURATION
-    await new Promise(resolve => setTimeout(resolve, SANDBOX_DURATION));
-
-    clearInterval(screenshotInterval);
-    clearInterval(overlayInterval);
-    clearInterval(progressInterval);
-    clearInterval(redirectInterval);
-    window.removeEventListener("message", messageHandler);
-
-    // Stop recording
-    if (mediaRecorder && mediaRecorder.state !== "inactive") {
-      await new Promise<void>(resolve => {
-        mediaRecorder!.onstop = () => resolve();
-        mediaRecorder!.stop();
-      });
-    }
-    if (displayStream) {
-      displayStream.getTracks().forEach(t => t.stop());
-    }
-
-    onProgress(SANDBOX_DURATION, "Capturing final DOM...");
-
-  } catch (e) {
-    // getDisplayMedia failed (user denied or not supported)
-    // Fall back to canvas overlay recording — ALWAYS generates a video
-    onProgress(3500, "Screen capture denied — recording stats overlay...");
-
-    const overlayCanvas = document.createElement("canvas");
-    overlayCanvas.width = 1280;
-    overlayCanvas.height = 720;
-    const oCtx = overlayCanvas.getContext("2d")!;
-    const overlayStream = overlayCanvas.captureStream(10);
-    mediaRecorder = new MediaRecorder(overlayStream, {
-      mimeType: "video/webm;codecs=vp8",
-    });
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) videoChunks.push(e.data);
-    };
-    mediaRecorder.start();
-
-    // Draw stats every 500ms
-    const drawInterval = setInterval(() => {
-      oCtx.fillStyle = "#0a0a0a";
-      oCtx.fillRect(0, 0, 1280, 720);
-      oCtx.fillStyle = "#00ff00";
-      oCtx.font = "20px monospace";
-      oCtx.fillText("MONITOR-THREAT SANDBOX", 20, 30);
-      oCtx.fillStyle = "#ffffff";
-      oCtx.font = "14px monospace";
-      oCtx.fillText(`URL: ${url.slice(0, 80)}`, 20, 60);
-      oCtx.fillText(`Time: ${((Date.now() - startTime) / 1000).toFixed(1)}s / 20s`, 20, 85);
-      oCtx.fillText(`Network: ${network.length} requests`, 20, 110);
-      oCtx.fillText(`Console: ${consoleLog.length} entries`, 20, 135);
-      oCtx.fillText(`Errors: ${errors.length}`, 20, 160);
-      oCtx.fillText(`Popups: ${popups.length}`, 20, 185);
-      oCtx.fillText(`Eval: ${evalCalls.length}`, 20, 210);
-      oCtx.fillText(`DOM mutations: ${domMutations.length}`, 20, 235);
-      oCtx.fillText(`Cookies: ${cookies.length}`, 20, 260);
-      oCtx.fillText(`localStorage: ${localStorageEntries.length}`, 20, 285);
-      oCtx.fillText(`Crypto mining: ${cryptoMining.length}`, 20, 310);
-      oCtx.fillText(`WebGL FP: ${webglFingerprint ? "YES" : "no"}`, 20, 335);
-      oCtx.fillText(`Canvas FP: ${canvasFingerprint ? "YES" : "no"}`, 20, 360);
-      // Progress bar
-      const pct = (Date.now() - startTime) / SANDBOX_DURATION;
-      oCtx.fillStyle = "#333";
-      oCtx.fillRect(20, 700, 1240, 10);
-      oCtx.fillStyle = "#00ff00";
-      oCtx.fillRect(20, 700, 1240 * pct, 10);
-      // Capture screenshot of overlay every 2s
-      if (Math.floor((Date.now() - startTime) / SCREENSHOT_INTERVAL) > screenshots.length) {
-        screenshots.push(overlayCanvas.toDataURL("image/png"));
+  const captureScreenshot = async (delayMs: number) => {
+    await new Promise(r => setTimeout(r, delayMs));
+    onProgress(Date.now() - startTime, `Screenshot at ${(delayMs / 1000).toFixed(0)}s...`);
+    try {
+      if (popup.document && popup.document.body) {
+        const canvas = await html2canvas(popup.document.body, {
+          width: 1280, height: 720, windowWidth: 1280, windowHeight: 720,
+          useCORS: true, allowTaint: false, logging: false, scale: 1,
+          backgroundColor: "#ffffff",
+        });
+        const dataUrl = canvas.toDataURL("image/png");
+        screenshots.push(dataUrl);
+        // Draw this screenshot into the video canvas
+        const img = new Image();
+        img.onload = () => {
+          videoCtx.fillStyle = "#ffffff";
+          videoCtx.fillRect(0, 0, 1280, 720);
+          videoCtx.drawImage(img, 0, 0, 1280, 720);
+          // Add a timestamp overlay on the video frame
+          videoCtx.fillStyle = "rgba(0,0,0,0.7)";
+          videoCtx.fillRect(0, 0, 1280, 30);
+          videoCtx.fillStyle = "#00ff00";
+          videoCtx.font = "14px monospace";
+          videoCtx.fillText(`MONITOR-THREAT Sandbox — ${(delayMs / 1000).toFixed(0)}s / 20s — ${url.slice(0, 60)}`, 10, 20);
+        };
+        img.src = dataUrl;
       }
-    }, 500);
-
-    // Progress
-    const progressInterval = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      onProgress(elapsed, `Recording stats overlay... ${Math.round((elapsed / SANDBOX_DURATION) * 100)}%`);
-    }, 500);
-
-    await new Promise(resolve => setTimeout(resolve, SANDBOX_DURATION));
-
-    clearInterval(drawInterval);
-    clearInterval(progressInterval);
-    clearInterval(redirectInterval);
-    window.removeEventListener("message", messageHandler);
-
-    if (mediaRecorder && mediaRecorder.state !== "inactive") {
-      await new Promise<void>(resolve => {
-        mediaRecorder!.onstop = () => resolve();
-        mediaRecorder!.stop();
-      });
+    } catch {
+      // If html2canvas fails (rare with same-origin), draw a white placeholder
+      videoCtx.fillStyle = "#ffffff";
+      videoCtx.fillRect(0, 0, 1280, 720);
+      videoCtx.fillStyle = "#999";
+      videoCtx.font = "16px monospace";
+      videoCtx.fillText(`Screenshot at ${(delayMs / 1000).toFixed(0)}s — page content unavailable`, 20, 360);
     }
-  }
+  };
+
+  // Capture screenshots at 3 time points (non-blocking)
+  const screenshotPromises = screenshotTimes.map(t => captureScreenshot(t));
+
+  // Progress bar + live stats in video
+  const progressInterval = setInterval(() => {
+    const elapsed = Date.now() - startTime;
+    onProgress(elapsed, `Sandbox running... ${Math.round((elapsed / SANDBOX_DURATION) * 100)}%`);
+    // Draw current stats into video canvas for live video feed
+    videoCtx.fillStyle = "rgba(0,0,0,0.5)";
+    videoCtx.fillRect(0, 690, 1280, 30);
+    videoCtx.fillStyle = "#00ff00";
+    videoCtx.font = "12px monospace";
+    videoCtx.fillText(`Time: ${(elapsed / 1000).toFixed(1)}s / 20s | Network: ${network.length} | Console: ${consoleLog.length} | Errors: ${errors.length} | Popups: ${popups.length}`, 10, 710);
+  }, 500);
+
+  // Wait for SANDBOX_DURATION
+  await new Promise(resolve => setTimeout(resolve, SANDBOX_DURATION));
+
+  clearInterval(progressInterval);
+  clearInterval(redirectInterval);
+  window.removeEventListener("message", messageHandler);
+
+  // Wait for any pending screenshots
+  await Promise.allSettled(screenshotPromises);
+
+  // Stop video recording
+  await new Promise<void>(resolve => {
+    mediaRecorder.onstop = () => resolve();
+    mediaRecorder.stop();
+  });
+
+  onProgress(SANDBOX_DURATION, "Capturing final DOM and generating video...");
 
   // Generate video blob URL from recorded chunks
   let videoBlobUrl: string | undefined;
