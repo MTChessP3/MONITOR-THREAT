@@ -282,27 +282,22 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
         });
         break;
       case "screenshot":
-        // Screenshot capturado por el popup mismo (via html2canvas inyectado por el proxy)
         if (d.dataUrl) {
           screenshots.push(d.dataUrl);
           onProgress(Date.now() - startTime, `Screenshot capturado a los ${(d.delay / 1000).toFixed(0)}s`);
-          // Dibujar en el canvas de video
-          try {
-            const img = new Image();
-            img.onload = () => {
-              if (videoCtx) {
-                videoCtx.fillStyle = "#ffffff";
-                videoCtx.fillRect(0, 0, 1280, 720);
-                videoCtx.drawImage(img, 0, 0, 1280, 720);
-                videoCtx.fillStyle = "rgba(0,0,0,0.7)";
-                videoCtx.fillRect(0, 0, 1280, 30);
-                videoCtx.fillStyle = "#00ff00";
-                videoCtx.font = "14px monospace";
-                videoCtx.fillText(`Sandbox — ${(d.delay / 1000).toFixed(0)}s / 20s — ${url.slice(0, 60)}`, 10, 20);
-              }
-            };
-            img.src = d.dataUrl;
-          } catch {}
+          // Update the latest screenshot image for the video canvas redraw loop
+          const img = new Image();
+          img.onload = () => {
+            latestScreenshotImg = img;
+            latestScreenshotTime = d.delay;
+            // Draw immediately so the next video frame has it
+            if (videoCtx) {
+              videoCtx.fillStyle = "#ffffff";
+              videoCtx.fillRect(0, 0, 1280, 720);
+              videoCtx.drawImage(img, 0, 0, 1280, 720);
+            }
+          };
+          img.src = d.dataUrl;
         }
         break;
       case "screenshotError":
@@ -402,45 +397,115 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   // Modificamos el handler de popups para añadir al timeline
   const originalPopupHandler = messageHandler;
 
-  onProgress(3000, "Waiting for page to render — screenshots are self-captured by the popup...");
+  onProgress(3000, "Starting video recording — waiting for page to render...");
 
-  // Screenshots are now captured BY THE POPUP ITSELF.
-  // The proxy injects html2canvas (via CDN) into the popup's page, and
-  // the popup calls html2canvas(document.body) on ITSELF at 6s, 12s, 18s.
-  // Results are sent back to us via postMessage({type:'screenshot', dataUrl:...}).
-  // This works because the popup is same-origin (served by our proxy) and
-  // html2canvas runs INSIDE the popup with full access to its own DOM.
-  // No cross-origin issues, no black screens, no permission prompts.
+  // Screenshots are captured BY THE POPUP ITSELF (proxy injects html2canvas).
+  // We draw them into this canvas for the video recording.
 
-  // Canvas for video recording (we draw received screenshots into it)
+  // Canvas for video recording
   const videoCanvas = document.createElement("canvas");
   videoCanvas.width = 1280;
   videoCanvas.height = 720;
   const videoCtx = videoCanvas.getContext("2d")!;
-  const videoStream = videoCanvas.captureStream(2); // 2 fps for video
+
+  // Track the latest screenshot image so we can redraw it every frame
+  let latestScreenshotImg: HTMLImageElement | null = null;
+  let latestScreenshotTime = 0;
+
+  // Draw the INITIAL frame before starting the recorder — this prevents
+  // the first 6 seconds from being black.
+  const drawInitialFrame = () => {
+    videoCtx.fillStyle = "#1a1a2e";
+    videoCtx.fillRect(0, 0, 1280, 720);
+    // Title
+    videoCtx.fillStyle = "#e94560";
+    videoCtx.font = "bold 28px monospace";
+    videoCtx.fillText("MONITOR-THREAT", 40, 60);
+    videoCtx.fillStyle = "#ffffff";
+    videoCtx.font = "16px monospace";
+    videoCtx.fillText("URL Sandbox — Recording in progress", 40, 90);
+    videoCtx.fillStyle = "#888";
+    videoCtx.font = "14px monospace";
+    videoCtx.fillText(`Target: ${url.slice(0, 100)}`, 40, 120);
+    videoCtx.fillText(`Duration: 20 seconds`, 40, 145);
+    videoCtx.fillText(`Waiting for first screenshot at 6s...`, 40, 170);
+    // Progress bar background
+    videoCtx.fillStyle = "#333";
+    videoCtx.fillRect(40, 680, 1200, 8);
+    videoCtx.fillStyle = "#e94560";
+    videoCtx.fillRect(40, 680, 0, 8);
+  };
+  drawInitialFrame();
+
+  // Start recording AFTER the initial frame is drawn
+  const videoStream = videoCanvas.captureStream(10); // 10 fps — higher fps = smoother video
   const mediaRecorder = new MediaRecorder(videoStream, { mimeType: "video/webm;codecs=vp8" });
   const videoChunks: Blob[] = [];
   mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) videoChunks.push(e.data); };
   mediaRecorder.start();
 
-  // Progress bar + live stats in video
-  const progressInterval = setInterval(() => {
+  // Redraw the canvas EVERY 200ms — this ensures the video always has content.
+  // Each redraw shows: latest screenshot (if available) + live stats overlay.
+  const drawInterval = setInterval(() => {
     const elapsed = Date.now() - startTime;
-    onProgress(elapsed, `Sandbox running... ${Math.round((elapsed / SANDBOX_DURATION) * 100)}%`);
-    // Draw current stats into video canvas for live video feed
-    videoCtx.fillStyle = "rgba(0,0,0,0.5)";
-    videoCtx.fillRect(0, 690, 1280, 30);
-    videoCtx.fillStyle = "#00ff00";
+    const elapsedSec = (elapsed / 1000).toFixed(1);
+    const pct = elapsed / SANDBOX_DURATION;
+
+    // If we have a screenshot, draw it as the background
+    if (latestScreenshotImg) {
+      videoCtx.fillStyle = "#ffffff";
+      videoCtx.fillRect(0, 0, 1280, 720);
+      videoCtx.drawImage(latestScreenshotImg, 0, 0, 1280, 720);
+    } else {
+      // No screenshot yet — draw the "waiting" frame
+      drawInitialFrame();
+    }
+
+    // Always draw the stats overlay at the bottom
+    videoCtx.fillStyle = "rgba(0,0,0,0.85)";
+    videoCtx.fillRect(0, 680, 1280, 40);
+    videoCtx.fillStyle = "#e94560";
+    videoCtx.font = "bold 14px monospace";
+    videoCtx.fillText(`⏱ ${elapsedSec}s / 20s`, 10, 702);
+    videoCtx.fillStyle = "#00ff88";
     videoCtx.font = "12px monospace";
-    videoCtx.fillText(`Time: ${(elapsed / 1000).toFixed(1)}s / 20s | Network: ${network.length} | Console: ${consoleLog.length} | Errors: ${errors.length} | Popups: ${popups.length} | Screenshots: ${screenshots.length}`, 10, 710);
-  }, 500);
+    videoCtx.fillText(
+      `Net: ${network.length} | Console: ${consoleLog.length} | Errors: ${errors.length} | Popups: ${popups.length} | Eval: ${evalCalls.length} | Screenshots: ${screenshots.length}`,
+      120, 702
+    );
+    // Progress bar
+    videoCtx.fillStyle = "#333";
+    videoCtx.fillRect(0, 716, 1280, 4);
+    videoCtx.fillStyle = "#e94560";
+    videoCtx.fillRect(0, 716, 1280 * pct, 4);
+
+    onProgress(elapsed, `Sandbox running... ${Math.round(pct * 100)}% | Screenshots: ${screenshots.length}`);
+  }, 200);
 
   // Wait for SANDBOX_DURATION
   await new Promise(resolve => setTimeout(resolve, SANDBOX_DURATION));
 
-  clearInterval(progressInterval);
+  clearInterval(drawInterval);
   clearInterval(redirectInterval);
   window.removeEventListener("message", messageHandler);
+
+  // Draw one final frame
+  if (latestScreenshotImg) {
+    videoCtx.fillStyle = "#ffffff";
+    videoCtx.fillRect(0, 0, 1280, 720);
+    videoCtx.drawImage(latestScreenshotImg, 0, 0, 1280, 720);
+  }
+  videoCtx.fillStyle = "rgba(0,0,0,0.85)";
+  videoCtx.fillRect(0, 680, 1280, 40);
+  videoCtx.fillStyle = "#e94560";
+  videoCtx.font = "bold 14px monospace";
+  videoCtx.fillText(`⏱ 20.0s / 20s — COMPLETE`, 10, 702);
+  videoCtx.fillStyle = "#00ff88";
+  videoCtx.font = "12px monospace";
+  videoCtx.fillText(`Final: Net: ${network.length} | Console: ${consoleLog.length} | Errors: ${errors.length} | Popups: ${popups.length} | Screenshots: ${screenshots.length}`, 120, 702);
+
+  // Wait 500ms so the final frame is captured by the recorder
+  await new Promise(r => setTimeout(r, 500));
 
   // Stop video recording
   await new Promise<void>(resolve => {
