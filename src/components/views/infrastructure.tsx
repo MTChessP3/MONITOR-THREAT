@@ -1797,42 +1797,12 @@ export function IpIntelView() {
 // src/app/page.tsx still resolves.
 export { DomainIntelView } from "@/components/views/domain-intel-view";
 
-// ---------- Domain Forensics (placeholder) ----------
-export function DomainForensicsView() {
-  return (
-    <ModuleShell
-      name="Domain Forensics"
-      description="Deep forensic analysis of domains: infrastructure, hosting and pivots."
-      icon={Search}
-      category="INFRASTRUCTURE"
-    >
-      <SearchBar label="Domain" placeholder="example.com" />
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-        <Panel title="Passive DNS">
-          <EmptyModuleState
-            icon={Search}
-            name="No data yet"
-            description="Enter a domain to pivot through passive DNS history."
-          />
-        </Panel>
-        <Panel title="Infrastructure graph">
-          <EmptyModuleState
-            icon={Network}
-            name="Graph view"
-            description="Render hosting, ASN and certificate relationships as a graph."
-          />
-        </Panel>
-        <Panel title="Pivot recommendations">
-          <EmptyModuleState
-            icon={Search}
-            name="Pivots"
-            description="Suggested pivots based on shared infrastructure will appear here."
-          />
-        </Panel>
-      </div>
-    </ModuleShell>
-  );
-}
+// ---------- Domain Forensics (re-export from dedicated file) ----------
+// The DomainForensicsView is now in src/components/views/domain-forensics-view.tsx
+// because it grew to ~700 lines with the live investigation, ZIP download,
+// PDF report and all the result panels. Re-export it here so the existing
+// import in src/app/page.tsx still resolves.
+export { DomainForensicsView } from "@/components/views/domain-forensics-view";
 
 // ---------- DNS Dump (mock) ----------
 export function DnsDumpView() {
