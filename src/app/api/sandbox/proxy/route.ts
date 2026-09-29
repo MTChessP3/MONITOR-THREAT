@@ -113,52 +113,6 @@ const MONITOR_SCRIPT = `
     }
     // Send final DOM (the parent uses this for the finalDom panel/PDF only)
     parent.postMessage({type:'finalDom', html: document.documentElement.outerHTML.slice(0, 50000), title: document.title}, '*');
-    // Run html2canvas on our own body and post the data URL back to parent.
-    // The parent exposed its html2canvas onto our window (popup.html2canvas = ...)
-    // so we can call it from inside our context — this ensures the rendering
-    // sandbox iframe uses our window, and the rewritten images load
-    // through our proxy with CORS headers.
-    function shoot(delay) {
-      setTimeout(function() {
-        try {
-          if (typeof window.html2canvas !== 'function') {
-            parent.postMessage({type:'screenshotError', delay: delay, error: 'html2canvas not exposed on popup window'}, '*');
-            return;
-          }
-          window.html2canvas(document.body, {
-            useCORS: true,
-            allowTaint: false,
-            backgroundColor: '#ffffff',
-            scale: 1,
-            width: 1280,
-            height: 720,
-            windowWidth: 1280,
-            windowHeight: 720,
-            imageTimeout: 3000,
-            logging: false,
-            foreignObjectRendering: false
-          }).then(function(canvas) {
-            try {
-              var dataUrl = canvas.toDataURL('image/png');
-              parent.postMessage({type:'screenshot', delay: delay, dataUrl: dataUrl}, '*');
-            } catch(e) {
-              // tainted canvas — extract what we can
-              parent.postMessage({type:'screenshotError', delay: delay, error: 'toDataURL failed: ' + String(e).slice(0,200)}, '*');
-            }
-          }).catch(function(err) {
-            parent.postMessage({type:'screenshotError', delay: delay, error: 'html2canvas rejected: ' + String(err).slice(0,200)}, '*');
-          });
-        } catch(e) {
-          parent.postMessage({type:'screenshotError', delay: delay, error: 'shoot: ' + String(e).slice(0,200)}, '*');
-        }
-      }, delay);
-    }
-    // Take screenshots at 2s, 6s, 10s, 14s after DOMContentLoaded
-    // (the parent has a 20s total recording window — these all fit)
-    shoot(2000);
-    shoot(6000);
-    shoot(10000);
-    shoot(14000);
     // Re-run URL rewriting periodically to catch dynamically added images
     setInterval(rewriteResourceUrls, 2000);
   });

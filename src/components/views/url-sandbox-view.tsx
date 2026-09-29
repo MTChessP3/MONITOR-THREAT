@@ -23,7 +23,6 @@ import {
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
-import html2canvas from "html2canvas";
 import {
   ModuleShell,
   Panel,
@@ -118,6 +117,26 @@ interface SandboxResult {
 
 const SANDBOX_DURATION = 20000;
 const SCREENSHOT_INTERVAL = 6000; // 3 screenshots: ~6s, ~12s, ~18s
+
+// Helper: wrap text to a max pixel width using the current canvas font.
+// Returns an array of strings, each fitting within `maxWidth`.
+function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  if (!text) return [""];
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let current = "";
+  for (const w of words) {
+    const test = current ? current + " " + w : w;
+    if (ctx.measureText(test).width > maxWidth && current) {
+      lines.push(current);
+      current = w;
+    } else {
+      current = test;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length > 0 ? lines : [text];
+}
 
 // ---------- Sandbox Engine ----------
 
@@ -254,24 +273,119 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
         break;
       case "sandboxReady":
         loaded = true;
-        // Expose our html2canvas to the popup so its monitor script
-        // can call window.html2canvas(document.body, ...) on its own
-        // DOM. This runs in the popup's window context — the rendering
-        // sandbox iframe is created in the popup, and the rewritten
-        // <img> URLs (rewritten by the monitor script) load through
-        // /api/sandbox/proxy which returns them with CORS headers, so
-        // the canvas is NOT tainted and toDataURL works.
-        try {
-          (popup as any).html2canvas = html2canvas;
-        } catch (e) {
-          // popup may have navigated away — ignore
-        }
+        // The popup's DOM is same-origin (served via /api/sandbox/proxy),
+        // so the parent can read popup.document.title and .body.innerText
+        // directly. We capture text snapshots on the parent side and
+        // render them as "page snapshot" canvases for the video.
+        // (html2canvas cross-window does NOT work — the function's
+        // closure stays in the parent, so it creates its rendering iframe
+        // in the parent's document but tries to clone the popup's body,
+        // which silently fails.)
         timeline.push({
           time: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
           timestamp: new Date().toISOString(),
           type: "ready",
           description: "Monitoring active — page loaded via proxy",
           severity: "info",
+        });
+        // Schedule parent-side text snapshots at 3s, 7s, 11s, 15s
+        // after sandboxReady. Each snapshot reads the popup's title
+        // and body text directly (same-origin) and renders a 1280x720
+        // "page snapshot" canvas. These become the video frames.
+        [3000, 7000, 11000, 15000].forEach((delay) => {
+          setTimeout(() => {
+            try {
+              const popupDoc = popup.document;
+              if (!popupDoc || !popupDoc.body) return;
+              const title = (popupDoc.title || "").slice(0, 120);
+              const bodyText = (popupDoc.body.innerText || "").slice(0, 8000);
+              const html = popupDoc.documentElement.outerHTML || "";
+              // Detect some basic style info to make the snapshot look more like the page
+              let bgColor = "#ffffff";
+              let textColor = "#1e293b";
+              let linkColor = "#2563eb";
+              try {
+                const cs = popup.getComputedStyle(popupDoc.body);
+                if (cs.backgroundColor && cs.backgroundColor !== "rgba(0, 0, 0, 0)") bgColor = cs.backgroundColor;
+                if (cs.color) textColor = cs.color;
+              } catch {}
+              if (!bodyText && !title) return;
+              const fc = document.createElement("canvas");
+              fc.width = 1280; fc.height = 720;
+              const fctx = fc.getContext("2d")!;
+              // Background
+              fctx.fillStyle = bgColor;
+              fctx.fillRect(0, 0, 1280, 720);
+              // Header bar (simulating browser chrome)
+              fctx.fillStyle = "#f1f5f9";
+              fctx.fillRect(0, 0, 1280, 56);
+              fctx.fillStyle = "#e2e8f0";
+              fctx.fillRect(0, 54, 1280, 2);
+              fctx.fillStyle = "#64748b";
+              fctx.font = "bold 13px monospace";
+              fctx.fillText("●", 20, 30);
+              fctx.fillText("●", 50, 30);
+              fctx.fillText("●", 80, 30);
+              // URL bar
+              const urlText = url.length > 80 ? url.slice(0, 78) + "..." : url;
+              fctx.fillStyle = "#ffffff";
+              fctx.fillRect(120, 16, 1140, 28);
+              fctx.fillStyle = "#334155";
+              fctx.font = "12px monospace";
+              fctx.fillText(urlText, 132, 35);
+              // Snapshot label
+              fctx.fillStyle = "#94a3b8";
+              fctx.font = "10px monospace";
+              fctx.fillText(`snapshot @ ${((Date.now() - startTime) / 1000).toFixed(1)}s`, 1180, 35);
+              // Title
+              fctx.fillStyle = textColor;
+              fctx.font = "bold 26px sans-serif";
+              const titleLines = wrapText(fctx, title, 1240);
+              for (let i = 0; i < Math.min(titleLines.length, 2); i++) {
+                fctx.fillText(titleLines[i], 20, 90 + i * 30);
+              }
+              // Body text
+              fctx.font = "14px monospace";
+              fctx.fillStyle = textColor;
+              const lines = bodyText.split("\n").map((l: string) => l.trim()).filter((l: string) => l);
+              let yCursor = 90 + Math.min(titleLines.length, 2) * 30 + 16;
+              const maxLines = Math.floor((720 - yCursor - 10) / 18);
+              for (let i = 0; i < Math.min(lines.length, maxLines); i++) {
+                const wrapped = wrapText(fctx, lines[i], 1240);
+                for (const w of wrapped) {
+                  if (yCursor > 710) break;
+                  // Render links in blue
+                  const isLink = /^https?:\/\//i.test(w) || /^(click|ver más|leer|descargar|login|signin|submit|enter)$/i.test(w);
+                  fctx.fillStyle = isLink ? linkColor : textColor;
+                  fctx.fillText(w.slice(0, 160), 20, yCursor);
+                  yCursor += 18;
+                }
+                if (yCursor > 710) break;
+              }
+              // Footer note
+              fctx.fillStyle = "rgba(0,0,0,0.7)";
+              fctx.fillRect(0, 700, 1280, 20);
+              fctx.fillStyle = "#e2e8f0";
+              fctx.font = "11px monospace";
+              fctx.fillText(`MONITOR-THREAT · snapshot ${screenshots.length + 1} · ${url.slice(0, 80)}`, 10, 714);
+
+              const dataUrl = fc.toDataURL("image/png");
+              screenshots.push(dataUrl);
+              const img = new Image();
+              img.onload = () => {
+                latestScreenshotImg = img;
+                if (videoCtx) {
+                  videoCtx.fillStyle = "#ffffff";
+                  videoCtx.fillRect(0, 0, 1280, 720);
+                  videoCtx.drawImage(img, 0, 0, 1280, 720);
+                }
+              };
+              img.src = dataUrl;
+              onProgress(Date.now() - startTime, `Snapshot ${screenshots.length} capturado (${delay / 1000}s)`);
+            } catch (e) {
+              // popup may have been closed or navigated cross-origin
+            }
+          }, delay);
         });
         break;
       case "link":
@@ -294,25 +408,14 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
         });
         break;
       case "screenshot":
-        if (d.dataUrl) {
-          screenshots.push(d.dataUrl);
-          onProgress(Date.now() - startTime, `Screenshot capturado a los ${(d.delay / 1000).toFixed(0)}s`);
-          const img = new Image();
-          img.onload = () => {
-            latestScreenshotImg = img;
-            if (videoCtx) {
-              videoCtx.fillStyle = "#ffffff";
-              videoCtx.fillRect(0, 0, 1280, 720);
-              videoCtx.drawImage(img, 0, 0, 1280, 720);
-            }
-          };
-          img.src = d.dataUrl;
-        }
+        // Legacy case — the popup no longer sends screenshots. The
+        // parent now captures text snapshots directly from
+        // popup.document.body.innerText (same-origin via proxy).
+        // Kept for backward compat with cached proxy scripts.
+        if (d.dataUrl) screenshots.push(d.dataUrl);
         break;
       case "domSnapshot":
-        // Legacy message type — no longer used. The popup now takes its
-        // own screenshots via the injected html2canvas (parent exposes
-        // popup.html2canvas = html2canvas after sandboxReady). Ignored.
+        // Legacy case — no longer used. Ignored.
         break;
       case "screenshotError":
         timeline.push({
@@ -413,8 +516,11 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
 
   onProgress(3000, "Starting video recording — waiting for page to render...");
 
-  // Screenshots are captured BY THE POPUP ITSELF (proxy injects html2canvas).
-  // We draw them into this canvas for the video recording.
+  // Page snapshots are captured by the PARENT (in the sandboxReady
+  // handler above) at 3s/7s/11s/15s. Each snapshot reads the popup's
+  // title and body text directly (same-origin via proxy) and renders
+  // a 1280x720 "page snapshot" canvas. The canvas is drawn to the
+  // video canvas for recording.
 
   // Canvas for video recording
   const videoCanvas = document.createElement("canvas");
@@ -496,44 +602,12 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
     onProgress(elapsed, `Sandbox running... ${Math.round(pct * 100)}% | Screenshots: ${screenshots.length}`);
   }, 200);
 
-  // FALLBACK: if the popup's html2canvas never produced a screenshot
-  // (e.g., the page never reached DOMContentLoaded, or html2canvas
-  // threw on every attempt), grab the popup's text content directly
-  // and draw it on the video canvas. This ensures the video always
-  // shows SOMETHING from the target page, not just the MONITOR-THREAT
-  // initial frame.
-  setTimeout(() => {
-    if (screenshots.length === 0) {
-      try {
-        const popupDoc = popup.document;
-        if (popupDoc && popupDoc.body) {
-          const bodyText = (popupDoc.body.innerText || "").slice(0, 6000);
-          const titleText = popupDoc.title || "";
-          if (bodyText || titleText) {
-            const fc = document.createElement("canvas");
-            fc.width = 1280; fc.height = 720;
-            const fctx = fc.getContext("2d")!;
-            fctx.fillStyle = "#ffffff"; fctx.fillRect(0, 0, 1280, 720);
-            fctx.fillStyle = "#0f172a"; fctx.font = "bold 22px sans-serif";
-            fctx.fillText(titleText.slice(0, 90), 24, 40);
-            fctx.fillStyle = "#64748b"; fctx.font = "12px monospace";
-            fctx.fillText(`Fallback text capture (html2canvas did not return) · ${url.slice(0, 80)}`, 24, 62);
-            fctx.fillStyle = "#1e293b"; fctx.font = "13px monospace";
-            const lines = bodyText.split("\n").filter((l: string) => l.trim()).slice(0, 42);
-            for (let i = 0; i < lines.length; i++) {
-              fctx.fillText(lines[i].slice(0, 145), 24, 90 + i * 18);
-            }
-            const dataUrl = fc.toDataURL("image/png");
-            screenshots.push(dataUrl);
-            const img = new Image();
-            img.onload = () => { latestScreenshotImg = img; };
-            img.src = dataUrl;
-            onProgress(Date.now() - startTime, `Fallback screenshot (text-only) capturado`);
-          }
-        }
-      } catch (e) { /* popup may be closed or cross-origin */ }
-    }
-  }, 12000);
+  // Note: the parent-side text snapshots at 3s/7s/11s/15s (scheduled in
+  // the sandboxReady handler above) provide continuous "page snapshot"
+  // frames for the video. No additional fallback is needed — if the
+  // popup closes before any snapshot fires, the initial MONITOR-THREAT
+  // frame remains visible for the rest of the recording, and the
+  // timeline/console/errors panels still show the captured telemetry.
 
   // Wait for SANDBOX_DURATION
   await new Promise(resolve => setTimeout(resolve, SANDBOX_DURATION));
