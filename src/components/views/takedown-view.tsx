@@ -294,6 +294,7 @@ export function TakedownUrlView() {
   const [expandedUrls, setExpandedUrls] = React.useState<Set<string>>(new Set());
   const [imagePreview, setImagePreview] = React.useState<{ url: string; src: string; caption?: string } | null>(null);
   const [bulkSubmitting, setBulkSubmitting] = React.useState(false);
+  const [autoTakedownRunning, setAutoTakedownRunning] = React.useState(false);
   const [progress, setProgress] = React.useState({ done: 0, total: 0, step: "" });
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -420,6 +421,115 @@ export function TakedownUrlView() {
     }
     setBulkSubmitting(false);
     setProgress({ done: 0, total: 0, step: "" });
+  };
+
+  const runFullTakedown = async () => {
+    if (entries.length === 0) {
+      alert("Primero cargá las URLs a reportar (PASO 1).");
+      return;
+    }
+    if (!confirm(
+      `Se va a ejecutar el TAKEDOWN AUTOMÁTICO COMPLETO para ${entries.length} URL(s).\n\n` +
+      `Esto va a:\n` +
+      `  1. Enriquecer cada URL (VirusTotal, Whois, hosting, screenshot)\n` +
+      `  2. Auto-reportar a 4 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank) — 100% automático\n` +
+      `  3. Abrir formularios de Google, Microsoft, APWG, etc. — vas a tener que hacer click en "Submit" en cada uno (los browsers no permiten auto-submit por seguridad)\n` +
+      `  4. Abrir tu cliente de mail con el correo de abuse pre-cargado — vas a tener que hacer click en "Enviar" (no podemos mandar correos sin tu acción)\n` +
+      `  5. Al final, generar el PDF con trazabilidad completa de todo lo hecho.\n\n` +
+      `⚠ IMPORTANTE: Permití popups para este sitio cuando el browser te lo pida (necesario para abrir los formularios).\n\n` +
+      `¿Continuar?`
+    )) {
+      return;
+    }
+    setAutoTakedownRunning(true);
+    setLoading(true);
+
+    const total = entries.length;
+    setProgress({ done: 0, total, step: `Iniciando takedown automático de ${total} URL(s)...` });
+
+    // Step 1+2: Enrich all
+    let done = 0;
+    setProgress({ done: 0, total, step: `[1/4] Enriqueciendo URLs (VirusTotal, Whois, hosting, screenshot)...` });
+    const toEnrich = entries.filter(e => e.status !== "enriched");
+    for (const e of toEnrich) {
+      await enrichOne(e.url);
+      done++;
+      setProgress({ done, total, step: `[1/4] Enriquecido ${e.url.slice(0, 60)}... (${done}/${total})` });
+    }
+
+    // Refresh entries state for downstream — they need the enrich data
+    // We'll fetch the latest state via setEntries callback each time we update
+    setProgress({ done: 0, total, step: `[2/4] Auto-submiteando a APIs (URLhaus, VirusTotal, Clean-MX, PhishTank)...` });
+    done = 0;
+    // We need to get the latest entries after enrichment. Use a microtask wait.
+    await new Promise(r => setTimeout(r, 100));
+    const currentEntries = (await new Promise<UrlEntry[]>(resolve => {
+      setEntries(prev => { resolve(prev); return prev; });
+    }));
+    for (const entry of currentEntries.filter(e => e.status === "enriched")) {
+      await submitOne(entry);
+      done++;
+      setProgress({ done, total, step: `[2/4] Auto-submiteado ${entry.url.slice(0, 60)}... (${done}/${total})` });
+    }
+
+    // Step 3: Open pre-fill forms (up to 6 per URL, all that haven't been opened yet)
+    setProgress({ done: 0, total, step: `[3/4] Abriendo formularios de Google, Microsoft, APWG, etc. (vas a confirmar el submit en cada uno)...` });
+    done = 0;
+    for (const entry of currentEntries.filter(e => e.status === "enriched")) {
+      // Open up to 6 forms per URL (browser popup limit per user gesture)
+      const toOpen = PREFILL_PLATFORMS.filter(p => !entry.prefillOpened.includes(p.id)).slice(0, 6);
+      toOpen.forEach(p => {
+        try {
+          window.open(p.url(entry.url), "_blank");
+        } catch {}
+      });
+      setEntries(prev => prev.map(e => e.url === entry.url ? {
+        ...e,
+        prefillOpened: [...e.prefillOpened, ...toOpen.map(p => p.id)],
+      } : e));
+      done++;
+      setProgress({ done, total, step: `[3/4] Forms abiertos para ${entry.url.slice(0, 60)}... (${done}/${total})` });
+      // Small delay so the browser doesn't block popups
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    // Step 4: Open abuse email (one template per URL based on classification)
+    setProgress({ done: 0, total, step: `[4/4] Abriendo correo de abuse pre-cargado (vas a enviarlo)...` });
+    done = 0;
+    for (const entry of currentEntries.filter(e => e.status === "enriched")) {
+      // Determine the most appropriate template based on classification
+      const tpl: EmailTemplate =
+        entry.enrich?.classification === "malware" ? "malware" :
+        entry.enrich?.classification === "scam" ? "scam" :
+        entry.enrich?.classification === "phishing" ? "phishing" :
+        "phishing";  // default to phishing
+      if (!entry.emailsGenerated.includes(tpl)) {
+        // Open mailto — this will open the user's email client
+        openAbuseEmail(entry, tpl);
+        await new Promise(r => setTimeout(r, 100));
+      }
+      done++;
+      setProgress({ done, total, step: `[4/4] Email pre-cargado para ${entry.url.slice(0, 60)}... (${done}/${total})` });
+    }
+
+    // Step 5: Wait a moment, then auto-generate the PDF report
+    setProgress({ done: total, total, step: `Generando PDF con trazabilidad...` });
+    await new Promise(r => setTimeout(r, 500));
+    setLoading(false);
+    setAutoTakedownRunning(false);
+    setProgress({ done: 0, total: 0, step: "" });
+
+    if (confirm(
+      `Takedown automático completado para ${total} URL(s).\n\n` +
+      `Resumen:\n` +
+      `  • ${toEnrich.length} URLs enriquecidas (VirusTotal, Whois, hosting)\n` +
+      `  • ${currentEntries.filter(e => e.status === "enriched").length} URLs auto-reportadas a APIs (URLhaus, VirusTotal, Clean-MX, PhishTank)\n` +
+      `  • Forms de Google/Microsoft/APWG abiertos — REVISÁ Y CONFIRMÁ EL SUBMIT EN CADA PESTAÑA\n` +
+      `  • Correos de abuse pre-cargados — REVISÁ Y ENVIÁ CADA CORREO\n\n` +
+      `¿Generar el informe PDF con trazabilidad completa ahora?`
+    )) {
+      generatePdf();
+    }
   };
 
   // ---- Pre-fill forms ----
@@ -838,10 +948,18 @@ export function TakedownUrlView() {
       {/* ---------- Wizard step bar (always visible) ---------- */}
       <div className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-muted/20 text-[11px]">
         <StepBar label="1. Cargar URLs" done={step1Done} />
-        <StepBar label="2. Enriquecer" done={step2Done} />
-        <StepBar label="3. Reportar a plataformas" done={step3Done} />
-        <StepBar label="4. Generar correos de abuse" done={step4Done} />
+        <StepBar label="2. Enriquecer (auto)" done={step2Done} />
+        <StepBar label="3. Reportar a plataformas (auto)" done={step3Done} />
+        <StepBar label="4. Correos de abuse (auto)" done={step4Done} />
         <StepBar label="5. Imprimir PDF" done={step5Done} last />
+      </div>
+
+      {/* Hint banner: explain the workflow */}
+      <div className="flex items-start gap-2 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-[11px]">
+        <div className="text-cyan-500 font-bold shrink-0">💡 Flujo de uso:</div>
+        <div className="text-muted-foreground">
+          <strong>PASO 1</strong>: Cargá las URLs (textarea o .txt). Luego hacé click en el botón <strong className="text-cyan-500">🚀 Takedown automático completo</strong> que aparece abajo — ese botón ejecuta TODOS los pasos (enriquecer, reportar a APIs, abrir forms, abrir emails, generar PDF) de una sola vez. Los PASOs 2-4 también podés ejecutarlos individualmente si querés ver cada paso.
+        </div>
       </div>
 
       {/* ---------- Step 1: Load URLs ---------- */}
@@ -869,6 +987,53 @@ export function TakedownUrlView() {
           className="w-full h-32 p-3 rounded border border-border bg-background font-mono text-xs resize-y"
         />
       </Panel>
+
+      {/* ---------- BIG AUTO-TAKEDOWN BUTTON — runs the entire pipeline ---------- */}
+      {step1Done && (
+        <Panel
+          title="🚀 Takedown automático completo (UN solo botón)"
+          className="md:col-span-2"
+        >
+          <div className="flex flex-col gap-3">
+            <div className="text-xs text-muted-foreground p-3 rounded bg-cyan-500/5 border border-cyan-500/30">
+              <strong className="text-cyan-500">Cómo funciona:</strong> Al hacer click en este botón, el sistema ejecuta TODO automáticamente:
+              <ol className="list-decimal ml-4 mt-1 space-y-0.5 text-[11px]">
+                <li><strong>Enriquece</strong> cada URL (VirusTotal, Whois, hosting, screenshot, Cloudflare, clasificación) — 100% automático</li>
+                <li><strong>Auto-reporta</strong> a 4 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank) — 100% automático</li>
+                <li><strong>Abre</strong> los formularios de Google, Microsoft, APWG, etc. — vas a confirmar el "Submit" en cada uno (el browser no permite auto-submit por seguridad)</li>
+                <li><strong>Abre</strong> tu cliente de mail con el correo de abuse pre-cargado — vas a hacer click en "Enviar" (no podemos mandar correos sin tu acción)</li>
+                <li><strong>Genera el PDF</strong> con trazabilidad completa de todo lo hecho — 100% automático</li>
+              </ol>
+            </div>
+            <div className="flex items-center gap-3 flex-wrap">
+              <Button
+                size="lg"
+                onClick={runFullTakedown}
+                disabled={autoTakedownRunning || loading || entries.length === 0}
+                className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-6 text-base"
+              >
+                {autoTakedownRunning || loading ? (
+                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Ejecutando takedown automático... {progress.done}/{progress.total}</>
+                ) : (
+                  <><Send className="w-4 h-4 mr-2" /> 🚀 Ejecutar takedown automático completo ({entries.length} URL{entries.length === 1 ? "" : "s"})</>
+                )}
+              </Button>
+              <span className="text-[10px] text-muted-foreground">
+                ⚠ Necesitás permitir popups en tu browser para que se abran los formularios
+              </span>
+            </div>
+            {(autoTakedownRunning || (loading && progress.step)) && (
+              <div className="p-3 rounded bg-yellow-500/10 border border-yellow-500/40 text-xs font-mono text-yellow-600">
+                <div className="font-bold mb-1">Progreso en tiempo real:</div>
+                <div>{progress.step}</div>
+                <div className="mt-2 w-full bg-yellow-500/20 rounded-full h-1.5 overflow-hidden">
+                  <div className="bg-yellow-500 h-full transition-all" style={{ width: `${progress.total > 0 ? (progress.done / progress.total) * 100 : 0}%` }} />
+                </div>
+              </div>
+            )}
+          </div>
+        </Panel>
+      )}
 
       {/* ---------- Step 2: Enrich ---------- */}
       {step1Done && (
