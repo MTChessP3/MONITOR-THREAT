@@ -1432,12 +1432,12 @@ export function TakedownUrlView() {
                               </div>
                               {/* Details */}
                               <div className="md:col-span-2 space-y-1">
-                                <FieldRow label="Registrar" value={entry.enrich.whois?.registrar || "?"} mono />
-                                <FieldRow label="Abuse email (registrar)" value={entry.enrich.whois?.abuseEmail || "?"} mono />
-                                <FieldRow label="Hosting" value={`${entry.enrich.hosting?.asnOrg || "?"} (${entry.enrich.hosting?.asn || "?"})`} mono />
-                                <FieldRow label="ISP" value={entry.enrich.hosting?.isp || "?"} mono />
-                                <FieldRow label="Detrás de Cloudflare" value={entry.enrich.cloudflare ? "SÍ — también contactar abuse@cloudflare.com" : "no"} mono />
-                                <FieldRow label="VirusTotal" value={entry.enrich.vt ? `${entry.enrich.vt.malicious} malicious, ${entry.enrich.vt.suspicious} suspicious` : "?"} mono />
+                                <FieldRow label="Hosting" value={`${entry.enrich.hosting?.asnOrg || "No disponible"} (${entry.enrich.hosting?.asn || "?"})`} mono />
+                                <FieldRow label="Registrar" value={entry.enrich.whois?.registrar || "No disponible"} mono />
+                                <FieldRow label="Abuse email (registrar)" value={entry.enrich.whois?.abuseEmail || "No disponible"} mono />
+                                <FieldRow label="ISP" value={entry.enrich.hosting?.isp || "No disponible"} mono />
+                                <FieldRow label="Detras de Cloudflare" value={entry.enrich.cloudflare ? "SI - tambien contactar abuse@cloudflare.com" : "no"} mono />
+                                <FieldRow label="VirusTotal" value={entry.enrich.vt ? `${entry.enrich.vt.malicious} malicious, ${entry.enrich.vt.suspicious} suspicious` : "No disponible"} mono />
                                 {entry.enrich.vt?.permalink && (
                                   <a href={entry.enrich.vt.permalink} target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline inline-flex items-center gap-1 text-[10px]">
                                     <ExternalLink className="w-3 h-3" /> Ver reporte completo en VirusTotal

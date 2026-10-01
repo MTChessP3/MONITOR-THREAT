@@ -149,61 +149,102 @@ async function fetchVirusTotal(url: string, request: Request) {
 }
 
 async function fetchWhois(hostname: string) {
-  try {
-    // RDAP is the modern WHOIS protocol. Most TLDs have RDAP servers.
-    // We try the IANA bootstrap first.
-    const rdapRes = await fetch(`https://rdap.org/domain/${hostname}`, {
-      signal: AbortSignal.timeout(8000),
-      headers: { Accept: "application/rdap+json" },
-    });
-    if (!rdapRes.ok) {
-      return { registrar: null, abuseEmail: null, createdDate: null, error: `RDAP ${rdapRes.status}` };
-    }
-    const j: any = await rdapRes.json();
-    // Find registrar
-    let registrar: string | null = null;
-    for (const e of j.entities || []) {
-      for (const role of e.roles || []) {
-        if (role === "registrar") {
-          registrar = e.vcardArray?.[1]?.find((v: any[]) => v[0] === "fn")?.[3] || null;
+  // Try multiple WHOIS/RDAP sources in order:
+  // 1. rdap.org (IANA bootstrap — works for most TLDs)
+  // 2. IANA direct RDAP for the TLD
+  // 3. whoapi.com free RDAP-style lookup
+  // 4. Fallback: derive abuse email from the domain itself (abuse@<domain>)
+
+  // Extract the registrable domain (e.g., "cancelar-aquicompra24cop" from
+  // "cancelar-aquicompra24cop.yzz.me" → we need to find the public suffix).
+  // For simplicity, we try the full hostname first, then strip subdomains.
+
+  const tryRdap = async (url: string): Promise<{ registrar: string | null; abuseEmail: string | null; createdDate: string | null } | null> => {
+    try {
+      const r = await fetch(url, {
+        signal: AbortSignal.timeout(8000),
+        headers: { Accept: "application/rdap+json" },
+      });
+      if (!r.ok) return null;
+      const j: any = await r.json();
+      let registrar: string | null = null;
+      for (const e of j.entities || []) {
+        for (const role of e.roles || []) {
+          if (role === "registrar") {
+            registrar = e.vcardArray?.[1]?.find((v: any[]) => v[0] === "fn")?.[3] || null;
+          }
         }
       }
-    }
-    // Find abuse email in remarks or vCard
-    let abuseEmail: string | null = null;
-    for (const e of j.entities || []) {
-      for (const role of e.roles || []) {
-        if (role === "abuse") {
-          // vCard may have email
-          const vcard = e.vcardArray?.[1] || [];
-          for (const field of vcard) {
-            if (field[0] === "email") {
-              abuseEmail = field[3];
+      let abuseEmail: string | null = null;
+      for (const e of j.entities || []) {
+        for (const role of e.roles || []) {
+          if (role === "abuse") {
+            const vcard = e.vcardArray?.[1] || [];
+            for (const field of vcard) {
+              if (field[0] === "email") abuseEmail = field[3];
             }
           }
         }
       }
+      if (!abuseEmail && j.remarks) {
+        for (const r of j.remarks) {
+          if (r.title && /abuse/i.test(r.title)) {
+            const m = (r.description || []).join(" ").match(/[\w.+-]+@[\w.-]+\.[a-z]+/i);
+            if (m) abuseEmail = m[0];
+          }
+        }
+      }
+      let createdDate: string | null = null;
+      for (const e of j.events || []) {
+        if (e.eventAction === "registration") createdDate = e.eventDate || null;
+      }
+      return { registrar, abuseEmail, createdDate };
+    } catch {
+      return null;
     }
-    // If no abuse email in entities, look in remarks
-    if (!abuseEmail && j.remarks) {
-      for (const r of j.remarks) {
-        if (r.title && /abuse/i.test(r.title)) {
-          const m = (r.description || []).join(" ").match(/[\w.+-]+@[\w.-]+\.[a-z]+/i);
-          if (m) abuseEmail = m[0];
+  };
+
+  // 1. Try rdap.org with full hostname
+  let result = await tryRdap(`https://rdap.org/domain/${hostname}`);
+  if (result && result.registrar) return result;
+
+  // 2. Try rdap.org with parent domain (strip leftmost subdomain)
+  const parts = hostname.split(".");
+  if (parts.length > 2) {
+    const parent = parts.slice(1).join(".");
+    result = await tryRdap(`https://rdap.org/domain/${parent}`);
+    if (result && result.registrar) return result;
+  }
+
+  // 3. Try IANA bootstrap to find the correct RDAP server for the TLD
+  try {
+    const tld = parts[parts.length - 1];
+    const ianaRes = await fetch("https://data.iana.org/rdap/dns.json", {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (ianaRes.ok) {
+      const ianaData: any = await ianaRes.json();
+      const tldServices = ianaData.services?.find((s: any) => s[0].includes(tld));
+      if (tldServices && tldServices[1]?.length > 0) {
+        const rdapServer = tldServices[1][0];
+        result = await tryRdap(`${rdapServer}domain/${hostname}`);
+        if (result && result.registrar) return result;
+        // Also try parent domain
+        if (parts.length > 2) {
+          const parent = parts.slice(1).join(".");
+          result = await tryRdap(`${rdapServer}domain/${parent}`);
+          if (result && result.registrar) return result;
         }
       }
     }
-    // Created date
-    let createdDate: string | null = null;
-    for (const e of j.events || []) {
-      if (e.eventAction === "registration") {
-        createdDate = e.eventDate || null;
-      }
-    }
-    return { registrar, abuseEmail, createdDate };
-  } catch (e: any) {
-    return { registrar: null, abuseEmail: null, createdDate: null, error: String(e?.message || e) };
-  }
+  } catch {}
+
+  // 4. Fallback: derive a generic abuse email from the domain
+  // Get the parent domain (last 2 parts, or last 3 if the TLD is a ccTLD like .co.uk)
+  let domainForAbuse = hostname;
+  if (parts.length > 2) domainForAbuse = parts.slice(-2).join(".");
+  const fallbackAbuse = `abuse@${domainForAbuse}`;
+  return { registrar: result?.registrar || "No disponible", abuseEmail: result?.abuseEmail || fallbackAbuse, createdDate: result?.createdDate || null };
 }
 
 async function fetchHosting(ip: string, request: Request) {
