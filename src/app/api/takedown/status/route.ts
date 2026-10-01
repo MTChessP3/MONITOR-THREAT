@@ -6,7 +6,6 @@ import { NextResponse } from "next/server";
 
 const KEYS: Array<{ id: string; name: string; envVar: string; registerUrl: string; note: string; sharedWith?: string }> = [
   { id: "virustotal", name: "VirusTotal", envVar: "VIRUSTOTAL_API_KEY", registerUrl: "https://www.virustotal.com/gui/my-apikey", note: "POST → 70+ antivirus escanean la URL" },
-  { id: "cleanmx", name: "Clean-MX", envVar: "", registerUrl: "", note: "XML, no requiere key" },
   { id: "urlscan", name: "URLscan.io", envVar: "URLSCAN_API_KEY", registerUrl: "https://urlscan.io/profile/", note: "Crea reporte público con screenshot + DOM + network requests" },
 ];
 

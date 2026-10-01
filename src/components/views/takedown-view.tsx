@@ -35,7 +35,7 @@ import {
 
 // ---------- Types ----------
 
-type Platform = "virustotal" | "cleanmx" | "urlscan";
+type Platform = "virustotal" | "urlscan";
 type PrefillPlatform =
   | "google_phish" | "google_malware" | "microsoft" | "apwg" | "stopbadware"
   | "spam404" | "netcraft" | "kaspersky" | "talos" | "fortiguard" | "mcafee" | "sucuri";
@@ -86,8 +86,7 @@ const PREFILL_PLATFORMS: Array<{ id: PrefillPlatform; name: string; shortName: s
 
 const API_PLATFORMS: Array<{ id: Platform; name: string; needsKey?: string; note?: string }> = [
   { id: "virustotal", name: "VirusTotal", needsKey: "VIRUSTOTAL_API_KEY", note: "POST → 70+ antivirus escanean la URL" },
-  { id: "cleanmx", name: "Clean-MX", note: "XML, no requiere key" },
-  { id: "urlscan", name: "URLscan.io", needsKey: "URLSCAN_API_KEY (opcional)", note: "Escanea la URL + crea reporte PÚBLICO accesible por cualquiera" },
+  { id: "urlscan", name: "URLscan.io", needsKey: "URLSCAN_API_KEY", note: "Escanea la URL + crea reporte PÚBLICO accesible por cualquiera" },
 ];
 
 const EMAIL_TEMPLATES: Record<EmailTemplate, { name: string; subject: (url: string, host: string) => string; body: (url: string, host: string, evidence: string) => string }> = {
@@ -429,7 +428,7 @@ export function TakedownUrlView() {
     const threatType = entry.enrich?.classification === "malware" ? "malware_url"
       : entry.enrich?.classification === "scam" ? "scam_url"
       : "phishing_url";
-    const platforms: Platform[] = ["virustotal", "cleanmx", "urlscan"];
+    const platforms: Platform[] = ["virustotal", "urlscan"];
     for (const p of platforms) {
       const result = await submitUrl(entry.url, p, threatType);
       setEntries(prev => prev.map(e => e.url === entry.url ? {
@@ -462,7 +461,7 @@ export function TakedownUrlView() {
       `Se va a ejecutar el TAKEDOWN AUTOMATICO para ${entries.length} URL(s).\n\n` +
       `Pasos:\n` +
       `  1. Enriquecer cada URL (VirusTotal, Whois, hosting, screenshot, Cloudflare)\n` +
-      `  2. Reportar automaticamente a 3 APIs (VirusTotal, Clean-MX, URLscan.io)\n\n` +
+      `  2. Reportar automaticamente a 2 APIs (VirusTotal, URLscan.io)\n\n` +
       `Si alguna API key no esta configurada, esa plataforma se marcara como "Salteado (sin key)" (no falla el resto).\n` +
       `Despues de los APIs automaticos, vas a ver 2 botones por URL (Google y Microsoft) para abrirlos manualmente cuando quieras.\n\n` +
       `¿Continuar?`
@@ -486,7 +485,7 @@ export function TakedownUrlView() {
     }
 
     // Step 2: Auto-submit to the 3 APIs ONLY (no Google/Microsoft auto-open — user does it manually per URL)
-    setProgress({ done: 0, total, step: `[2/2] Reportando a 3 APIs (VirusTotal, Clean-MX, URLscan)...` });
+    setProgress({ done: 0, total, step: `[2/2] Reportando a 2 APIs (VirusTotal, URLscan)...` });
     done = 0;
     await new Promise(r => setTimeout(r, 100));
     const currentEntries = (await new Promise<UrlEntry[]>(resolve => {
@@ -646,7 +645,7 @@ export function TakedownUrlView() {
 
     // Only the 3 API platforms (no pre-fill forms, no emails — those
     // are not automatic and don't belong in this report).
-    const apiPlatforms = ["virustotal", "cleanmx", "urlscan"];
+    const apiPlatforms = ["virustotal", "urlscan"];
 
     // Summary table: Platform | Reportados | Fallidos | Salteados
     const summaryRows: Array<[string, string, string, string]> = [];
@@ -846,7 +845,7 @@ export function TakedownUrlView() {
     malware:    { label: "Malware",             description: "URLs clasificadas como distribución de malware (download, crack, keygen, exe, etc.).", predicate: e => e.enrich?.classification === "malware" },
     scam:       { label: "Scam",                description: "URLs clasificadas como scam/fraude financiero (prize, winner, lottery, investment, etc.).", predicate: e => e.enrich?.classification === "scam" },
     cloudflare: { label: "Cloudflare",          description: "URLs detectadas detrás de Cloudflare. Además del abuse del registrar/hosting, también contactar abuse@cloudflare.com.", predicate: e => !!e.enrich?.cloudflare },
-    submits:    { label: "APIs enviados ✓",     description: "URLs reportadas exitosamente a al menos una API (VirusTotal, Clean-MX, URLscan).", predicate: e => e.submits.some(s => s.status === "success") },
+    submits:    { label: "APIs enviados ✓",     description: "URLs reportadas exitosamente a al menos una API (VirusTotal, URLscan).", predicate: e => e.submits.some(s => s.status === "success") },
     forms:      { label: "Forms abiertos",      description: "URLs donde se abrió al menos un formulario pre-fill (Google, Microsoft, APWG, etc.).", predicate: e => e.prefillOpened.length > 0 },
     emails:     { label: "Emails generados",    description: "URLs donde se generó al menos un correo de abuse (phishing, malware, scam, copyright).", predicate: e => e.emailsGenerated.length > 0 },
   };
@@ -912,7 +911,7 @@ export function TakedownUrlView() {
   return (
     <ModuleShell
       name="TakeDown URL"
-      description="Cargá URLs desde .txt o pegá una por línea. El sistema las enriquece y reporta automáticamente a 3 APIs (VirusTotal, Clean-MX, URLscan) con trazabilidad completa."
+      description="Carga URLs desde .txt o pega una por linea. El sistema las enriquece y reporta automaticamente a 2 APIs (VirusTotal, URLscan) con trazabilidad completa."
       icon={ShieldOff}
       category="INFRASTRUCTURE"
     >
@@ -920,7 +919,7 @@ export function TakedownUrlView() {
       <div className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-muted/20 text-[11px]">
         <StepBar label="1. Cargar URLs" done={step1Done} />
         <StepBar label="2. Enriquecer (auto)" done={step2Done} />
-        <StepBar label="3. Reportar 3 APIs (auto)" done={step3Done} />
+        <StepBar label="3. Reportar 2 APIs (auto)" done={step3Done} />
         <StepBar label="4. Google/Microsoft (manual)" done={false} />
         <StepBar label="5. Imprimir PDF" done={step5Done} last />
       </div>
@@ -929,7 +928,7 @@ export function TakedownUrlView() {
       <div className="flex items-start gap-2 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-[11px]">
         <div className="text-cyan-500 font-bold shrink-0">💡</div>
         <div className="text-muted-foreground">
-          <strong>PASO 1</strong>: Carga las URLs (textarea o .txt) - una por linea. Despues hace click en el boton <strong className="text-cyan-500">🚀 Takedown automatico completo</strong> que aparece abajo. El sistema ejecuta todo solo: enriquece cada URL + reporta a 3 APIs (VirusTotal, Clean-MX, URLscan). Para Google y Microsoft, usa los botones al lado de cada URL en la tabla (manual).
+          <strong>PASO 1</strong>: Carga las URLs (textarea o .txt) - una por linea. Despues hace click en el boton <strong className="text-cyan-500">🚀 Takedown automatico completo</strong> que aparece abajo. El sistema ejecuta todo solo: enriquece cada URL + reporta a 2 APIs (VirusTotal, URLscan). Para Google y Microsoft, usa los botones al lado de cada URL en la tabla (manual).
         </div>
       </div>
 
@@ -970,7 +969,7 @@ export function TakedownUrlView() {
               <strong className="text-cyan-500">Qué hace este botón:</strong>
               <ol className="list-decimal ml-4 mt-1 space-y-0.5 text-[11px]">
                 <li><strong>Enriquece</strong> cada URL - VirusTotal, Whois, hosting, screenshot, Cloudflare, clasificacion</li>
-                <li><strong>Reporta a 3 APIs (automatico)</strong> - VirusTotal, Clean-MX, URLscan.io (cada una devuelve link al reporte publico)</li>
+                <li><strong>Reporta a 2 APIs (automatico)</strong> - VirusTotal, URLscan.io (cada una devuelve link al reporte publico)</li>
               </ol>
               <div className="mt-2 text-[10px] text-muted-foreground">
                 NO abre Google ni Microsoft automaticamente. Para esos, usa los botones 'Google' y 'Microsoft' al lado de cada URL en la tabla.
@@ -1046,12 +1045,12 @@ export function TakedownUrlView() {
       {/* ---------- Step 3: Auto-report to APIs (solo APIs automáticas) ---------- */}
       {step2Done && (
         <Panel
-          title="PASO 3 - Reporte a 3 APIs (automatico) - Google/Microsoft son manuales"
+          title="PASO 3 - Reporte a 2 APIs (automatico) - Google/Microsoft son manuales"
           className="md:col-span-2"
           action={
             <div className="flex gap-2">
               <Button size="sm" onClick={submitAll} disabled={bulkSubmitting || stats.enriched === 0}>
-                {bulkSubmitting ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><Send className="w-3 h-3 mr-1.5" /> Reportar a las 3 APIs</>}
+                {bulkSubmitting ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><Send className="w-3 h-3 mr-1.5" /> Reportar a las 2 APIs</>}
               </Button>
               <Button size="sm" variant="outline" onClick={recheckOld}>
                 <Clock className="w-3 h-3 mr-1.5" /> Re-check +7 días
@@ -1377,7 +1376,7 @@ export function TakedownUrlView() {
               y reportá a las siguientes 19 plataformas:
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-left text-[11px] mt-4">
-              <PlatformGroup title="Auto-submit APIs (3) — 100% automático" items={["VirusTotal", "Clean-MX", "URLscan.io (reporte público)"]} note="POST directo, devuelven link al reporte" />
+              <PlatformGroup title="Auto-submit APIs (2) - 100% automatico" items={["VirusTotal", "URLscan.io (reporte publico)"]} note="POST directo, devuelven link al reporte" />
               <PlatformGroup title="Pre-fill forms (6)" items={["Google Safe Browsing (Phishing)", "Google Safe Browsing (Malware)", "Microsoft SmartScreen", "APWG", "StopBadware", "Spam404", "Netcraft"]} note="Se abre formulario pre-cargado" />
               <PlatformGroup title="Antivirus forms (5)" items={["Kaspersky VirusDesk", "Cisco Talos", "Fortinet FortiGuard", "McAfee WebAdvisor", "Sucuri SiteCheck"]} note="Se abre formulario" />
               <PlatformGroup title="Abuse emails (4)" items={["Phishing (robo credenciales)", "Malware (distribución)", "Scam (fraude financiero)", "Copyright/DMCA"]} note="mailto: con plantilla" />
@@ -1418,7 +1417,7 @@ export function TakedownUrlView() {
                 </Button>
                 {modalEntries.some(e => e.status === "enriched") && (
                   <Button size="sm" onClick={() => bulkSubmitFromModal(modalEntries.filter(e => e.status === "enriched"))} disabled={bulkSubmitting}>
-                    <Send className="w-3 h-3 mr-1.5" /> Reportar a las 3 APIs ({modalEntries.filter(e => e.status === "enriched").length} URLs)
+                    <Send className="w-3 h-3 mr-1.5" /> Reportar a las 2 APIs ({modalEntries.filter(e => e.status === "enriched").length} URLs)
                   </Button>
                 )}
               </div>

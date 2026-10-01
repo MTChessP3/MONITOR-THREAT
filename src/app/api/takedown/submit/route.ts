@@ -2,11 +2,9 @@
 // public submission API:
 //   - VirusTotal          — POST https://www.virustotal.com/api/v3/urls
 //     Required: x-apikey header, body url=<url> (URL-encoded)
-//   - Clean-MX            — POST http://support.clean-mx.de/clean-mx/xmlCursors
-//     (XML-based, no auth)
 //   - URLscan.io         — POST https://urlscan.io/api/v1/scan/
-//     No auth required for basic usage (rate-limited). Creates a PUBLIC
-//     scan report that anyone can view.
+//     Required: API-Key header. Creates a PUBLIC scan report that
+//     anyone can view (with screenshot, DOM dump, network requests).
 
 import { NextResponse } from "next/server";
 
@@ -32,7 +30,7 @@ const getVirustotalKey = (req: Request) => getKey(req, "VIRUSTOTAL_API_KEY");
 const getUrlscanKey = (req: Request) => getKey(req, "URLSCAN_API_KEY");
 
 interface SubmitRequest {
-  platform: "virustotal" | "cleanmx" | "urlscan";
+  platform: "virustotal" | "urlscan";
   url: string;
   threatType?: "phishing_url" | "malware_url" | "scam_url";
   tags?: string;
@@ -83,43 +81,21 @@ export async function POST(request: Request) {
         return NextResponse.json({ platform, url, status: "error", error: String(e?.message || e) }, { status: 200 });
       }
     }
-    case "cleanmx": {
-      try {
-        // Clean-MX submission via XML (legacy but works)
-        const escapedUrl = url.split("<").join("&lt;").split(">").join("&gt;");
-        const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<cursor>
-  <id>monitor-threat-${Date.now()}</id>
-  <url>${escapedUrl}</url>
-  <type>${tType === "phishing_url" ? "phishing" : tType === "malware_url" ? "malware" : "scam"}</type>
-  <tag>monitor-threat</tag>
-</cursor>`;
-        const r = await fetch("http://support.clean-mx.de/clean-mx/xmlCursors?mode=0", {
-          method: "POST",
-          body: xml,
-          headers: { "Content-Type": "application/xml" },
-          signal: AbortSignal.timeout(15000),
-        });
-        const text = await r.text();
-        return NextResponse.json({
-          platform,
-          url,
-          status: r.ok ? "success" : "failed",
-          responseStatus: r.status,
-          response: text.slice(0, 500),
-        });
-      } catch (e: any) {
-        return NextResponse.json({ platform, url, status: "error", error: String(e?.message || e) }, { status: 200 });
-      }
-    }
     case "urlscan": {
-      // URLscan.io — free scan API. Creates a PUBLIC report that anyone
-      // can view. No auth required for basic usage (rate-limited to ~100
-      // scans/day anonymous, 1000/day with free API key).
+      // URLscan.io — requires API key (no longer free without one).
+      // Creates a PUBLIC scan report that anyone can view.
       try {
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         const URLSCAN_API_KEY = getUrlscanKey(request);
-        if (URLSCAN_API_KEY) headers["API-Key"] = URLSCAN_API_KEY;
+        if (!URLSCAN_API_KEY) {
+          return NextResponse.json({
+            platform,
+            url,
+            status: "skipped",
+            message: "URLSCAN_API_KEY no configurada. Registrate en https://urlscan.io/profile/ y configurá la key en el panel 'Estado de las API Keys' del dashboard.",
+          }, { status: 200 });
+        }
+        headers["API-Key"] = URLSCAN_API_KEY;
         const payload: any = {
           url,
           public: "on",  // makes the report public
@@ -132,14 +108,18 @@ export async function POST(request: Request) {
           signal: AbortSignal.timeout(15000),
         });
         const j: any = await r.json();
-        // urlscan returns {message: "Submission successful", uuid, result, ...}
-        const permalink = j?.result || `https://urlscan.io/result/${j?.uuid || ""}/`;
+        // urlscan returns {message: "Submission successful", uuid, result, ...} on success
+        // or {message: "API key is disabled!", status: 401, errors: [...]} on auth failure
+        const isSuccess = r.status === 200 && j?.message === "Submission successful";
+        const permalink = isSuccess ? (j?.result || `https://urlscan.io/result/${j?.uuid || ""}/`) : null;
+        const errMsg = !isSuccess ? (j?.message || `HTTP ${r.status}`) : undefined;
         return NextResponse.json({
           platform,
           url,
-          status: r.status === 200 && j?.message === "Submission successful" ? "success" : "failed",
+          status: isSuccess ? "success" : "failed",
           responseStatus: r.status,
           permalink,
+          message: errMsg,
           response: j,
         });
       } catch (e: any) {
