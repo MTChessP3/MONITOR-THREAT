@@ -37,26 +37,8 @@ import {
 
 type Platform = "virustotal" | "urlscan";
 type PrefillPlatform =
-  | "google_phish" | "google_malware" | "microsoft" | "apwg" | "stopbadware"
-  | "spam404" | "netcraft" | "kaspersky" | "talos" | "fortiguard" | "mcafee" | "sucuri";
+  | "google_phish" | "google_malware" | "microsoft" | "netcraft";
 type EmailTemplate = "phishing" | "malware" | "scam" | "copyright";
-
-// Custom engine: user-defined reporting platform (with or without API).
-// Stored in localStorage so they survive page reloads.
-// - type="api": send HTTP request to `endpoint` with bodyTemplate (with
-//   {{URL}} placeholder) and headers (JSON string).
-// - type="manual": just store a name + URL template that the user opens
-//   manually (like Google/Microsoft forms).
-interface CustomEngine {
-  id: string;
-  name: string;
-  type: "api" | "manual";
-  method: "GET" | "POST";
-  endpoint: string;        // for type="api": full URL; for type="manual": URL template with {{URL}}
-  headers: string;         // JSON string of headers (for type="api")
-  bodyTemplate: string;    // body template with {{URL}} placeholder (for type="api")
-  notes: string;           // free-form notes (optional)
-}
 
 interface EnrichData {
   hostname: string;
@@ -93,31 +75,13 @@ interface UrlEntry {
 // ---------- Constants ----------
 
 const STORAGE_KEY = "monitor-threat-takedown-v1";
-const ENGINES_STORAGE_KEY = "monitor-threat-takedown-engines-v1";
 const RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-
-// Load custom engines from localStorage (or return empty list).
-function loadEnginesFromStorage(): CustomEngine[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(ENGINES_STORAGE_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw);
-  } catch {
-    return [];
-  }
-}
-function saveEnginesToStorage(engines: CustomEngine[]) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(ENGINES_STORAGE_KEY, JSON.stringify(engines));
-  } catch {}
-}
 
 const PREFILL_PLATFORMS: Array<{ id: PrefillPlatform; name: string; shortName: string; url: (u: string) => string; category: string }> = [
   { id: "google_phish", name: "Google Safe Browsing (Phishing)", shortName: "Google", category: "browser", url: u => `https://safebrowsing.google.com/safebrowsing/report_phish/?url=${encodeURIComponent(u)}` },
   { id: "google_malware", name: "Google Safe Browsing (Malware)", shortName: "Google", category: "browser", url: u => `https://safebrowsing.google.com/safebrowsing/report_badware/?url=${encodeURIComponent(u)}` },
   { id: "microsoft", name: "Microsoft SmartScreen", shortName: "Microsoft", category: "browser", url: u => `https://www.microsoft.com/en-us/wdsi/support/report-unsafe-site-guest?url=${encodeURIComponent(u)}` },
+  { id: "netcraft", name: "Netcraft", shortName: "Netcraft", category: "takedown", url: u => `https://report.netcraft.com/report?url=${encodeURIComponent(u)}` },
 ];
 
 const API_PLATFORMS: Array<{ id: Platform; name: string; needsKey?: string; note?: string }> = [
@@ -326,9 +290,6 @@ export function TakedownUrlView() {
   const [savingKeys, setSavingKeys] = React.useState(false);
   const [keysSavedMsg, setKeysSavedMsg] = React.useState<string | null>(null);
   const [showKeysForm, setShowKeysForm] = React.useState(false);
-  const [customEngines, setCustomEngines] = React.useState<CustomEngine[]>([]);
-  const [showEngineForm, setShowEngineForm] = React.useState(false);
-  const [engineForm, setEngineForm] = React.useState<CustomEngine>({ id: "", name: "", type: "api", method: "POST", endpoint: "", headers: "{}", bodyTemplate: '{"url":"{{URL}}"}', notes: "" });
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Load from localStorage on mount
@@ -337,81 +298,14 @@ export function TakedownUrlView() {
     if (stored.length > 0) {
       setEntries(stored);
     }
-    setCustomEngines(loadEnginesFromStorage());
     // Fetch the API keys status from the backend — shows the user
     // which keys are configured (✓) and which are missing (✗) with
     // setup links, so they know what's actually being reported.
     refreshKeyStatus();
   }, []);
 
-  // Persist custom engines to localStorage when they change.
-  React.useEffect(() => {
-    saveEnginesToStorage(customEngines);
-  }, [customEngines]);
-
   const refreshKeyStatus = () => {
     fetch("/api/takedown/status").then(r => r.json()).then(setApiKeyStatus).catch(() => {});
-  };
-
-  // ---- Custom engines: add / remove ----
-  const saveCustomEngine = () => {
-    if (!engineForm.name.trim() || !engineForm.endpoint.trim()) {
-      alert("Falta nombre del motor y/o endpoint.");
-      return;
-    }
-    const id = engineForm.id || `custom_${Date.now()}`;
-    const engine: CustomEngine = { ...engineForm, id };
-    setCustomEngines(prev => {
-      const exists = prev.find(e => e.id === id);
-      return exists ? prev.map(e => e.id === id ? engine : e) : [...prev, engine];
-    });
-    setShowEngineForm(false);
-    setEngineForm({ id: "", name: "", type: "api", method: "POST", endpoint: "", headers: "{}", bodyTemplate: '{"url":"{{URL}}"}', notes: "" });
-  };
-
-  const removeCustomEngine = (id: string) => {
-    if (!confirm("¿Eliminar este motor?")) return;
-    setCustomEngines(prev => prev.filter(e => e.id !== id));
-  };
-
-  // Submit one URL to one custom API engine. The request goes to
-  // /api/takedown/submit with platform="custom" + the engine config
-  // embedded in the body so the backend can route it correctly.
-  const submitToCustomEngine = async (entry: UrlEntry, engine: CustomEngine): Promise<SubmitResult> => {
-    try {
-      const r = await fetch("/api/takedown/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          platform: "custom",
-          url: entry.url,
-          threatType: entry.enrich?.classification === "malware" ? "malware_url" :
-                       entry.enrich?.classification === "scam" ? "scam_url" : "phishing_url",
-          customEngine: engine,
-        }),
-      });
-      const j: any = await r.json();
-      return {
-        platform: ("custom_" + engine.id) as Platform,
-        status: j.status === "success" ? "success" : j.status === "skipped" ? "skipped" : "failed",
-        message: j.message || (j.response ? JSON.stringify(j.response).slice(0, 200) : undefined),
-        permalink: j.permalink || null,
-        timestamp: new Date().toISOString(),
-      } as SubmitResult;
-    } catch (e: any) {
-      return {
-        platform: ("custom_" + engine.id) as Platform,
-        status: "error",
-        message: String(e?.message || e),
-        timestamp: new Date().toISOString(),
-      } as SubmitResult;
-    }
-  };
-
-  // Open the URL of a manual custom engine in a new tab.
-  const openCustomManualEngine = (entry: UrlEntry, engine: CustomEngine) => {
-    const url = engine.endpoint.replace(/\{\{URL\}\}/g, encodeURIComponent(entry.url));
-    window.open(url, "_blank");
   };
 
   // Save the API keys form to the backend (sets httpOnly cookies for
@@ -535,21 +429,11 @@ export function TakedownUrlView() {
       : entry.enrich?.classification === "scam" ? "scam_url"
       : "phishing_url";
     const platforms: Platform[] = ["virustotal", "urlscan"];
-    // Submit to built-in APIs (VirusTotal, URLscan.io)
     for (const p of platforms) {
       const result = await submitUrl(entry.url, p, threatType);
       setEntries(prev => prev.map(e => e.url === entry.url ? {
         ...e,
         submits: [...e.submits.filter(s => s.platform !== p), result],
-      } : e));
-    }
-    // Submit to all user-configured custom API engines
-    for (const engine of customEngines.filter(e => e.type === "api")) {
-      const result = await submitToCustomEngine(entry, engine);
-      const submitKey = `custom_${engine.id}` as Platform;
-      setEntries(prev => prev.map(e => e.url === entry.url ? {
-        ...e,
-        submits: [...e.submits.filter(s => s.platform !== submitKey), result],
       } : e));
     }
   };
@@ -776,18 +660,6 @@ export function TakedownUrlView() {
       }
       summaryRows.push([name, String(success), String(failed), String(skipped)]);
     }
-    // Add custom API engines to the summary table
-    for (const engine of customEngines.filter(e => e.type === "api")) {
-      const submitKey = `custom_${engine.id}` as Platform;
-      let success = 0, failed = 0, skipped = 0;
-      for (const entry of entries) {
-        const s = entry.submits.find(x => x.platform === submitKey);
-        if (s?.status === "success") success++;
-        else if (s?.status === "failed" || s?.status === "error") failed++;
-        else skipped++;
-      }
-      summaryRows.push([`${engine.name} (custom)`, String(success), String(failed), String(skipped)]);
-    }
     autoTable(doc, {
       startY: y,
       head: [["Plataforma API", "Reportado OK", "Fallo", "Salteado (sin key)"]],
@@ -859,42 +731,13 @@ export function TakedownUrlView() {
         reportedRows.push([name, status, detail]);
       }
 
-      // Custom API engines (user-defined from the dashboard)
-      for (const engine of customEngines.filter(e => e.type === "api")) {
-        const submitKey = `custom_${engine.id}` as Platform;
-        const s = entry.submits.find(x => x.platform === submitKey);
-        let status = "Pendiente";
-        let detail = "-";
-        if (s?.status === "success") {
-          status = "Reportado OK";
-          detail = (s.permalink || "OK").slice(0, 70);
-        } else if (s?.status === "failed") {
-          status = "Fallo";
-          detail = (s.message || "error").slice(0, 70);
-        } else if (s?.status === "skipped") {
-          status = "Salteado";
-          detail = (s.message || "skipped").slice(0, 70);
-        }
-        reportedRows.push([`${engine.name} (custom API)`, status, detail]);
-      }
-
-      // Manual forms: Google Phishing, Google Malware, Microsoft
+      // Manual forms: Google Phishing, Google Malware, Microsoft, Netcraft
       for (const p of PREFILL_PLATFORMS) {
         const wasOpened = entry.prefillOpened.includes(p.id);
         const link = p.url(entry.url);
         reportedRows.push([
           p.name + " (manual)",
           wasOpened ? "Form abierto" : "No abierto",
-          link.slice(0, 70),
-        ]);
-      }
-
-      // Custom manual engines
-      for (const engine of customEngines.filter(e => e.type === "manual")) {
-        const link = engine.endpoint.replace(/\{\{URL\}\}/g, encodeURIComponent(entry.url));
-        reportedRows.push([
-          `${engine.name} (custom manual)`,
-          "Form manual",
           link.slice(0, 70),
         ]);
       }
@@ -1294,132 +1137,16 @@ export function TakedownUrlView() {
             </div>
           )}
 
-          {/* Custom engines panel — user can add more reporting platforms */}
-          <div className="mt-4 p-3 rounded border border-purple-500/30 bg-purple-500/5">
-            <div className="flex items-center justify-between mb-2">
-              <div className="text-xs font-semibold">
-                Motores de reporte personalizados:{" "}
-                <span className="text-purple-500">{customEngines.length} configurado{customEngines.length === 1 ? "" : "s"}</span>
-              </div>
-              <Button size="sm" variant={showEngineForm ? "outline" : "default"} className="h-7 text-[10px] bg-purple-600 hover:bg-purple-700" onClick={() => setShowEngineForm(!showEngineForm)}>
-                {showEngineForm ? "✕ Cerrar" : "+ Agregar motor"}
-              </Button>
+          {/* Fixed manual platforms — Google, Microsoft, Netcraft */}
+          <div className="mt-4 p-3 rounded border border-orange-500/30 bg-orange-500/5">
+            <div className="text-xs font-semibold mb-2">
+              Reporte manual (formularios web):
+              <span className="text-orange-500 ml-2">Google + Microsoft + Netcraft</span>
             </div>
-
-            {/* List of existing custom engines */}
-            {customEngines.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 mb-2">
-                {customEngines.map(engine => (
-                  <div key={engine.id} className="flex items-center gap-2 p-2 rounded border border-purple-500/30 bg-purple-500/5 text-[10px]">
-                    <Badge variant="outline" className="text-[8px] font-mono text-purple-500 border-purple-500/40 shrink-0">
-                      {engine.type === "api" ? "API" : "MANUAL"}
-                    </Badge>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-mono font-bold truncate">{engine.name}</div>
-                      <div className="text-muted-foreground truncate">{engine.endpoint.slice(0, 60)}</div>
-                    </div>
-                    <button onClick={() => removeCustomEngine(engine.id)} className="text-red-500 hover:underline text-[10px] shrink-0">Eliminar</button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Add engine form — ultra simplified: just presets + name */}
-            {showEngineForm && (
-              <div className="mt-2 p-3 rounded border border-purple-500/30 bg-background">
-                <div className="text-xs text-muted-foreground mb-3 p-2 rounded bg-purple-500/5 border border-purple-500/20">
-                  Elegí una plataforma de la lista de abajo. El sistema rellena todo automaticamente.
-                </div>
-
-                {/* Preset buttons — the main way to add an engine */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 mb-3">
-                  {[
-                    { name: "APWG", type: "manual", endpoint: "https://apwg.org/reportphishing/review/?url={{URL}}", notes: "Anti-Phishing Working Group" },
-                    { name: "Netcraft", type: "manual", endpoint: "https://report.netcraft.com/report?url={{URL}}", notes: "Netcraft" },
-                    { name: "StopBadware", type: "manual", endpoint: "https://www.stopbadware.org/report?url={{URL}}", notes: "StopBadware" },
-                    { name: "Spam404", type: "manual", endpoint: "https://www.spam404.com/report.html?url={{URL}}", notes: "Spam404" },
-                    { name: "Kaspersky", type: "manual", endpoint: "https://virusdesk.kaspersky.com/?url={{URL}}", notes: "Kaspersky VirusDesk" },
-                    { name: "Sucuri", type: "manual", endpoint: "https://sitecheck.sucuri.net/results/{{URL}}", notes: "Sucuri SiteCheck" },
-                  ].map(preset => (
-                    <button
-                      key={preset.name}
-                      type="button"
-                      onClick={() => setEngineForm({ id: "", name: preset.name, type: preset.type as "api" | "manual", method: "POST", endpoint: preset.endpoint, headers: "{}", bodyTemplate: '{"url":"{{URL}}"}', notes: preset.notes })}
-                      className={`p-2 rounded border text-left text-[11px] transition-all ${engineForm.name === preset.name ? "border-purple-500 bg-purple-500/10" : "border-border bg-muted/20 hover:border-purple-500/40"}`}
-                    >
-                      <div className="font-semibold">{preset.name}</div>
-                      <div className="text-muted-foreground text-[10px]">{preset.notes}</div>
-                    </button>
-                  ))}
-                </div>
-
-                {/* Confirm section — only shows after a preset is selected */}
-                {engineForm.name && (
-                  <div className="p-2 rounded border border-purple-500/30 bg-purple-500/5">
-                    <div className="text-xs mb-2">
-                      <span className="text-purple-500 font-semibold">Seleccionado:</span>{" "}
-                      <span className="font-mono">{engineForm.name}</span>{" "}
-                      <Badge variant="outline" className="text-[8px] font-mono text-purple-500 border-purple-500/40 ml-1">
-                        {engineForm.type === "manual" ? "MANUAL" : "API"}
-                      </Badge>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button size="sm" className="bg-purple-600 hover:bg-purple-700" onClick={saveCustomEngine}>
-                        ✓ Agregar {engineForm.name}
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setEngineForm({ id: "", name: "", type: "manual", method: "POST", endpoint: "", headers: "{}", bodyTemplate: '{"url":"{{URL}}"}', notes: "" })}>
-                        Cancelar
-                      </Button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Advanced: custom config (hidden by default) */}
-                <details className="mt-3">
-                  <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-foreground">
-                    Configuracion avanzada (para APIs propias)
-                  </summary>
-                  <div className="mt-2 p-3 rounded border border-border bg-muted/20">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[10px] text-muted-foreground">Nombre</label>
-                        <Input type="text" placeholder="MiMotor" value={engineForm.name} onChange={e => setEngineForm({ ...engineForm, name: e.target.value })} className="h-8 text-xs" />
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[10px] text-muted-foreground">Tipo</label>
-                        <select value={engineForm.type} onChange={e => setEngineForm({ ...engineForm, type: e.target.value as "api" | "manual" })} className="h-8 text-xs rounded border border-border bg-background px-2">
-                          <option value="manual">Manual (formulario)</option>
-                          <option value="api">API (automatico)</option>
-                        </select>
-                      </div>
-                      <div className="flex flex-col gap-1 md:col-span-2">
-                        <label className="text-[10px] text-muted-foreground">URL (usa {"{{URL}}"})</label>
-                        <Input type="text" placeholder="https://..." value={engineForm.endpoint} onChange={e => setEngineForm({ ...engineForm, endpoint: e.target.value })} className="h-8 text-xs font-mono" />
-                      </div>
-                      {engineForm.type === "api" && (
-                        <>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[10px] text-muted-foreground">Metodo</label>
-                            <select value={engineForm.method} onChange={e => setEngineForm({ ...engineForm, method: e.target.value as "GET" | "POST" })} className="h-8 text-xs rounded border border-border bg-background px-2">
-                              <option value="POST">POST</option>
-                              <option value="GET">GET</option>
-                            </select>
-                          </div>
-                          <div className="flex flex-col gap-1">
-                            <label className="text-[10px] text-muted-foreground">Headers</label>
-                            <Input type="text" placeholder='{"Content-Type":"application/json"}' value={engineForm.headers} onChange={e => setEngineForm({ ...engineForm, headers: e.target.value })} className="h-8 text-xs font-mono" />
-                          </div>
-                          <div className="flex flex-col gap-1 md:col-span-2">
-                            <label className="text-[10px] text-muted-foreground">Body</label>
-                            <Input type="text" placeholder='{"url":"{{URL}}"}' value={engineForm.bodyTemplate} onChange={e => setEngineForm({ ...engineForm, bodyTemplate: e.target.value })} className="h-8 text-xs font-mono" />
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </details>
-              </div>
-            )}
+            <div className="text-[10px] text-muted-foreground">
+              Cada URL cargada tiene 3 botones (Google, Microsoft, Netcraft) al lado en la tabla.
+              Hace click en cada uno para abrir el formulario con la URL ya cargada y confirmar el Submit manualmente.
+            </div>
           </div>
         </Panel>
       )}
@@ -1539,37 +1266,6 @@ export function TakedownUrlView() {
                                 </Badge>
                               );
                             })}
-                            {/* Custom API engine badges */}
-                            {customEngines.filter(e => e.type === "api").map(engine => {
-                              const submitKey = `custom_${engine.id}` as Platform;
-                              const s = entry.submits.find(x => x.platform === submitKey);
-                              let label = `${engine.name.slice(0, 10)}: ?`;
-                              let variant: "default" | "destructive" | "outline" | "secondary" = "secondary";
-                              let colorClass = "text-purple-500";
-                              if (s?.status === "success") {
-                                label = `${engine.name.slice(0, 10)}: OK`;
-                                variant = "default";
-                                colorClass = "text-green-500";
-                              } else if (s?.status === "failed") {
-                                label = `${engine.name.slice(0, 10)}: Fallo`;
-                                variant = "destructive";
-                                colorClass = "text-red-500";
-                              } else if (s?.status === "skipped") {
-                                label = `${engine.name.slice(0, 10)}: Skipped`;
-                                variant = "outline";
-                                colorClass = "text-yellow-500";
-                              }
-                              return (
-                                <Badge
-                                  key={engine.id}
-                                  variant={variant}
-                                  className={`text-[8px] font-mono ${colorClass}`}
-                                  title={s?.message || (s ? "" : `Motor custom: ${engine.name} - se reporta con el boton 🚀`)}
-                                >
-                                  {label}
-                                </Badge>
-                              );
-                            })}
                           </div>
                         </TableCell>
                         <TableCell onClick={(e) => e.stopPropagation()}>
@@ -1587,19 +1283,9 @@ export function TakedownUrlView() {
                                 <Button size="sm" variant="outline" className="h-7 text-[10px] text-cyan-500 border-cyan-500/40" onClick={() => openPrefill(entry, "microsoft")} title="Abrir formulario de Microsoft SmartScreen para reportar manualmente">
                                   <Globe className="w-3 h-3 mr-1" /> Microsoft
                                 </Button>
-                                {/* Custom manual engines — show as buttons per URL */}
-                                {customEngines.filter(e => e.type === "manual").map(engine => (
-                                  <Button
-                                    key={engine.id}
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 text-[10px] text-purple-500 border-purple-500/40"
-                                    onClick={() => openCustomManualEngine(entry, engine)}
-                                    title={`Abrir formulario manual de ${engine.name}`}
-                                  >
-                                    <Globe className="w-3 h-3 mr-1" /> {engine.name.slice(0, 12)}
-                                  </Button>
-                                ))}
+                                <Button size="sm" variant="outline" className="h-7 text-[10px] text-orange-500 border-orange-500/40" onClick={() => openPrefill(entry, "netcraft")} title="Abrir formulario de Netcraft para reportar manualmente">
+                                  <Globe className="w-3 h-3 mr-1" /> Netcraft
+                                </Button>
                               </>
                             )}
                             {entry.status === "failed" && (
@@ -1701,13 +1387,11 @@ export function TakedownUrlView() {
             <p className="text-xs text-muted-foreground max-w-2xl">
               Pegá una URL por línea en el textarea de arriba (o cargá un archivo .txt).
               Después, enriquecé cada URL automáticamente (VirusTotal, Whois, screenshot, hosting, Cloudflare detection)
-              y reportá a las siguientes 19 plataformas:
+              y reportá a las siguientes 5 plataformas:
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-left text-[11px] mt-4">
-              <PlatformGroup title="Auto-submit APIs (2) - 100% automatico" items={["VirusTotal", "URLscan.io (reporte publico)"]} note="POST directo, devuelven link al reporte" />
-              <PlatformGroup title="Pre-fill forms (6)" items={["Google Safe Browsing (Phishing)", "Google Safe Browsing (Malware)", "Microsoft SmartScreen", "APWG", "StopBadware", "Spam404", "Netcraft"]} note="Se abre formulario pre-cargado" />
-              <PlatformGroup title="Antivirus forms (5)" items={["Kaspersky VirusDesk", "Cisco Talos", "Fortinet FortiGuard", "McAfee WebAdvisor", "Sucuri SiteCheck"]} note="Se abre formulario" />
-              <PlatformGroup title="Abuse emails (4)" items={["Phishing (robo credenciales)", "Malware (distribución)", "Scam (fraude financiero)", "Copyright/DMCA"]} note="mailto: con plantilla" />
+              <PlatformGroup title="Auto-submit APIs (2) - automatico" items={["VirusTotal", "URLscan.io (reporte publico)"]} note="POST directo, devuelven link al reporte" />
+              <PlatformGroup title="Reporte manual (3)" items={["Google Safe Browsing (Phishing + Malware)", "Microsoft SmartScreen", "Netcraft"]} note="Boton por URL - abris el form y confirmas" />
             </div>
           </div>
         </Panel>
@@ -1842,6 +1526,9 @@ export function TakedownUrlView() {
                               </Button>
                               <Button size="sm" variant="outline" className="h-7 text-[10px] text-cyan-500 border-cyan-500/40" onClick={() => openPrefill(entry, "microsoft")}>
                                 <Globe className="w-3 h-3 mr-1" /> Microsoft
+                              </Button>
+                              <Button size="sm" variant="outline" className="h-7 text-[10px] text-orange-500 border-orange-500/40" onClick={() => openPrefill(entry, "netcraft")}>
+                                <Globe className="w-3 h-3 mr-1" /> Netcraft
                               </Button>
                               {e?.vt?.permalink && (
                                 <a href={e.vt.permalink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] text-cyan-500 hover:underline px-2 py-1">

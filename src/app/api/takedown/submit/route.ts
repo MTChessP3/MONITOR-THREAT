@@ -29,23 +29,11 @@ function getKey(request: Request, id: string): string {
 const getVirustotalKey = (req: Request) => getKey(req, "VIRUSTOTAL_API_KEY");
 const getUrlscanKey = (req: Request) => getKey(req, "URLSCAN_API_KEY");
 
-interface CustomEnginePayload {
-  id: string;
-  name: string;
-  type: "api" | "manual";
-  method: "GET" | "POST";
-  endpoint: string;
-  headers: string;
-  bodyTemplate: string;
-  notes: string;
-}
-
 interface SubmitRequest {
-  platform: "virustotal" | "urlscan" | "custom";
+  platform: "virustotal" | "urlscan";
   url: string;
   threatType?: "phishing_url" | "malware_url" | "scam_url";
   tags?: string;
-  customEngine?: CustomEnginePayload;
 }
 
 export async function POST(request: Request) {
@@ -134,53 +122,6 @@ export async function POST(request: Request) {
           message: errMsg,
           response: j,
         });
-      } catch (e: any) {
-        return NextResponse.json({ platform, url, status: "error", error: String(e?.message || e) }, { status: 200 });
-      }
-    }
-    case "custom": {
-      // Custom user-defined engine (configured from the dashboard UI).
-      // The frontend sends the full engine config in customEngine.
-      if (!body.customEngine) {
-        return NextResponse.json({ platform, url, status: "skipped", message: "no custom engine config provided" }, { status: 200 });
-      }
-      const engine = body.customEngine;
-      if (engine.type === "manual") {
-        // Manual engines are not submitted via API — the user opens the
-        // form manually. Just return a 'skipped' status with the URL.
-        return NextResponse.json({
-          platform, url,
-          status: "skipped",
-          message: "Motor manual - hace click en el boton para abrir el formulario",
-          permalink: engine.endpoint.replace(/\{\{URL\}\}/g, encodeURIComponent(url)),
-        }, { status: 200 });
-      }
-      // API engine: send the HTTP request to the configured endpoint.
-      try {
-        const headers: Record<string, string> = {};
-        try {
-          const parsed = JSON.parse(engine.headers || "{}");
-          for (const k of Object.keys(parsed)) headers[k] = String(parsed[k]);
-        } catch {}
-        const finalUrl = engine.method === "GET"
-          ? engine.endpoint.replace(/\{\{URL\}\}/g, encodeURIComponent(url))
-          : engine.endpoint;
-        const init: RequestInit = { method: engine.method, headers, signal: AbortSignal.timeout(15000) };
-        if (engine.method === "POST" && engine.bodyTemplate) {
-          const bodyStr = engine.bodyTemplate.replace(/\{\{URL\}\}/g, url);
-          init.body = bodyStr;
-        }
-        const r = await fetch(finalUrl, init);
-        const text = await r.text();
-        let j: any;
-        try { j = JSON.parse(text); } catch { j = { raw: text.slice(0, 500) }; }
-        return NextResponse.json({
-          platform, url,
-          status: r.ok ? "success" : "failed",
-          responseStatus: r.status,
-          message: r.ok ? "OK" : `HTTP ${r.status}: ${text.slice(0, 200)}`,
-          response: j,
-        }, { status: 200 });
       } catch (e: any) {
         return NextResponse.json({ platform, url, status: "error", error: String(e?.message || e) }, { status: 200 });
       }
