@@ -1324,131 +1324,100 @@ export function TakedownUrlView() {
               </div>
             )}
 
-            {/* Add engine form — simplified with clear Spanish explanations */}
+            {/* Add engine form — ultra simplified: just presets + name */}
             {showEngineForm && (
               <div className="mt-2 p-3 rounded border border-purple-500/30 bg-background">
                 <div className="text-xs text-muted-foreground mb-3 p-2 rounded bg-purple-500/5 border border-purple-500/20">
-                  Agregá una plataforma donde quieras reportar las URLs. Elegí el tipo:
+                  Elegí una plataforma de la lista de abajo. El sistema rellena todo automaticamente.
                 </div>
 
-                {/* Step 1: choose type with clear examples */}
-                <div className="flex flex-col gap-1 mb-3">
-                  <label className="text-[11px] font-semibold text-purple-500">1. Elegí el tipo de motor:</label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {/* Preset buttons — the main way to add an engine */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 mb-3">
+                  {[
+                    { name: "APWG", type: "manual", endpoint: "https://apwg.org/reportphishing/review/?url={{URL}}", notes: "Anti-Phishing Working Group" },
+                    { name: "Netcraft", type: "manual", endpoint: "https://report.netcraft.com/report?url={{URL}}", notes: "Netcraft" },
+                    { name: "StopBadware", type: "manual", endpoint: "https://www.stopbadware.org/report?url={{URL}}", notes: "StopBadware" },
+                    { name: "Spam404", type: "manual", endpoint: "https://www.spam404.com/report.html?url={{URL}}", notes: "Spam404" },
+                    { name: "Kaspersky", type: "manual", endpoint: "https://virusdesk.kaspersky.com/?url={{URL}}", notes: "Kaspersky VirusDesk" },
+                    { name: "Sucuri", type: "manual", endpoint: "https://sitecheck.sucuri.net/results/{{URL}}", notes: "Sucuri SiteCheck" },
+                  ].map(preset => (
                     <button
+                      key={preset.name}
                       type="button"
-                      onClick={() => setEngineForm({ ...engineForm, type: "manual" })}
-                      className={`p-3 rounded border text-left text-[11px] transition-all ${engineForm.type === "manual" ? "border-purple-500 bg-purple-500/10" : "border-border bg-muted/20 hover:border-purple-500/40"}`}
+                      onClick={() => setEngineForm({ id: "", name: preset.name, type: preset.type as "api" | "manual", method: "POST", endpoint: preset.endpoint, headers: "{}", bodyTemplate: '{"url":"{{URL}}"}', notes: preset.notes })}
+                      className={`p-2 rounded border text-left text-[11px] transition-all ${engineForm.name === preset.name ? "border-purple-500 bg-purple-500/10" : "border-border bg-muted/20 hover:border-purple-500/40"}`}
                     >
-                      <div className="font-semibold mb-1">📋 Manual (formulario web)</div>
-                      <div className="text-muted-foreground">
-                        Para plataformas como Google/Microsoft que tienen un formulario web.
-                        El sistema abre la pagina con la URL ya cargada y vos haces click en "Submit".
-                      </div>
+                      <div className="font-semibold">{preset.name}</div>
+                      <div className="text-muted-foreground text-[10px]">{preset.notes}</div>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setEngineForm({ ...engineForm, type: "api" })}
-                      className={`p-3 rounded border text-left text-[11px] transition-all ${engineForm.type === "api" ? "border-purple-500 bg-purple-500/10" : "border-border bg-muted/20 hover:border-purple-500/40"}`}
-                    >
-                      <div className="font-semibold mb-1">🔌 API (envio automatico)</div>
-                      <div className="text-muted-foreground">
-                        Para plataformas con API REST. El sistema envia la URL automaticamente
-                        via HTTP y te dice si fue aceptada o no. Necesitas conocer el endpoint.
-                      </div>
-                    </button>
-                  </div>
+                  ))}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {/* Name */}
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[11px] font-semibold text-purple-500">2. Nombre del motor *</label>
-                    <Input type="text" placeholder="ej: APWG" value={engineForm.name} onChange={e => setEngineForm({ ...engineForm, name: e.target.value })} className="h-8 text-xs" />
-                    <div className="text-[9px] text-muted-foreground">Como queres llamarlo en el tablero.</div>
+                {/* Confirm section — only shows after a preset is selected */}
+                {engineForm.name && (
+                  <div className="p-2 rounded border border-purple-500/30 bg-purple-500/5">
+                    <div className="text-xs mb-2">
+                      <span className="text-purple-500 font-semibold">Seleccionado:</span>{" "}
+                      <span className="font-mono">{engineForm.name}</span>{" "}
+                      <Badge variant="outline" className="text-[8px] font-mono text-purple-500 border-purple-500/40 ml-1">
+                        {engineForm.type === "manual" ? "MANUAL" : "API"}
+                      </Badge>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" className="bg-purple-600 hover:bg-purple-700" onClick={saveCustomEngine}>
+                        ✓ Agregar {engineForm.name}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEngineForm({ id: "", name: "", type: "manual", method: "POST", endpoint: "", headers: "{}", bodyTemplate: '{"url":"{{URL}}"}', notes: "" })}>
+                        Cancelar
+                      </Button>
+                    </div>
                   </div>
+                )}
 
-                  {/* Endpoint / URL */}
-                  <div className="flex flex-col gap-1 md:col-span-2">
-                    {engineForm.type === "manual" ? (
-                      <>
-                        <label className="text-[11px] font-semibold text-purple-500">3. URL del formulario *</label>
-                        <Input type="text" placeholder="https://apwg.org/reportphishing/review/?url={{URL}}" value={engineForm.endpoint} onChange={e => setEngineForm({ ...engineForm, endpoint: e.target.value })} className="h-8 text-xs font-mono" />
-                        <div className="text-[9px] text-muted-foreground">
-                          Donde dice <code className="text-cyan-500">{"{{URL}}"}</code> el sistema va a poner la URL que estas reportando. Ejemplo: <code className="text-cyan-500">https://apwg.org/reportphishing/?url={"{{URL}}"}</code>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <label className="text-[11px] font-semibold text-purple-500">3. URL de la API *</label>
-                        <Input type="text" placeholder="https://api.ejemplo.com/report" value={engineForm.endpoint} onChange={e => setEngineForm({ ...engineForm, endpoint: e.target.value })} className="h-8 text-xs font-mono" />
-                        <div className="text-[9px] text-muted-foreground">
-                          La direccion del endpoint de la API. Ejemplo: <code className="text-cyan-500">https://api.threatplatform.com/v1/submit</code>
-                        </div>
-                      </>
-                    )}
-                  </div>
-
-                  {/* API-only fields */}
-                  {engineForm.type === "api" && (
-                    <>
+                {/* Advanced: custom config (hidden by default) */}
+                <details className="mt-3">
+                  <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-foreground">
+                    Configuracion avanzada (para APIs propias)
+                  </summary>
+                  <div className="mt-2 p-3 rounded border border-border bg-muted/20">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                       <div className="flex flex-col gap-1">
-                        <label className="text-[11px] font-semibold text-purple-500">4. Metodo HTTP</label>
-                        <select value={engineForm.method} onChange={e => setEngineForm({ ...engineForm, method: e.target.value as "GET" | "POST" })} className="h-8 text-xs rounded border border-border bg-background px-2">
-                          <option value="POST">POST (la mayoria de APIs)</option>
-                          <option value="GET">GET (algunas APIs usan esto)</option>
+                        <label className="text-[10px] text-muted-foreground">Nombre</label>
+                        <Input type="text" placeholder="MiMotor" value={engineForm.name} onChange={e => setEngineForm({ ...engineForm, name: e.target.value })} className="h-8 text-xs" />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-muted-foreground">Tipo</label>
+                        <select value={engineForm.type} onChange={e => setEngineForm({ ...engineForm, type: e.target.value as "api" | "manual" })} className="h-8 text-xs rounded border border-border bg-background px-2">
+                          <option value="manual">Manual (formulario)</option>
+                          <option value="api">API (automatico)</option>
                         </select>
-                        <div className="text-[9px] text-muted-foreground">Si no sabes cual, dejalo en POST.</div>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[11px] font-semibold text-purple-500">5. Headers (avanzado)</label>
-                        <Input type="text" placeholder='{"Content-Type":"application/json"}' value={engineForm.headers} onChange={e => setEngineForm({ ...engineForm, headers: e.target.value })} className="h-8 text-xs font-mono" />
-                        <div className="text-[9px] text-muted-foreground">
-                          Headers HTTP. Para APIs con auth: <code className="text-cyan-500">{"{\"Authorization\":\"Bearer TU_KEY\"}"}</code>. Si no necesita, dejalo como esta.
-                        </div>
                       </div>
                       <div className="flex flex-col gap-1 md:col-span-2">
-                        <label className="text-[11px] font-semibold text-purple-500">6. Datos a enviar (body)</label>
-                        <Input type="text" placeholder='{"url":"{{URL}}"}' value={engineForm.bodyTemplate} onChange={e => setEngineForm({ ...engineForm, bodyTemplate: e.target.value })} className="h-8 text-xs font-mono" />
-                        <div className="text-[9px] text-muted-foreground">
-                          JSON con los datos. Donde dice <code className="text-cyan-500">{"{{URL}}"}</code> se reemplaza por la URL reportada. Ejemplo: <code className="text-cyan-500">{"{\"url\":\"{{URL}}\",\"type\":\"phishing\"}"}</code>
-                        </div>
+                        <label className="text-[10px] text-muted-foreground">URL (usa {"{{URL}}"})</label>
+                        <Input type="text" placeholder="https://..." value={engineForm.endpoint} onChange={e => setEngineForm({ ...engineForm, endpoint: e.target.value })} className="h-8 text-xs font-mono" />
                       </div>
-                    </>
-                  )}
-
-                  {/* Notes */}
-                  <div className="flex flex-col gap-1 md:col-span-2">
-                    <label className="text-[11px] font-semibold text-purple-500">{engineForm.type === "api" ? "7." : "4."} Notas (opcional)</label>
-                    <Input type="text" placeholder="ej: requiere registrarse en la plataforma" value={engineForm.notes} onChange={e => setEngineForm({ ...engineForm, notes: e.target.value })} className="h-8 text-xs" />
+                      {engineForm.type === "api" && (
+                        <>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] text-muted-foreground">Metodo</label>
+                            <select value={engineForm.method} onChange={e => setEngineForm({ ...engineForm, method: e.target.value as "GET" | "POST" })} className="h-8 text-xs rounded border border-border bg-background px-2">
+                              <option value="POST">POST</option>
+                              <option value="GET">GET</option>
+                            </select>
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] text-muted-foreground">Headers</label>
+                            <Input type="text" placeholder='{"Content-Type":"application/json"}' value={engineForm.headers} onChange={e => setEngineForm({ ...engineForm, headers: e.target.value })} className="h-8 text-xs font-mono" />
+                          </div>
+                          <div className="flex flex-col gap-1 md:col-span-2">
+                            <label className="text-[10px] text-muted-foreground">Body</label>
+                            <Input type="text" placeholder='{"url":"{{URL}}"}' value={engineForm.bodyTemplate} onChange={e => setEngineForm({ ...engineForm, bodyTemplate: e.target.value })} className="h-8 text-xs font-mono" />
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-
-                {/* Example preset buttons */}
-                <div className="mt-3 p-2 rounded bg-muted/20 border border-border">
-                  <div className="text-[10px] text-muted-foreground mb-1">O cargá un ejemplo predefinido:</div>
-                  <div className="flex gap-1 flex-wrap">
-                    <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => setEngineForm({ id: "", name: "APWG", type: "manual", method: "POST", endpoint: "https://apwg.org/reportphishing/review/?url={{URL}}", headers: "{}", bodyTemplate: '{"url":"{{URL}}"}', notes: "Anti-Phishing Working Group - formulario manual" })}>
-                      APWG (manual)
-                    </Button>
-                    <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => setEngineForm({ id: "", name: "Netcraft", type: "manual", method: "POST", endpoint: "https://report.netcraft.com/report?url={{URL}}", headers: "{}", bodyTemplate: '{"url":"{{URL}}"}', notes: "Netcraft - formulario manual" })}>
-                      Netcraft (manual)
-                    </Button>
-                    <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => setEngineForm({ id: "", name: "StopBadware", type: "manual", method: "POST", endpoint: "https://www.stopbadware.org/report?url={{URL}}", headers: "{}", bodyTemplate: '{"url":"{{URL}}"}', notes: "StopBadware - formulario manual" })}>
-                      StopBadware (manual)
-                    </Button>
-                    <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => setEngineForm({ id: "", name: "MiMotorAPI", type: "api", method: "POST", endpoint: "https://api.mi-plataforma.com/report", headers: '{"Content-Type":"application/json","Authorization":"Bearer TU_API_KEY"}', bodyTemplate: '{"url":"{{URL}}","threat":"phishing"}', notes: "Ejemplo de API con auth Bearer" })}>
-                      Ejemplo API con auth
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="flex gap-2 mt-3">
-                  <Button size="sm" className="bg-purple-600 hover:bg-purple-700" onClick={saveCustomEngine}>
-                    + Agregar motor
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setShowEngineForm(false)}>Cancelar</Button>
-                </div>
+                </details>
               </div>
             )}
           </div>
