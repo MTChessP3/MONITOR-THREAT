@@ -1,7 +1,5 @@
 // TakeDown Submit — auto-submits a URL to platforms that expose a
 // public submission API:
-//   - URLhaus (abuse.ch)  — POST https://urlhaus-api.abuse.ch/api/v1/
-//     Required fields: token, action=insert-url, url, threat_type
 //   - VirusTotal          — POST https://www.virustotal.com/api/v3/urls
 //     Required: x-apikey header, body url=<url> (URL-encoded)
 //   - Clean-MX            — POST http://support.clean-mx.de/clean-mx/xmlCursors
@@ -31,11 +29,10 @@ function getKey(request: Request, id: string): string {
 
 // Note: these now become functions of `request` — they're called per-request.
 const getVirustotalKey = (req: Request) => getKey(req, "VIRUSTOTAL_API_KEY");
-const getUrlhausKey = (req: Request) => getKey(req, "URLHAUS_API_KEY");
 const getUrlscanKey = (req: Request) => getKey(req, "URLSCAN_API_KEY");
 
 interface SubmitRequest {
-  platform: "urlhaus" | "virustotal" | "cleanmx" | "urlscan";
+  platform: "virustotal" | "cleanmx" | "urlscan";
   url: string;
   threatType?: "phishing_url" | "malware_url" | "scam_url";
   tags?: string;
@@ -57,43 +54,6 @@ export async function POST(request: Request) {
   const tType = threatType || "phishing_url";
 
   switch (platform) {
-    case "urlhaus": {
-      const URLHAUS_API_KEY = getUrlhausKey(request);
-      if (!URLHAUS_API_KEY) {
-        return NextResponse.json({
-          platform,
-          url,
-          status: "skipped",
-          message: "URLHAUS_API_KEY no configurada. Configurá la key en el panel 'Estado de las API Keys' del dashboard.",
-        }, { status: 200 });
-      }
-      try {
-        const fd = new URLSearchParams();
-        fd.append("token", URLHAUS_API_KEY);
-        fd.append("action", "insert-url");
-        fd.append("url", url);
-        fd.append("threat_type", tType);
-        if (tags) fd.append("tags", tags);
-        fd.append("anonymous", "1");
-        const r = await fetch("https://urlhaus-api.abuse.ch/api/v1/", {
-          method: "POST",
-          body: fd,
-          signal: AbortSignal.timeout(15000),
-        });
-        const text = await r.text();
-        let j: any;
-        try { j = JSON.parse(text); } catch { j = { raw: text.slice(0, 500) }; }
-        return NextResponse.json({
-          platform,
-          url,
-          status: j.query_status === "url_added" || j.query_status === "ok" ? "success" : "failed",
-          responseStatus: r.status,
-          response: j,
-        });
-      } catch (e: any) {
-        return NextResponse.json({ platform, url, status: "error", error: String(e?.message || e) }, { status: 200 });
-      }
-    }
     case "virustotal": {
       const VIRUSTOTAL_API_KEY = getVirustotalKey(request);
       if (!VIRUSTOTAL_API_KEY) {
