@@ -20,6 +20,7 @@ import {
   Clock,
   RefreshCw,
   Filter,
+  Activity,
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -62,6 +63,18 @@ interface SubmitResult {
   timestamp: string;
 }
 
+interface MonitoringResult {
+  url: string;
+  httpStatus: number | null;
+  finalUrl: string | null;
+  title: string | null;
+  classification: string;
+  classificationColor: "red" | "green" | "yellow" | "gray";
+  classificationReason: string;
+  error?: string;
+  lastChecked: string;
+}
+
 interface UrlEntry {
   url: string;
   status: "pending" | "enriching" | "enriched" | "failed";
@@ -70,11 +83,11 @@ interface UrlEntry {
   prefillOpened: PrefillPlatform[];
   emailsGenerated: EmailTemplate[];
   addedAt: string;
+  monitoring?: MonitoringResult;
 }
 
 // ---------- Constants ----------
 
-const STORAGE_KEY = "monitor-threat-takedown-v1";
 const RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 const PREFILL_PLATFORMS: Array<{ id: PrefillPlatform; name: string; shortName: string; url: (u: string) => string; category: string }> = [
@@ -204,12 +217,11 @@ function parseUrls(text: string): { valid: string[]; invalid: string[] } {
   return { valid, invalid };
 }
 
-function loadFromStorage(): UrlEntry[] {
-  if (typeof window === "undefined") return [];
+async function loadFromStorage(): Promise<UrlEntry[]> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: UrlEntry[] = JSON.parse(raw);
+    const r = await fetch("/api/takedown/store");
+    const j = await r.json();
+    const parsed: UrlEntry[] = j.entries || [];
     // Repair stale status: if entry.enrich exists and has no error,
     // the URL is effectively enriched — fix the status field. Otherwise,
     // if status is "enriching" (stuck from a previous session), reset
@@ -228,10 +240,13 @@ function loadFromStorage(): UrlEntry[] {
   }
 }
 
-function saveToStorage(entries: UrlEntry[]) {
-  if (typeof window === "undefined") return;
+async function saveToStorage(entries: UrlEntry[]) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+    await fetch("/api/takedown/store", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entries }),
+    });
   } catch {}
 }
 
@@ -292,15 +307,14 @@ export function TakedownUrlView() {
   const [showKeysForm, setShowKeysForm] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  // Load from localStorage on mount
+  // Load from Vercel KV on mount (replaces localStorage)
   React.useEffect(() => {
-    const stored = loadFromStorage();
-    if (stored.length > 0) {
-      setEntries(stored);
-    }
-    // Fetch the API keys status from the backend — shows the user
-    // which keys are configured (✓) and which are missing (✗) with
-    // setup links, so they know what's actually being reported.
+    (async () => {
+      const stored = await loadFromStorage();
+      if (stored.length > 0) {
+        setEntries(stored);
+      }
+    })();
     refreshKeyStatus();
   }, []);
 
@@ -335,9 +349,11 @@ export function TakedownUrlView() {
     setTimeout(() => setKeysSavedMsg(null), 5000);
   };
 
-  // Persist to localStorage on change
+  // Persist to Vercel KV (debounced — saves 500ms after last change)
   React.useEffect(() => {
-    saveToStorage(entries);
+    if (entries.length === 0) return;
+    const t = setTimeout(() => saveToStorage(entries), 500);
+    return () => clearTimeout(t);
   }, [entries]);
 
   // Close image preview on Escape key
@@ -586,16 +602,66 @@ export function TakedownUrlView() {
     const now = Date.now();
     const old = entries.filter(e => now - new Date(e.addedAt).getTime() > RECHECK_INTERVAL_MS);
     if (old.length === 0) {
-      alert("No hay URLs con más de 7 días para re-verificar.");
+      alert("No hay URLs con mas de 7 dias para re-verificar.");
       return;
     }
-    if (confirm(`¿Re-enriquecer ${old.length} URLs antiguas (más de 7 días)?`)) {
+    if (confirm(`¿Re-enriquecer ${old.length} URLs antiguas (mas de 7 dias)?`)) {
       setLoading(true);
       for (const e of old) {
         await enrichOne(e.url);
       }
       setLoading(false);
     }
+  };
+
+  // ---- Monitoreo: HTTP check de cada URL para detectar si fue baneada / suspendida / borrada / caida ----
+  const monitorOne = async (url: string) => {
+    try {
+      const r = await fetch(`/api/takedown/monitor?url=${encodeURIComponent(url)}`);
+      const result: MonitoringResult = await r.json();
+      setEntries(prev => prev.map(e => e.url === url ? { ...e, monitoring: result } : e));
+    } catch (e: any) {
+      setEntries(prev => prev.map(en => en.url === url ? {
+        ...en,
+        monitoring: {
+          url, httpStatus: null, finalUrl: null, title: null,
+          classification: "ERROR", classificationColor: "gray",
+          classificationReason: String(e?.message || e),
+          lastChecked: new Date().toISOString(),
+        }
+      } : en));
+    }
+  };
+
+  const monitorAll = async () => {
+    setLoading(true);
+    setProgress({ done: 0, total: entries.length, step: "Monitoreando URLs..." });
+    let done = 0;
+    for (const e of entries) {
+      await monitorOne(e.url);
+      done++;
+      setProgress({ done, total: entries.length, step: `Monitoreado ${e.url.slice(0, 50)}... (${done}/${entries.length})` });
+    }
+    setLoading(false);
+    setProgress({ done: 0, total: 0, step: "" });
+
+    // Show summary alert
+    const updatedEntries = await new Promise<UrlEntry[]>(resolve => {
+      setEntries(prev => { resolve(prev); return prev; });
+    });
+    const results = updatedEntries.map(e => e.monitoring?.classification).filter(Boolean);
+    const activas = results.filter(r => r === "ACTIVA").length;
+    const baneadas = results.filter(r => ["BANEADA", "SUSPENDIDA", "BORRADA", "DOMINIO_ELIMINADO", "DOMINIO_CADUCO"].includes(r as string)).length;
+    const caidas = results.filter(r => ["SERVIDOR_CAIDO", "SERVIDOR_APAGADO"].includes(r as string)).length;
+    alert(
+      `Monitoreo completado para ${entries.length} URL(s).\n\n` +
+      `Resultados:\n` +
+      `  ${activas} aun activas (phishing sigue)\n` +
+      `  ${baneadas} baneadas/suspendidas/borradas (takedown exitoso)\n` +
+      `  ${caidas} servidor caido/apagado\n` +
+      `  ${results.length - activas - baneadas - caidas} otros estados\n\n` +
+      `Revisa los badges de monitoreo al lado de cada URL en la tabla.`
+    );
   };
 
   // ---- PDF ----
@@ -708,8 +774,19 @@ export function TakedownUrlView() {
       }
       y += 4;
 
-      // Per-URL status table — 3 automatic APIs first, then 3 manual forms (Google Phishing, Google Malware, Microsoft)
+      // Per-URL status table — monitoring first, then 2 automatic APIs, then 4 manual forms
       const reportedRows: Array<[string, string, string]> = [];
+
+      // Monitoring status
+      if (entry.monitoring) {
+        reportedRows.push([
+          "Monitoreo HTTP",
+          entry.monitoring.classification,
+          `HTTP ${entry.monitoring.httpStatus || "?"} - ${entry.monitoring.classificationReason.slice(0, 60)}`,
+        ]);
+      } else {
+        reportedRows.push(["Monitoreo HTTP", "No monitoreado", "-"]);
+      }
 
       // Auto APIs
       for (const p of apiPlatforms) {
@@ -762,6 +839,9 @@ export function TakedownUrlView() {
             else if (v.startsWith("Fallo")) data.cell.styles.textColor = [220, 38, 38];
             else if (v.startsWith("Salteado") || v.startsWith("Pendiente") || v.startsWith("No")) data.cell.styles.textColor = [161, 98, 7];
             else if (v.startsWith("Form")) data.cell.styles.textColor = [59, 130, 246]; // blue for manual open
+            else if (v === "ACTIVA") data.cell.styles.textColor = [220, 38, 38]; // red
+            else if (["BANEADA", "SUSPENDIDA", "BORRADA", "DOMINIO_ELIMINADO", "DOMINIO_CADUCO"].includes(v)) data.cell.styles.textColor = [22, 163, 74]; // green
+            else if (["SERVIDOR_CAIDO", "SERVIDOR_APAGADO"].includes(v)) data.cell.styles.textColor = [161, 98, 7]; // yellow
           }
         },
       });
@@ -1042,8 +1122,11 @@ export function TakedownUrlView() {
               <Button size="sm" onClick={submitAll} disabled={bulkSubmitting || stats.enriched === 0}>
                 {bulkSubmitting ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><Send className="w-3 h-3 mr-1.5" /> Reportar a las 2 APIs</>}
               </Button>
+              <Button size="sm" variant="outline" onClick={monitorAll} disabled={loading || entries.length === 0} className="text-orange-500 border-orange-500/40">
+                {loading && progress.step?.includes("Monitore") ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><Activity className="w-3 h-3 mr-1.5" /> Monitorear todas</>}
+              </Button>
               <Button size="sm" variant="outline" onClick={recheckOld}>
-                <Clock className="w-3 h-3 mr-1.5" /> Re-check +7 días
+                <Clock className="w-3 h-3 mr-1.5" /> Re-check +7 dias
               </Button>
             </div>
           }
@@ -1171,6 +1254,7 @@ export function TakedownUrlView() {
                   <TableHead>VT</TableHead>
                   <TableHead>Hosting</TableHead>
                   <TableHead>CF</TableHead>
+                  <TableHead>Monitoreo</TableHead>
                   <TableHead>APIs (auto-submit)</TableHead>
                   <TableHead>PASO 3: Reportar</TableHead>
                 </TableRow>
@@ -1221,6 +1305,31 @@ export function TakedownUrlView() {
                           {entry.enrich?.cloudflare ? (
                             <Badge variant="outline" className="text-[9px] font-mono text-orange-500 border-orange-500/40">CF</Badge>
                           ) : <span className="text-muted-foreground text-[10px]">—</span>}
+                        </TableCell>
+                        {/* Monitoring status badge */}
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          {entry.monitoring ? (
+                            <div className="flex flex-col gap-0.5">
+                              <Badge variant="outline" className={`text-[8px] font-mono ${
+                                entry.monitoring.classificationColor === "green" ? "text-green-500 border-green-500/40" :
+                                entry.monitoring.classificationColor === "red" ? "text-red-500 border-red-500/40" :
+                                entry.monitoring.classificationColor === "yellow" ? "text-yellow-500 border-yellow-500/40" :
+                                "text-muted-foreground"
+                              }`} title={entry.monitoring.classificationReason}>
+                                {entry.monitoring.classification}
+                              </Badge>
+                              <span className="text-[8px] text-muted-foreground">
+                                {new Date(entry.monitoring.lastChecked).toLocaleDateString()}
+                              </span>
+                              <Button size="sm" variant="ghost" className="h-5 text-[8px] p-0" onClick={() => monitorOne(entry.url)}>
+                                Re-check
+                              </Button>
+                            </div>
+                          ) : (
+                            <Button size="sm" variant="outline" className="h-7 text-[10px] text-orange-500 border-orange-500/40" onClick={() => monitorOne(entry.url)} title="Verificar el estado HTTP de esta URL">
+                              <Activity className="w-3 h-3 mr-1" /> Monitorear
+                            </Button>
+                          )}
                         </TableCell>
                         <TableCell onClick={(e) => e.stopPropagation()}>
                           <div className="flex gap-1 flex-wrap">
@@ -1289,7 +1398,7 @@ export function TakedownUrlView() {
                       </TableRow>
                       {isExpanded && entry.status === "enriched" && entry.enrich && (
                         <TableRow className="bg-muted/30 border-l-4 border-l-cyan-500">
-                          <TableCell colSpan={7} className="p-3">
+                          <TableCell colSpan={8} className="p-3">
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[10px]">
                               {/* Screenshot — clickable to open preview modal */}
                               <div className="md:col-span-1">
@@ -1338,14 +1447,14 @@ export function TakedownUrlView() {
                       )}
                       {isExpanded && entry.status === "pending" && (
                         <TableRow className="bg-muted/30 border-l-4 border-l-cyan-500">
-                          <TableCell colSpan={7} className="p-3 text-center text-xs text-muted-foreground">
+                          <TableCell colSpan={8} className="p-3 text-center text-xs text-muted-foreground">
                             Esta URL todavía no fue enriquecida. Hacé click en "Enriquecer" o en "Enriquecer todas" (arriba) para obtener los datos.
                           </TableCell>
                         </TableRow>
                       )}
                       {isExpanded && entry.status === "failed" && (
                         <TableRow className="bg-red-500/5 border-l-4 border-l-red-500">
-                          <TableCell colSpan={7} className="p-3 text-center text-xs text-red-500">
+                          <TableCell colSpan={8} className="p-3 text-center text-xs text-red-500">
                             Falló el enriquecimiento. Hacé click en "Reintentar" para volver a intentarlo.
                           </TableCell>
                         </TableRow>
