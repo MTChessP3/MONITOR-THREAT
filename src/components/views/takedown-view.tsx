@@ -1104,9 +1104,6 @@ export function TakedownUrlView() {
                       {showKeysForm ? "✕ Cerrar formulario" : "⚙ Configurar keys acá"}
                     </Button>
                   )}
-                  <a href="https://vercel.com/dashboard" target="_blank" rel="noreferrer" className="text-[10px] text-cyan-500 hover:underline self-center">
-                    O en Vercel →
-                  </a>
                 </div>
               </div>
 
