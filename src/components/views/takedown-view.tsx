@@ -78,19 +78,10 @@ interface UrlEntry {
 const STORAGE_KEY = "monitor-threat-takedown-v1";
 const RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-const PREFILL_PLATFORMS: Array<{ id: PrefillPlatform; name: string; url: (u: string) => string; category: string }> = [
-  { id: "google_phish", name: "Google Safe Browsing (Phishing)", category: "browser", url: u => `https://safebrowsing.google.com/safebrowsing/report_phish/?url=${encodeURIComponent(u)}` },
-  { id: "google_malware", name: "Google Safe Browsing (Malware)", category: "browser", url: u => `https://safebrowsing.google.com/safebrowsing/report_badware/?url=${encodeURIComponent(u)}` },
-  { id: "microsoft", name: "Microsoft SmartScreen", category: "browser", url: u => `https://www.microsoft.com/en-us/wdsi/support/report-unsafe-site-guest?url=${encodeURIComponent(u)}` },
-  { id: "apwg", name: "APWG (Anti-Phishing Working Group)", category: "phishing", url: u => `https://apwg.org/reportphishing/review/?url=${encodeURIComponent(u)}` },
-  { id: "stopbadware", name: "StopBadware", category: "abuse", url: u => `https://www.stopbadware.org/report?url=${encodeURIComponent(u)}` },
-  { id: "spam404", name: "Spam404", category: "spam", url: u => `https://www.spam404.com/report.html?url=${encodeURIComponent(u)}` },
-  { id: "netcraft", name: "Netcraft", category: "takedown", url: u => `https://report.netcraft.com/report?url=${encodeURIComponent(u)}` },
-  { id: "kaspersky", name: "Kaspersky VirusDesk", category: "antivirus", url: u => `https://virusdesk.kaspersky.com/?url=${encodeURIComponent(u)}` },
-  { id: "talos", name: "Cisco Talos", category: "antivirus", url: u => `https://talosintelligence.com/submit?ioc=${encodeURIComponent(u)}` },
-  { id: "fortiguard", name: "Fortinet FortiGuard", category: "antivirus", url: u => `https://www.forticourt.com/fortiguard/url_tag_form.php?url=${encodeURIComponent(u)}` },
-  { id: "mcafee", name: "McAfee WebAdvisor", category: "antivirus", url: u => `https://trustedsource.org/submitURL.html?url=${encodeURIComponent(u)}` },
-  { id: "sucuri", name: "Sucuri SiteCheck (scan)", category: "scanner", url: u => `https://sitecheck.sucuri.net/results/${u}` },
+const PREFILL_PLATFORMS: Array<{ id: PrefillPlatform; name: string; shortName: string; url: (u: string) => string; category: string }> = [
+  { id: "google_phish", name: "Google Safe Browsing (Phishing)", shortName: "Google", category: "browser", url: u => `https://safebrowsing.google.com/safebrowsing/report_phish/?url=${encodeURIComponent(u)}` },
+  { id: "google_malware", name: "Google Safe Browsing (Malware)", shortName: "Google", category: "browser", url: u => `https://safebrowsing.google.com/safebrowsing/report_badware/?url=${encodeURIComponent(u)}` },
+  { id: "microsoft", name: "Microsoft SmartScreen", shortName: "Microsoft", category: "browser", url: u => `https://www.microsoft.com/en-us/wdsi/support/report-unsafe-site-guest?url=${encodeURIComponent(u)}` },
 ];
 
 const API_PLATFORMS: Array<{ id: Platform; name: string; needsKey?: string; note?: string }> = [
@@ -468,12 +459,14 @@ export function TakedownUrlView() {
       return;
     }
     if (!confirm(
-      `Se va a ejecutar el TAKEDOWN AUTOMÁTICO para ${entries.length} URL(s).\n\n` +
+      `Se va a ejecutar el TAKEDOWN AUTOMATICO para ${entries.length} URL(s).\n\n` +
       `Pasos:\n` +
       `  1. Enriquecer cada URL (VirusTotal, Whois, hosting, screenshot, Cloudflare)\n` +
-      `  2. Reportar automáticamente a 3 APIs (VirusTotal, Clean-MX, URLscan.io)\n\n` +
-      `Si alguna API key no está configurada, esa plataforma se marcará como "○ SKIPPED" (no falla el resto).\n` +
-      `Al terminar, vas a poder revisar los resultados y generar el PDF vos mismo con el botón "Imprimir PDF".\n\n` +
+      `  2. Reportar automaticamente a 3 APIs (VirusTotal, Clean-MX, URLscan.io)\n` +
+      `  3. Abrir formularios de Google y Microsoft para que vos confirmes el reporte manualmente\n\n` +
+      `Si alguna API key no esta configurada, esa plataforma se marcara como "Salteado (sin key)" (no falla el resto).\n` +
+      `Al terminar, vas a poder revisar los resultados y generar el PDF vos mismo con el boton "Imprimir PDF".\n\n` +
+      `IMPORTANTE: Si el browser bloquea los popups, vas a ver 2 botones por URL (Google y Microsoft) para abrirlos manualmente.\n\n` +
       `¿Continuar?`
     )) {
       return;
@@ -482,20 +475,20 @@ export function TakedownUrlView() {
     setLoading(true);
 
     const total = entries.length;
-    setProgress({ done: 0, total, step: `Iniciando takedown automático de ${total} URL(s)...` });
+    setProgress({ done: 0, total, step: `Iniciando takedown automatico de ${total} URL(s)...` });
 
     // Step 1: Enrich all
     let done = 0;
-    setProgress({ done: 0, total, step: `[1/2] Enriqueciendo URLs (VirusTotal, Whois, hosting, screenshot)...` });
+    setProgress({ done: 0, total, step: `[1/3] Enriqueciendo URLs (VirusTotal, Whois, hosting, screenshot)...` });
     const toEnrich = entries.filter(e => e.status !== "enriched");
     for (const e of toEnrich) {
       await enrichOne(e.url);
       done++;
-      setProgress({ done, total, step: `[1/2] Enriquecido ${e.url.slice(0, 60)}... (${done}/${total})` });
+      setProgress({ done, total, step: `[1/3] Enriquecido ${e.url.slice(0, 60)}... (${done}/${total})` });
     }
 
-    // Step 2: Auto-submit to all 4 APIs
-    setProgress({ done: 0, total, step: `[2/2] Reportando a 3 APIs (VirusTotal, Clean-MX, URLscan)...` });
+    // Step 2: Auto-submit to the 3 APIs
+    setProgress({ done: 0, total, step: `[2/3] Reportando a 3 APIs (VirusTotal, Clean-MX, URLscan)...` });
     done = 0;
     await new Promise(r => setTimeout(r, 100));
     const currentEntries = (await new Promise<UrlEntry[]>(resolve => {
@@ -504,7 +497,30 @@ export function TakedownUrlView() {
     for (const entry of currentEntries.filter(e => e.status === "enriched")) {
       await submitOne(entry);
       done++;
-      setProgress({ done, total, step: `[2/2] Reportado ${entry.url.slice(0, 60)}... (${done}/${total})` });
+      setProgress({ done, total, step: `[2/3] Reportado ${entry.url.slice(0, 60)}... (${done}/${total})` });
+    }
+
+    // Step 3: Open Google + Microsoft pre-fill forms for each enriched URL.
+    // Open one form per URL with a small delay so the browser doesn't
+    // block them as spam popups. The user will see the form pre-loaded
+    // and just needs to click "Submit" on each.
+    setProgress({ done: 0, total, step: `[3/3] Abriendo formularios de Google y Microsoft (vas a confirmar el Submit en cada uno)...` });
+    done = 0;
+    for (const entry of currentEntries.filter(e => e.status === "enriched")) {
+      // Open Google Phishing form first (most important)
+      const formsToOpen = PREFILL_PLATFORMS.filter(p => !entry.prefillOpened.includes(p.id));
+      for (const p of formsToOpen) {
+        try {
+          window.open(p.url(entry.url), "_blank");
+        } catch {}
+        await new Promise(r => setTimeout(r, 300)); // small delay to avoid popup blocking
+      }
+      setEntries(prev => prev.map(e => e.url === entry.url ? {
+        ...e,
+        prefillOpened: [...e.prefillOpened, ...formsToOpen.map(p => p.id)],
+      } : e));
+      done++;
+      setProgress({ done, total, step: `[3/3] Forms abiertos para ${entry.url.slice(0, 60)}... (${done}/${total})` });
     }
 
     // Done — show a summary alert, but DO NOT auto-generate the PDF.
@@ -518,14 +534,20 @@ export function TakedownUrlView() {
     const ok = allSubmits.filter(s => s.status === "success").length;
     const fail = allSubmits.filter(s => s.status === "failed").length;
     const skipped = allSubmits.filter(s => s.status === "skipped").length;
+    const formsOpened = currentEntries.filter(e => e.status === "enriched").length * PREFILL_PLATFORMS.length;
     alert(
       `Takedown completado para ${total} URL(s).\n\n` +
-      `Resumen de reportes a APIs:\n` +
-      `  ✓ ${ok} reportados exitosamente\n` +
-      `  ✗ ${fail} fallaron\n` +
-      `  ○ ${skipped} salteados (sin API key configurada)\n\n` +
-      `Revisá los resultados en la tabla de abajo (click en una fila para ver detalle).\n` +
-      `Para generar el informe PDF con trazabilidad completa, hacé click en el botón "Imprimir PDF".`
+      `Resumen:\n` +
+      `  Reportes automaticos a APIs:\n` +
+      `    ${ok} reportados exitosamente\n` +
+      `    ${fail} fallaron\n` +
+      `    ${skipped} salteados (sin API key)\n` +
+      `  Forms manuales abiertos:\n` +
+      `    ${formsOpened} formularios de Google y Microsoft abiertos en pestañas nuevas\n` +
+      `    (vas a tener que hacer click en "Submit" en cada uno)\n\n` +
+      `Revisa los resultados en la tabla de abajo (click en una fila para ver detalle).\n` +
+      `Si el browser bloqueo los popups, vas a ver 2 botones por URL (Google y Microsoft) para abrirlos manualmente.\n` +
+      `Para generar el informe PDF con trazabilidad completa, hace click en el boton "Imprimir PDF".`
     );
   };
 
@@ -698,7 +720,7 @@ export function TakedownUrlView() {
     y += 18;
 
     // ---------- Section 2: Detalle por URL ----------
-    sectionHeading("Detalle por URL - Estado de Reporte por API");
+    sectionHeading("Detalle por URL - Estado de Reporte");
 
     for (const entry of entries.slice(0, 50)) {
       // URL header
@@ -719,50 +741,60 @@ export function TakedownUrlView() {
       }
       y += 4;
 
-      // Per-URL status table — only the 3 API platforms
+      // Per-URL status table — 3 automatic APIs first, then 3 manual forms (Google Phishing, Google Malware, Microsoft)
       const reportedRows: Array<[string, string, string]> = [];
+
+      // Auto APIs
       for (const p of apiPlatforms) {
         const name = API_PLATFORMS.find(x => x.id === p)?.name || p;
         const s = entry.submits.find(x => x.platform === p);
         let status = "Pendiente";
         let detail = "-";
-        let color: [number, number, number] = [161, 98, 7]; // amber
         if (s?.status === "success") {
           status = "Reportado OK";
-          color = [22, 163, 74]; // green
           const link = s.permalink || (p === "virustotal" && entry.enrich?.vt?.permalink) || entry.enrich?.vt?.permalink;
           detail = link && link !== "-" ? link.slice(0, 70) : "OK";
         } else if (s?.status === "failed" || s?.status === "error") {
           status = "Fallo";
-          color = [220, 38, 38]; // red
           detail = (s.message || "error desconocido").slice(0, 70);
         } else if (s?.status === "skipped") {
           status = "Salteado (sin key)";
-          color = [161, 98, 7]; // amber
           detail = (s.message || "API key no configurada").slice(0, 70);
         }
         reportedRows.push([name, status, detail]);
       }
 
+      // Manual forms: Google Phishing, Google Malware, Microsoft
+      for (const p of PREFILL_PLATFORMS) {
+        const wasOpened = entry.prefillOpened.includes(p.id);
+        const link = p.url(entry.url);
+        reportedRows.push([
+          p.name + " (manual)",
+          wasOpened ? "Form abierto" : "No abierto",
+          link.slice(0, 70),
+        ]);
+      }
+
       autoTable(doc, {
         startY: y,
-        head: [["Plataforma API", "Estado", "Detalle / Link al reporte"]],
+        head: [["Plataforma", "Estado", "Detalle / Link al reporte"]],
         body: reportedRows,
         theme: "striped",
         margin: { left: margin, right: margin },
         styles: { fontSize: 9, cellPadding: 5, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.3 },
         headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontSize: 9, fontStyle: "bold" },
         columnStyles: {
-          0: { cellWidth: contentWidth * 0.22, fontStyle: "bold" },
-          1: { cellWidth: contentWidth * 0.22, halign: "center" },
-          2: { cellWidth: contentWidth * 0.56, textColor: [59, 130, 246] },
+          0: { cellWidth: contentWidth * 0.30, fontStyle: "bold" },
+          1: { cellWidth: contentWidth * 0.20, halign: "center" },
+          2: { cellWidth: contentWidth * 0.50, textColor: [59, 130, 246] },
         },
         didParseCell: (data: any) => {
           if (data.section === "body" && data.column.index === 1) {
             const v = String(data.cell.raw || "");
             if (v.startsWith("Reportado")) data.cell.styles.textColor = [22, 163, 74];
             else if (v.startsWith("Fallo")) data.cell.styles.textColor = [220, 38, 38];
-            else if (v.startsWith("Salteado") || v.startsWith("Pendiente")) data.cell.styles.textColor = [161, 98, 7];
+            else if (v.startsWith("Salteado") || v.startsWith("Pendiente") || v.startsWith("No")) data.cell.styles.textColor = [161, 98, 7];
+            else if (v.startsWith("Form")) data.cell.styles.textColor = [59, 130, 246]; // blue for manual open
           }
         },
       });
@@ -965,13 +997,14 @@ export function TakedownUrlView() {
         >
           <div className="flex flex-col gap-3">
             <div className="text-xs text-muted-foreground p-3 rounded bg-cyan-500/5 border border-cyan-500/30">
-              <strong className="text-cyan-500">Qué hace este botón (todo automático):</strong>
+              <strong className="text-cyan-500">Qué hace este botón:</strong>
               <ol className="list-decimal ml-4 mt-1 space-y-0.5 text-[11px]">
-                <li><strong>Enriquece</strong> cada URL — VirusTotal, Whois, hosting, screenshot, Cloudflare, clasificación</li>
-                <li><strong>Reporta a 3 APIs</strong> — VirusTotal, Clean-MX, URLscan.io (cada una devuelve link al reporte público)</li>
+                <li><strong>Enriquece</strong> cada URL - VirusTotal, Whois, hosting, screenshot, Cloudflare, clasificacion</li>
+                <li><strong>Reporta a 3 APIs (automatico)</strong> - VirusTotal, Clean-MX, URLscan.io (cada una devuelve link al reporte publico)</li>
+                <li><strong>Abre Google y Microsoft (manual)</strong> - abre los formularios pre-cargados en pestañas nuevas; vos haces click en "Submit" en cada uno</li>
               </ol>
               <div className="mt-2 text-[10px] text-muted-foreground">
-                Al terminar, vas a ver un resumen con cuántas APIs respondieron ✓/✗/○. Después vos generás el PDF con el botón "Imprimir PDF".
+                Al terminar, vas a ver un resumen. Despues vos generas el PDF con el boton "Imprimir PDF".
               </div>
             </div>
             <div className="flex items-center gap-3 flex-wrap">
@@ -1044,7 +1077,7 @@ export function TakedownUrlView() {
       {/* ---------- Step 3: Auto-report to APIs (solo APIs automáticas) ---------- */}
       {step2Done && (
         <Panel
-          title="PASO 3 — Reporte automático a 3 APIs"
+          title="PASO 3 - Reporte a 3 APIs (automatico) + Google/Microsoft (manual)"
           className="md:col-span-2"
           action={
             <div className="flex gap-2">
@@ -1244,9 +1277,17 @@ export function TakedownUrlView() {
                               </Button>
                             )}
                             {entry.status === "enriched" && (
-                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => submitOne(entry)} title="Reportar esta URL a las 3 APIs">
-                                <Send className="w-3 h-3 mr-1" /> Reportar a APIs
-                              </Button>
+                              <>
+                                <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => submitOne(entry)} title="Reportar esta URL a las 3 APIs automaticamente">
+                                  <Send className="w-3 h-3 mr-1" /> Reportar APIs
+                                </Button>
+                                <Button size="sm" variant="outline" className="h-7 text-[10px] text-blue-500 border-blue-500/40" onClick={() => openPrefill(entry, "google_phish")} title="Abrir formulario de Google Safe Browsing (Phishing) para reportar manualmente">
+                                  <Globe className="w-3 h-3 mr-1" /> Google
+                                </Button>
+                                <Button size="sm" variant="outline" className="h-7 text-[10px] text-cyan-500 border-cyan-500/40" onClick={() => openPrefill(entry, "microsoft")} title="Abrir formulario de Microsoft SmartScreen para reportar manualmente">
+                                  <Globe className="w-3 h-3 mr-1" /> Microsoft
+                                </Button>
+                              </>
                             )}
                             {entry.status === "failed" && (
                               <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
