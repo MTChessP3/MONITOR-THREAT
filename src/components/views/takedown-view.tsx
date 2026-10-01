@@ -423,7 +423,7 @@ export function TakedownUrlView() {
     // Enrich any URL that is NOT yet enriched (pending, failed, or stuck
     // in "enriching" state from a previous session).
     const toEnrich = entries.filter(e => e.status !== "enriched");
-    setProgress({ done: 0, total: toEnrich.length, step: `Enriqueciendo ${toEnrich.length} URL(s)...` });
+    setProgress({ done: 0, total: toEnrich.length, step: `Analizando ${toEnrich.length} URL(s)...` });
     let done = 0;
     // Run in batches of 5 to avoid overwhelming the server
     const batchSize = 5;
@@ -432,7 +432,7 @@ export function TakedownUrlView() {
       await Promise.all(batch.map(async e => {
         await enrichOne(e.url);
         done++;
-        setProgress({ done, total: toEnrich.length, step: `Enriquecido ${e.url.slice(0, 50)}...` });
+        setProgress({ done, total: toEnrich.length, step: `Analizado ${e.url.slice(0, 50)}...` });
       }));
     }
     setLoading(false);
@@ -476,7 +476,7 @@ export function TakedownUrlView() {
     if (!confirm(
       `Se va a ejecutar el TAKEDOWN AUTOMATICO para ${entries.length} URL(s).\n\n` +
       `Pasos:\n` +
-      `  1. Enriquecer cada URL (VirusTotal, Whois, hosting, screenshot, Cloudflare)\n` +
+      `  1. Analizar cada URL (VirusTotal, Whois, hosting, screenshot, Cloudflare)\n` +
       `  2. Reportar automaticamente a 2 APIs (VirusTotal, URLscan.io)\n\n` +
       `Si alguna API key no esta configurada, esa plataforma se marcara como "Salteado (sin key)" (no falla el resto).\n` +
       `Despues de los APIs automaticos, vas a ver 2 botones por URL (Google y Microsoft) para abrirlos manualmente cuando quieras.\n\n` +
@@ -492,12 +492,12 @@ export function TakedownUrlView() {
 
     // Step 1: Enrich all
     let done = 0;
-    setProgress({ done: 0, total, step: `[1/2] Enriqueciendo URLs (VirusTotal, Whois, hosting, screenshot)...` });
+    setProgress({ done: 0, total, step: `[1/2] Analizando URLs (VirusTotal, Whois, hosting, screenshot)...` });
     const toEnrich = entries.filter(e => e.status !== "enriched");
     for (const e of toEnrich) {
       await enrichOne(e.url);
       done++;
-      setProgress({ done, total, step: `[1/2] Enriquecido ${e.url.slice(0, 60)}... (${done}/${total})` });
+      setProgress({ done, total, step: `[1/2] Analizado ${e.url.slice(0, 60)}... (${done}/${total})` });
     }
 
     // Step 2: Auto-submit to the 3 APIs ONLY (no Google/Microsoft auto-open — user does it manually per URL)
@@ -582,7 +582,7 @@ export function TakedownUrlView() {
       } catch {}
     }
     if (recipients.size === 0) {
-      alert("No se pudo determinar el correo de abuse. Enriquece la URL primero.");
+      alert("No se pudo determinar el correo de abuse. Analiza la URL primero.");
       return;
     }
     const to = Array.from(recipients).join(",");
@@ -605,7 +605,7 @@ export function TakedownUrlView() {
       alert("No hay URLs con mas de 7 dias para re-verificar.");
       return;
     }
-    if (confirm(`¿Re-enriquecer ${old.length} URLs antiguas (mas de 7 dias)?`)) {
+    if (confirm(`¿Re-analizar ${old.length} URLs antiguas (mas de 7 dias)?`)) {
       setLoading(true);
       for (const e of old) {
         await enrichOne(e.url);
@@ -849,8 +849,8 @@ export function TakedownUrlView() {
       y = (doc as any).lastAutoTable.finalY + 18;
     }
 
-    // ---------- Section 3: Datos de enriquecimiento (registrar, hosting, etc.) ----------
-    sectionHeading("Datos de Enriquecimiento (registrar, hosting, VirusTotal)");
+    // ---------- Section 3: Datos de análisis (registrar, hosting, etc.) ----------
+    sectionHeading("Datos de Análisis (registrar, hosting, VirusTotal)");
 
     for (const entry of entries.slice(0, 50)) {
       const e = entry.enrich;
@@ -925,8 +925,8 @@ export function TakedownUrlView() {
   // ---- Stat metadata (label, description, predicate) for the modal ----
   const STAT_META: Record<string, { label: string; description: string; predicate: (e: UrlEntry) => boolean; bulkAction?: string }> = {
     total:      { label: "Total URLs",          description: "Todas las URLs cargadas en el sistema.", predicate: () => true },
-    enriched:   { label: "Enriquecidas",        description: "URLs con enriquecimiento completo (VirusTotal, Whois, hosting, screenshot, clasificacion, Cloudflare).", predicate: e => e.status === "enriched" },
-    pending:    { label: "Sin enriquecer",     description: "URLs cargadas pero todavia no enriquecidas. Hace click en 'Enriquecer todas' (arriba) o en 'Enriquecer' por cada URL.", predicate: e => e.status === "pending" || e.status === "failed", bulkAction: "enrich" },
+    enriched:   { label: "Analizadas",        description: "URLs con análisis completo (VirusTotal, Whois, hosting, screenshot, clasificacion, Cloudflare).", predicate: e => e.status === "enriched" },
+    pending:    { label: "Sin analizar",     description: "URLs cargadas pero todavia no analizadas. Hace click en 'Analizar todas' (arriba) o en 'Analizar' por cada URL.", predicate: e => e.status === "pending" || e.status === "failed", bulkAction: "enrich" },
     phishing:   { label: "Phishing",           description: "URLs clasificadas como phishing (robo de credenciales) por patrones en la URL (login, paypal, bank, etc.).", predicate: e => e.enrich?.classification === "phishing" },
     malware:    { label: "Malware",             description: "URLs clasificadas como distribucion de malware (download, crack, keygen, exe, etc.).", predicate: e => e.enrich?.classification === "malware" },
     scam:       { label: "Scam",                description: "URLs clasificadas como scam/fraude financiero (prize, winner, lottery, investment, etc.).", predicate: e => e.enrich?.classification === "scam" },
@@ -948,12 +948,12 @@ export function TakedownUrlView() {
   // ---- Bulk action from modal: enrich all URLs in the modal ----
   const bulkEnrichFromModal = async (urls: string[]) => {
     setLoading(true);
-    setProgress({ done: 0, total: urls.length, step: `Enriqueciendo ${urls.length} URL(s)...` });
+    setProgress({ done: 0, total: urls.length, step: `Analizando ${urls.length} URL(s)...` });
     let done = 0;
     for (const url of urls) {
       await enrichOne(url);
       done++;
-      setProgress({ done, total: urls.length, step: `Enriquecido ${url.slice(0, 50)}...` });
+      setProgress({ done, total: urls.length, step: `Analizado ${url.slice(0, 50)}...` });
     }
     setLoading(false);
     setProgress({ done: 0, total: 0, step: "" });
@@ -999,7 +999,7 @@ export function TakedownUrlView() {
   return (
     <ModuleShell
       name="TakeDown URL"
-      description="Carga URLs desde .txt o pega una por linea. El sistema las enriquece y reporta automaticamente a 2 APIs (VirusTotal, URLscan) con trazabilidad completa."
+      description="Carga URLs desde .txt o pega una por linea. El sistema las analiza y reporta automaticamente a 2 APIs (VirusTotal, URLscan) con trazabilidad completa."
       icon={ShieldOff}
       category="INFRASTRUCTURE"
     >
@@ -1007,7 +1007,7 @@ export function TakedownUrlView() {
       <div className="flex items-start gap-2 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-[11px]">
         <div className="text-cyan-500 font-bold shrink-0">💡</div>
         <div className="text-muted-foreground">
-          <strong>PASO 1</strong>: Carga las URLs (textarea o .txt) - una por linea. Despues hace click en el boton <strong className="text-cyan-500">🚀 Takedown automatico completo</strong> que aparece abajo. El sistema ejecuta todo solo: enriquece cada URL + reporta a 2 APIs (VirusTotal, URLscan). Para Google, Microsoft y Netcraft, usa los botones al lado de cada URL en la tabla (manual).
+          <strong>PASO 1</strong>: Carga las URLs (textarea o .txt) - una por linea. Despues hace click en el boton <strong className="text-cyan-500">🚀 Takedown automatico completo</strong> que aparece abajo. El sistema ejecuta todo solo: analiza cada URL + reporta a 2 APIs (VirusTotal, URLscan). Para Google, Microsoft y Netcraft, usa los botones al lado de cada URL en la tabla (manual).
         </div>
       </div>
 
@@ -1084,11 +1084,11 @@ export function TakedownUrlView() {
       {/* ---------- Step 2: Enrich ---------- */}
       {step1Done && (
         <Panel
-          title="PASO 2 — Enriquecer las URLs (VirusTotal, Whois, hosting, screenshot)"
+          title="PASO 2 — Analizar las URLs (VirusTotal, Whois, hosting, screenshot)"
           className="md:col-span-2"
           action={
             <Button size="sm" onClick={enrichAll} disabled={loading || entries.every(e => e.status === "enriched")}>
-              {loading ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><RefreshCw className="w-3 h-3 mr-1.5" /> Enriquecer todas ({entries.filter(e => e.status !== "enriched").length} pendientes)</>}
+              {loading ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><RefreshCw className="w-3 h-3 mr-1.5" /> Analizar todas ({entries.filter(e => e.status !== "enriched").length} pendientes)</>}
             </Button>
           }
         >
@@ -1104,12 +1104,12 @@ export function TakedownUrlView() {
           )}
           {/* Stats grid — clickeables, abren modal con info + acciones */}
           <div className="text-xs text-muted-foreground mb-2 p-2 rounded bg-cyan-500/5 border border-cyan-500/20">
-            💡 Click en cualquier stat para ver las URLs de esa categoría y gestionarlas (enriquecer, abrir forms, generar emails).
+            💡 Click en cualquier stat para ver las URLs de esa categoría y gestionarlas (analizar, abrir forms, generar emails).
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2 mb-3">
             <StatBox label="Total URLs" value={stats.total} color="cyan" filterKey="total" onClick={openStatModal} />
-            <StatBox label="Enriquecidas" value={stats.enriched} color="green" filterKey="enriched" onClick={openStatModal} />
-            <StatBox label="Sin enriquecer" value={stats.pending} color="yellow" filterKey="pending" onClick={openStatModal} />
+            <StatBox label="Analizadas" value={stats.enriched} color="green" filterKey="enriched" onClick={openStatModal} />
+            <StatBox label="Sin analizar" value={stats.pending} color="yellow" filterKey="pending" onClick={openStatModal} />
             <StatBox label="Phishing" value={stats.phishing} color="red" filterKey="phishing" onClick={openStatModal} />
             <StatBox label="Malware" value={stats.malware} color="red" filterKey="malware" onClick={openStatModal} />
             <StatBox label="Scam" value={stats.scam} color="orange" filterKey="scam" onClick={openStatModal} />
@@ -1383,7 +1383,7 @@ export function TakedownUrlView() {
                           <div className="flex gap-1 items-center">
                             {entry.status === "pending" && (
                               <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
-                                <Eye className="w-3 h-3 mr-1" /> Enriquecer
+                                <Eye className="w-3 h-3 mr-1" /> Analizar
                               </Button>
                             )}
                             {entry.status === "enriched" && (
@@ -1459,14 +1459,14 @@ export function TakedownUrlView() {
                       {isExpanded && entry.status === "pending" && (
                         <TableRow className="bg-muted/30 border-l-4 border-l-cyan-500">
                           <TableCell colSpan={8} className="p-3 text-center text-xs text-muted-foreground">
-                            Esta URL todavía no fue enriquecida. Hacé click en "Enriquecer" o en "Enriquecer todas" (arriba) para obtener los datos.
+                            Esta URL todavía no fue analizada. Hacé click en "Analizar" o en "Analizar todas" (arriba) para obtener los datos.
                           </TableCell>
                         </TableRow>
                       )}
                       {isExpanded && entry.status === "failed" && (
                         <TableRow className="bg-red-500/5 border-l-4 border-l-red-500">
                           <TableCell colSpan={8} className="p-3 text-center text-xs text-red-500">
-                            Falló el enriquecimiento. Hacé click en "Reintentar" para volver a intentarlo.
+                            Falló el análisis. Hacé click en "Reintentar" para volver a intentarlo.
                           </TableCell>
                         </TableRow>
                       )}
@@ -1497,7 +1497,7 @@ export function TakedownUrlView() {
             <h3 className="text-base font-semibold">Cargá URLs para iniciar el takedown</h3>
             <p className="text-xs text-muted-foreground max-w-2xl">
               Pegá una URL por línea en el textarea de arriba (o cargá un archivo .txt).
-              Después, enriquecé cada URL automáticamente (VirusTotal, Whois, screenshot, hosting, Cloudflare detection)
+              Después, analizá cada URL automáticamente (VirusTotal, Whois, screenshot, hosting, Cloudflare detection)
               y reportá a las siguientes 5 plataformas:
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-left text-[11px] mt-4">
@@ -1536,7 +1536,7 @@ export function TakedownUrlView() {
             {modalEntries.length > 0 && (
               <div className="flex flex-wrap gap-2 p-3 border-b border-border bg-muted/20">
                 <Button size="sm" variant="outline" onClick={() => bulkEnrichFromModal(modalEntries.filter(e => e.status !== "enriched").map(e => e.url))} disabled={loading || modalEntries.every(e => e.status === "enriched")}>
-                  <RefreshCw className="w-3 h-3 mr-1.5" /> Enriquecer las {modalEntries.filter(e => e.status !== "enriched").length} URL(s) no enriquecidas
+                  <RefreshCw className="w-3 h-3 mr-1.5" /> Analizar las {modalEntries.filter(e => e.status !== "enriched").length} URL(s) no analizadas
                 </Button>
                 {modalEntries.some(e => e.status === "enriched") && (
                   <Button size="sm" onClick={() => bulkSubmitFromModal(modalEntries.filter(e => e.status === "enriched"))} disabled={bulkSubmitting}>
@@ -1627,7 +1627,7 @@ export function TakedownUrlView() {
                         <div className="flex flex-wrap gap-2">
                           {entry.status === "pending" && (
                             <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
-                              <Eye className="w-3 h-3 mr-1" /> Enriquecer
+                              <Eye className="w-3 h-3 mr-1" /> Analizar
                             </Button>
                           )}
                           {entry.status === "enriched" && (
