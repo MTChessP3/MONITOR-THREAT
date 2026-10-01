@@ -14,7 +14,21 @@
 
 import { NextResponse } from "next/server";
 
-const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY || "";
+// Read an API key from the user's session cookie first, then fall
+// back to the environment variable.
+function getKey(request: Request, id: string): string {
+  const cookieHeader = request.headers.get("cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split(";").map(c => {
+      const [k, ...v] = c.trim().split("=");
+      return [k, v.join("=")];
+    })
+  );
+  if (cookies[id]) {
+    try { return decodeURIComponent(cookies[id]); } catch { return cookies[id]; }
+  }
+  return process.env[id] || "";
+}
 
 interface EnrichResult {
   url: string;
@@ -86,7 +100,8 @@ function classifyUrl(url: string): { type: "phishing" | "malware" | "scam" | "un
   return { type: "unknown", reason: "no se detectaron patrones — clasificación manual" };
 }
 
-async function fetchVirusTotal(url: string) {
+async function fetchVirusTotal(url: string, request: Request) {
+  const VIRUSTOTAL_API_KEY = getKey(request, "VIRUSTOTAL_API_KEY");
   if (!VIRUSTOTAL_API_KEY) {
     return { malicious: 0, suspicious: 0, harmless: 0, undetected: 0, lastAnalysisDate: null, permalink: null, error: "missing API key" };
   }
@@ -191,7 +206,7 @@ async function fetchWhois(hostname: string) {
   }
 }
 
-async function fetchHosting(ip: string) {
+async function fetchHosting(ip: string, request: Request) {
   try {
     // Shodan InternetDB — free, no API key
     const r = await fetch(`https://internetdb.shodan.io/${ip}`, {
@@ -203,7 +218,7 @@ async function fetchHosting(ip: string) {
     const j: any = await r.json();
     // j has: cpes, hostnames, ip, ports, vulns, tags
     // We can also query AbuseIPDB for the abuse contact
-    const ABUSEIPDB_API_KEY = process.env.ABUSEIPDB_API_KEY || "";
+    const ABUSEIPDB_API_KEY = getKey(request, "ABUSEIPDB_API_KEY");
     let abuseEmail: string | null = null;
     let isp: string | null = null;
     if (ABUSEIPDB_API_KEY) {
@@ -292,9 +307,9 @@ export async function GET(request: Request) {
 
   // Run all enrichments in parallel
   const [vt, whois, hosting, cfInfo] = await Promise.all([
-    fetchVirusTotal(targetUrl),
+    fetchVirusTotal(targetUrl, request),
     fetchWhois(hostname),
-    ip ? fetchHosting(ip) : Promise.resolve({ asn: null, asnOrg: null, isp: null, abuseEmail: null }),
+    ip ? fetchHosting(ip, request) : Promise.resolve({ asn: null, asnOrg: null, isp: null, abuseEmail: null }),
     checkCloudflareAndRedirects(targetUrl),
   ]);
 

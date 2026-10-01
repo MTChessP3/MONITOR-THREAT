@@ -299,7 +299,11 @@ export function TakedownUrlView() {
   const [bulkSubmitting, setBulkSubmitting] = React.useState(false);
   const [autoTakedownRunning, setAutoTakedownRunning] = React.useState(false);
   const [progress, setProgress] = React.useState({ done: 0, total: 0, step: "" });
-  const [apiKeyStatus, setApiKeyStatus] = React.useState<{ summary: { total: number; configured: number; missing: number }; keys: Array<{ id: string; name: string; envVar: string; registerUrl: string; note: string; configured: boolean; sharedWith?: string }> } | null>(null);
+  const [apiKeyStatus, setApiKeyStatus] = React.useState<{ summary: { total: number; configured: number; missing: number }; keys: Array<{ id: string; name: string; envVar: string; registerUrl: string; note: string; configured: boolean; fromCookie: boolean; fromEnv: boolean; sharedWith?: string }> } | null>(null);
+  const [keysForm, setKeysForm] = React.useState<Record<string, string>>({});
+  const [savingKeys, setSavingKeys] = React.useState(false);
+  const [keysSavedMsg, setKeysSavedMsg] = React.useState<string | null>(null);
+  const [showKeysForm, setShowKeysForm] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Load from localStorage on mount
@@ -311,8 +315,39 @@ export function TakedownUrlView() {
     // Fetch the API keys status from the backend — shows the user
     // which keys are configured (✓) and which are missing (✗) with
     // setup links, so they know what's actually being reported.
-    fetch("/api/takedown/status").then(r => r.json()).then(setApiKeyStatus).catch(() => {});
+    refreshKeyStatus();
   }, []);
+
+  const refreshKeyStatus = () => {
+    fetch("/api/takedown/status").then(r => r.json()).then(setApiKeyStatus).catch(() => {});
+  };
+
+  // Save the API keys form to the backend (sets httpOnly cookies for
+  // the user's session — no need to redeploy Vercel).
+  const saveKeys = async () => {
+    setSavingKeys(true);
+    setKeysSavedMsg(null);
+    try {
+      const r = await fetch("/api/takedown/keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(keysForm),
+      });
+      const j: any = await r.json();
+      if (j.success) {
+        setKeysSavedMsg(`✓ ${j.set.length} key(s) configurada(s) en tu sesión. Las APIs ya están activas.`);
+        setKeysForm({});
+        setShowKeysForm(false);
+        refreshKeyStatus();
+      } else {
+        setKeysSavedMsg(`✗ Error: ${j.error || "no se pudo guardar"}`);
+      }
+    } catch (e: any) {
+      setKeysSavedMsg(`✗ Error: ${String(e?.message || e)}`);
+    }
+    setSavingKeys(false);
+    setTimeout(() => setKeysSavedMsg(null), 5000);
+  };
 
   // Persist to localStorage on change
   React.useEffect(() => {
@@ -437,12 +472,12 @@ export function TakedownUrlView() {
       return;
     }
     if (!confirm(
-      `Se va a ejecutar el TAKEDOWN AUTOMÁTICO COMPLETO para ${entries.length} URL(s).\n\n` +
-      `Pasos automáticos:\n` +
+      `Se va a ejecutar el TAKEDOWN AUTOMÁTICO para ${entries.length} URL(s).\n\n` +
+      `Pasos:\n` +
       `  1. Enriquecer cada URL (VirusTotal, Whois, hosting, screenshot, Cloudflare)\n` +
-      `  2. Reportar automáticamente a 7 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan.io, ThreatFox, OTX)\n` +
-      `  3. Generar el PDF con trazabilidad completa\n\n` +
-      `Si alguna API key no está configurada, esa plataforma se marcará como "○ SKIPPED" en el PDF (no falla el resto).\n\n` +
+      `  2. Reportar automáticamente a 7 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan.io, ThreatFox, OTX)\n\n` +
+      `Si alguna API key no está configurada, esa plataforma se marcará como "○ SKIPPED" (no falla el resto).\n` +
+      `Al terminar, vas a poder revisar los resultados y generar el PDF vos mismo con el botón "Imprimir PDF".\n\n` +
       `¿Continuar?`
     )) {
       return;
@@ -455,16 +490,16 @@ export function TakedownUrlView() {
 
     // Step 1: Enrich all
     let done = 0;
-    setProgress({ done: 0, total, step: `[1/3] Enriqueciendo URLs (VirusTotal, Whois, hosting, screenshot)...` });
+    setProgress({ done: 0, total, step: `[1/2] Enriqueciendo URLs (VirusTotal, Whois, hosting, screenshot)...` });
     const toEnrich = entries.filter(e => e.status !== "enriched");
     for (const e of toEnrich) {
       await enrichOne(e.url);
       done++;
-      setProgress({ done, total, step: `[1/3] Enriquecido ${e.url.slice(0, 60)}... (${done}/${total})` });
+      setProgress({ done, total, step: `[1/2] Enriquecido ${e.url.slice(0, 60)}... (${done}/${total})` });
     }
 
     // Step 2: Auto-submit to all 7 APIs
-    setProgress({ done: 0, total, step: `[2/3] Reportando a 7 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan, ThreatFox, OTX)...` });
+    setProgress({ done: 0, total, step: `[2/2] Reportando a 7 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan, ThreatFox, OTX)...` });
     done = 0;
     await new Promise(r => setTimeout(r, 100));
     const currentEntries = (await new Promise<UrlEntry[]>(resolve => {
@@ -473,19 +508,29 @@ export function TakedownUrlView() {
     for (const entry of currentEntries.filter(e => e.status === "enriched")) {
       await submitOne(entry);
       done++;
-      setProgress({ done, total, step: `[2/3] Reportado ${entry.url.slice(0, 60)}... (${done}/${total})` });
+      setProgress({ done, total, step: `[2/2] Reportado ${entry.url.slice(0, 60)}... (${done}/${total})` });
     }
 
-    // Step 3: Wait a moment, then auto-generate the PDF report
-    setProgress({ done: total, total, step: `[3/3] Generando PDF con trazabilidad...` });
-    await new Promise(r => setTimeout(r, 500));
+    // Done — show a summary alert, but DO NOT auto-generate the PDF.
+    // The user generates the PDF themselves with the "Imprimir PDF" button.
     setLoading(false);
     setAutoTakedownRunning(false);
     setProgress({ done: 0, total: 0, step: "" });
 
-    // Auto-generate the PDF (no confirmation dialog needed — user clicked
-    // "auto completo" so they want the report).
-    generatePdf();
+    // Compute summary stats for the alert
+    const allSubmits = currentEntries.flatMap(e => e.submits);
+    const ok = allSubmits.filter(s => s.status === "success").length;
+    const fail = allSubmits.filter(s => s.status === "failed").length;
+    const skipped = allSubmits.filter(s => s.status === "skipped").length;
+    alert(
+      `Takedown completado para ${total} URL(s).\n\n` +
+      `Resumen de reportes a APIs:\n` +
+      `  ✓ ${ok} reportados exitosamente\n` +
+      `  ✗ ${fail} fallaron\n` +
+      `  ○ ${skipped} salteados (sin API key configurada)\n\n` +
+      `Revisá los resultados en la tabla de abajo (click en una fila para ver detalle).\n` +
+      `Para generar el informe PDF con trazabilidad completa, hacé click en el botón "Imprimir PDF".`
+    );
   };
 
   // ---- Pre-fill forms ----
@@ -955,8 +1000,10 @@ export function TakedownUrlView() {
               <ol className="list-decimal ml-4 mt-1 space-y-0.5 text-[11px]">
                 <li><strong>Enriquece</strong> cada URL — VirusTotal, Whois, hosting, screenshot, Cloudflare, clasificación</li>
                 <li><strong>Reporta a 7 APIs</strong> — URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan.io, ThreatFox, OTX (cada una devuelve link al reporte público)</li>
-                <li><strong>Genera el PDF</strong> con trazabilidad: para cada URL te dice qué plataforma aceptó (✓), cuál falló (✗), cuál se salteó por falta de key (○)</li>
               </ol>
+              <div className="mt-2 text-[10px] text-muted-foreground">
+                Al terminar, vas a ver un resumen con cuántas APIs respondieron ✓/✗/○. Después vos generás el PDF con el botón "Imprimir PDF".
+              </div>
             </div>
             <div className="flex items-center gap-3 flex-wrap">
               <Button
@@ -1041,7 +1088,7 @@ export function TakedownUrlView() {
             </div>
           }
         >
-          {/* API Keys status panel — shows ✓/✗ for each key + setup links */}
+          {/* API Keys status panel — shows ✓/✗ for each key + inline config form */}
           {apiKeyStatus && (
             <div className="mb-3 p-3 rounded border border-border bg-muted/20">
               <div className="flex items-center justify-between mb-2">
@@ -1051,41 +1098,76 @@ export function TakedownUrlView() {
                   {" / "}
                   <span className="text-yellow-500">{apiKeyStatus.summary.missing} faltantes</span>
                 </div>
-                {apiKeyStatus.summary.missing > 0 && (
-                  <a href="https://vercel.com/dashboard" target="_blank" rel="noreferrer" className="text-[10px] text-cyan-500 hover:underline">
-                    Configurar en Vercel →
+                <div className="flex gap-2">
+                  {apiKeyStatus.summary.missing > 0 && (
+                    <Button size="sm" variant={showKeysForm ? "outline" : "default"} className="h-7 text-[10px]" onClick={() => setShowKeysForm(!showKeysForm)}>
+                      {showKeysForm ? "✕ Cerrar formulario" : "⚙ Configurar keys acá"}
+                    </Button>
+                  )}
+                  <a href="https://vercel.com/dashboard" target="_blank" rel="noreferrer" className="text-[10px] text-cyan-500 hover:underline self-center">
+                    O en Vercel →
                   </a>
-                )}
+                </div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-1.5">
+
+              {/* Status grid (compact) */}
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-1.5">
                 {apiKeyStatus.keys.map(k => (
-                  <div key={k.id} className={`flex items-start gap-2 p-2 rounded border ${k.configured ? "border-green-500/30 bg-green-500/5" : "border-yellow-500/30 bg-yellow-500/5"}`}>
-                    <div className={`shrink-0 ${k.configured ? "text-green-500" : "text-yellow-500"}`}>
-                      {k.configured ? "✓" : "✗"}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[11px] font-mono font-bold">{k.name}</div>
-                      <div className="text-[10px] text-muted-foreground">{k.note}</div>
-                      {!k.configured && k.envVar && (
-                        <div className="text-[10px] mt-1">
-                          <div className="text-yellow-500">Falta: <code className="font-mono">{k.envVar}</code></div>
-                          {k.registerUrl && (
-                            <a href={k.registerUrl} target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline inline-flex items-center gap-0.5">
-                              Registrate acá <ExternalLink className="w-2.5 h-2.5" />
-                            </a>
-                          )}
-                          <div className="text-[9px] text-muted-foreground mt-0.5">
-                            Después agregalo en Vercel → Settings → Environment Variables → {k.envVar.split(" + ")[0]}
-                          </div>
-                        </div>
-                      )}
-                      {k.configured && k.envVar && (
-                        <div className="text-[9px] text-green-600 mt-0.5">Key: {k.envVar.split(" + ")[0]}</div>
-                      )}
-                    </div>
+                  <div key={k.id} className={`flex items-center gap-1.5 p-1.5 rounded border text-[10px] ${k.configured ? "border-green-500/30 bg-green-500/5" : "border-yellow-500/30 bg-yellow-500/5"}`}>
+                    <span className={k.configured ? "text-green-500" : "text-yellow-500"}>{k.configured ? "✓" : "✗"}</span>
+                    <span className="font-mono font-bold">{k.id}</span>
+                    {k.fromCookie && <span className="text-cyan-500 text-[8px]">(session)</span>}
+                    {k.fromEnv && !k.fromCookie && <span className="text-muted-foreground text-[8px]">(env)</span>}
                   </div>
                 ))}
               </div>
+
+              {/* Inline form to set keys — replaces the need for Vercel config */}
+              {showKeysForm && (
+                <div className="mt-3 p-3 rounded border border-cyan-500/30 bg-cyan-500/5">
+                  <div className="text-xs text-muted-foreground mb-2">
+                    Pegá acá las API keys que obtuviste de los sitios de cada plataforma. Se guardan en una cookie de tu sesión (no en Vercel) y se usan automáticamente al reportar. Si cerrás el navegador las keys se borran.
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {apiKeyStatus.keys.filter(k => k.envVar && !k.configured).flatMap(k => {
+                      // PhishTank has 2 keys (split by " + ")
+                      return k.envVar.split(" + ").map(envVar => (
+                        <div key={envVar} className="flex flex-col gap-1">
+                          <label className="text-[10px] font-mono text-cyan-500">{envVar}</label>
+                          <Input
+                            type="password"
+                            placeholder={envVar.includes("APP_ID") ? "PhishTank App ID" : `Pegá tu ${envVar}`}
+                            value={keysForm[envVar] || ""}
+                            onChange={e => setKeysForm({ ...keysForm, [envVar]: e.target.value })}
+                            className="h-8 text-xs font-mono"
+                          />
+                          {k.registerUrl && (
+                            <a href={k.registerUrl} target="_blank" rel="noreferrer" className="text-[10px] text-cyan-500 hover:underline inline-flex items-center gap-1">
+                              <ExternalLink className="w-2.5 h-2.5" /> Registrarme en {k.name}
+                            </a>
+                          )}
+                        </div>
+                      ));
+                    })}
+                    {apiKeyStatus.keys.filter(k => k.envVar && !k.configured).length === 0 && (
+                      <div className="col-span-2 text-xs text-green-500 text-center py-3">
+                        ✓ Todas las API keys están configuradas. Ya podés reportar a las 7 plataformas.
+                      </div>
+                    )}
+                  </div>
+                  {apiKeyStatus.keys.some(k => k.envVar && !k.configured) && (
+                    <div className="flex gap-2 mt-3 items-center">
+                      <Button size="sm" onClick={saveKeys} disabled={savingKeys || Object.values(keysForm).every(v => !v.trim())}>
+                        {savingKeys ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> Guardando...</> : "💾 Guardar keys"}
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => { setKeysForm({}); setShowKeysForm(false); }}>
+                        Cancelar
+                      </Button>
+                      {keysSavedMsg && <span className={`text-xs ${keysSavedMsg.startsWith("✓") ? "text-green-500" : "text-red-500"}`}>{keysSavedMsg}</span>}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </Panel>

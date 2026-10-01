@@ -17,10 +17,28 @@
 
 import { NextResponse } from "next/server";
 
-const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY || "";
-const URLHAUS_API_KEY = process.env.URLHAUS_API_KEY || "";
-const URLSCAN_API_KEY = process.env.URLSCAN_API_KEY || ""; // optional, increases rate limit
-const OTX_API_KEY = process.env.OTX_API_KEY || "";
+// Read an API key from the user's session cookie first, then fall
+// back to the environment variable. This allows the user to set keys
+// from the dashboard UI without redeploying Vercel.
+function getKey(request: Request, id: string): string {
+  const cookieHeader = request.headers.get("cookie") || "";
+  const cookies = Object.fromEntries(
+    cookieHeader.split(";").map(c => {
+      const [k, ...v] = c.trim().split("=");
+      return [k, v.join("=")];
+    })
+  );
+  if (cookies[id]) {
+    try { return decodeURIComponent(cookies[id]); } catch { return cookies[id]; }
+  }
+  return process.env[id] || "";
+}
+
+// Note: these now become functions of `request` — they're called per-request.
+const getVirustotalKey = (req: Request) => getKey(req, "VIRUSTOTAL_API_KEY");
+const getUrlhausKey = (req: Request) => getKey(req, "URLHAUS_API_KEY");
+const getUrlscanKey = (req: Request) => getKey(req, "URLSCAN_API_KEY");
+const getOtxKey = (req: Request) => getKey(req, "OTX_API_KEY");
 
 interface SubmitRequest {
   platform: "urlhaus" | "virustotal" | "cleanmx" | "phishtank" | "urlscan" | "threatfox" | "otx";
@@ -46,12 +64,13 @@ export async function POST(request: Request) {
 
   switch (platform) {
     case "urlhaus": {
+      const URLHAUS_API_KEY = getUrlhausKey(request);
       if (!URLHAUS_API_KEY) {
         return NextResponse.json({
           platform,
           url,
           status: "skipped",
-          message: "URLHAUS_API_KEY environment variable not set. Register at https://auth.abuse.ch to get a token.",
+          message: "URLHAUS_API_KEY no configurada. Configurá la key en el panel 'Estado de las API Keys' del dashboard.",
         }, { status: 200 });
       }
       try {
@@ -82,8 +101,9 @@ export async function POST(request: Request) {
       }
     }
     case "virustotal": {
+      const VIRUSTOTAL_API_KEY = getVirustotalKey(request);
       if (!VIRUSTOTAL_API_KEY) {
-        return NextResponse.json({ platform, url, status: "skipped", message: "VIRUSTOTAL_API_KEY not set" }, { status: 200 });
+        return NextResponse.json({ platform, url, status: "skipped", message: "VIRUSTOTAL_API_KEY no configurada" }, { status: 200 });
       }
       try {
         const r = await fetch("https://www.virustotal.com/api/v3/urls", {
@@ -139,14 +159,14 @@ export async function POST(request: Request) {
       }
     }
     case "phishtank": {
-      const PHISHTANK_API_KEY = process.env.PHISHTANK_API_KEY || "";
-      const PHISHTANK_APP_ID = process.env.PHISHTANK_APP_ID || "";
+      const PHISHTANK_API_KEY = getKey(request, "PHISHTANK_API_KEY");
+      const PHISHTANK_APP_ID = getKey(request, "PHISHTANK_APP_ID");
       if (!PHISHTANK_API_KEY || !PHISHTANK_APP_ID) {
         return NextResponse.json({
           platform,
           url,
           status: "skipped",
-          message: "PHISHTANK_API_KEY or PHISHTANK_APP_ID not set. Register an application at https://www.phishtank.com/developer.php",
+          message: "PHISHTANK_API_KEY o PHISHTANK_APP_ID no configuradas. Configuralas en el panel 'Estado de las API Keys' del dashboard.",
         }, { status: 200 });
       }
       try {
@@ -181,6 +201,7 @@ export async function POST(request: Request) {
       // scans/day anonymous, 1000/day with free API key).
       try {
         const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const URLSCAN_API_KEY = getUrlscanKey(request);
         if (URLSCAN_API_KEY) headers["API-Key"] = URLSCAN_API_KEY;
         const payload: any = {
           url,
@@ -212,12 +233,13 @@ export async function POST(request: Request) {
       // ThreatFox (abuse.ch) — same token as URLhaus.
       // Required: action=insert-ioc, ioc_value, threat_type (url),
       // malware_id, malware_printable, confidence_level, comment
+      const URLHAUS_API_KEY = getUrlhausKey(request);
       if (!URLHAUS_API_KEY) {
         return NextResponse.json({
           platform,
           url,
           status: "skipped",
-          message: "URLHAUS_API_KEY not set (ThreatFox uses same abuse.ch token)",
+          message: "URLHAUS_API_KEY no configurada (ThreatFox usa el mismo token de abuse.ch que URLhaus). Configurá la key en el panel 'Estado de las API Keys' del dashboard.",
         }, { status: 200 });
       }
       try {
@@ -255,12 +277,13 @@ export async function POST(request: Request) {
       // AlienVault OTX — create an indicator URL. Requires API key.
       // Note: OTX's main submission is via pulses (threat reports), but
       // we can also submit URL indicators via the indicators endpoint.
+      const OTX_API_KEY = getOtxKey(request);
       if (!OTX_API_KEY) {
         return NextResponse.json({
           platform,
           url,
           status: "skipped",
-          message: "OTX_API_KEY not set. Register at https://otx.alienvault.com",
+          message: "OTX_API_KEY no configurada. Configurá la key en el panel 'Estado de las API Keys' del dashboard.",
         }, { status: 200 });
       }
       try {

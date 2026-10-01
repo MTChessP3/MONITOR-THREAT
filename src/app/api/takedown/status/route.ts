@@ -1,7 +1,6 @@
-// TakeDown Status — returns which API keys are configured on the
-// backend. The frontend uses this to show the user a clear status
-// panel: ✓ configured / ✗ missing, with setup links for the missing
-// ones.
+// TakeDown Status — returns which API keys are configured. A key is
+// considered configured if it's set EITHER as an environment variable
+// OR as a runtime cookie (which the user set via the dashboard UI).
 
 import { NextResponse } from "next/server";
 
@@ -10,24 +9,44 @@ const KEYS: Array<{ id: string; name: string; envVar: string; registerUrl: strin
   { id: "urlhaus", name: "URLhaus (abuse.ch)", envVar: "URLHAUS_API_KEY", registerUrl: "https://auth.abuse.ch/register", note: "POST directo a la base pública de URLs maliciosas", sharedWith: "threatfox" },
   { id: "cleanmx", name: "Clean-MX", envVar: "", registerUrl: "", note: "XML, no requiere key" },
   { id: "phishtank", name: "PhishTank", envVar: "PHISHTANK_API_KEY + PHISHTANK_APP_ID", registerUrl: "https://www.phishtank.com/developer.php", note: "Base de phishing de la comunidad" },
-  { id: "urlscan", name: "URLscan.io", envVar: "URLSCAN_API_KEY", registerUrl: "https://urlscan.io/profile/", note: "Crea reporte público con screenshot + DOM + network requests", },
+  { id: "urlscan", name: "URLscan.io", envVar: "URLSCAN_API_KEY", registerUrl: "https://urlscan.io/profile/", note: "Crea reporte público con screenshot + DOM + network requests" },
   { id: "threatfox", name: "ThreatFox (abuse.ch)", envVar: "URLHAUS_API_KEY", registerUrl: "https://auth.abuse.ch/register", note: "Base de IOCs pública (mismo token que URLhaus)", sharedWith: "urlhaus" },
   { id: "otx", name: "AlienVault OTX", envVar: "OTX_API_KEY", registerUrl: "https://otx.alienvault.com/", note: "Crea indicator URL con permalink público" },
 ];
 
-export async function GET() {
+function readCookies(request: Request): Record<string, string> {
+  const cookieHeader = request.headers.get("cookie") || "";
+  const cookies: Record<string, string> = {};
+  for (const c of cookieHeader.split(";")) {
+    const [k, ...v] = c.trim().split("=");
+    if (k) cookies[k] = v.join("=");
+  }
+  return cookies;
+}
+
+export async function GET(request: Request) {
+  const cookies = readCookies(request);
+
   const status = KEYS.map(k => {
     let configured = false;
+    let fromCookie = false;
+    let fromEnv = false;
     if (k.envVar.includes(" + ")) {
-      // PhishTank requires 2 keys — both must be set
-      const parts = k.envVar.split(" + ");
-      configured = parts.every(p => !!process.env[p.trim()]);
+      // PhishTank requires 2 keys — both must be set (either cookie or env)
+      const parts = k.envVar.split(" + ").map(p => p.trim());
+      const cookieOk = parts.every(p => !!cookies[p]);
+      const envOk = parts.every(p => !!process.env[p]);
+      configured = cookieOk || envOk;
+      fromCookie = cookieOk;
+      fromEnv = envOk;
     } else if (k.envVar) {
-      configured = !!process.env[k.envVar];
+      fromCookie = !!cookies[k.envVar];
+      fromEnv = !!process.env[k.envVar];
+      configured = fromCookie || fromEnv;
     } else {
       configured = true; // No key required (cleanmx)
     }
-    return { ...k, configured };
+    return { ...k, configured, fromCookie, fromEnv };
   });
 
   const summary = {
