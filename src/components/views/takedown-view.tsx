@@ -1491,18 +1491,18 @@ export function TakedownUrlView() {
 
       {/* ---------- Empty state with platform list ---------- */}
       {entries.length === 0 && (
-        <Panel title="Plataformas de Takedown (¿a dónde se reporta?)" className="md:col-span-2">
-          <div className="flex flex-col items-center justify-center py-8 text-center gap-3">
+        <Panel title="Plataformas de Takedown" className="md:col-span-2">
+          <div className="flex flex-col items-center justify-center py-10 text-center gap-4">
             <ShieldOff className="w-12 h-12 text-muted-foreground/50" />
-            <h3 className="text-base font-semibold">Cargá URLs para iniciar el takedown</h3>
-            <p className="text-xs text-muted-foreground max-w-2xl">
-              Pegá una URL por línea en el textarea de arriba (o cargá un archivo .txt).
-              Después, analizá cada URL automáticamente (VirusTotal, Whois, screenshot, hosting, Cloudflare detection)
-              y reportá a las siguientes 5 plataformas:
+            <h3 className="text-base font-semibold">Carga URLs para iniciar el takedown</h3>
+            <p className="text-xs text-muted-foreground max-w-2xl text-center">
+              Pega una URL por linea en el textarea de arriba (o carga un archivo .txt).
+              Despues, el sistema analiza cada URL automaticamente (VirusTotal, Whois, screenshot, hosting, Cloudflare)
+              y reporta a las siguientes 5 plataformas:
             </p>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-left text-[11px] mt-4">
-              <PlatformGroup title="Auto-submit APIs (2) - automatico" items={["VirusTotal", "URLscan.io (reporte publico)"]} note="POST directo, devuelven link al reporte" />
-              <PlatformGroup title="Reporte manual (3)" items={["Google Safe Browsing (Phishing + Malware)", "Microsoft SmartScreen", "Netcraft"]} note="Boton por URL - abris el form y confirmas" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl w-full">
+              <PlatformGroup title="APIs Automaticas (2)" items={["VirusTotal", "URLscan.io"]} note="Reporte automatico - el sistema envia solo" />
+              <PlatformGroup title="Reporte Manual (3)" items={["Google Safe Browsing (Phishing + Malware)", "Microsoft SmartScreen", "Netcraft"]} note="Boton por URL - abris el form y confirmas" />
             </div>
           </div>
         </Panel>
