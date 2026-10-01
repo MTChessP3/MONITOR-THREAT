@@ -16,7 +16,6 @@ import { NextResponse } from "next/server";
 
 const KEY_IDS = [
   "VIRUSTOTAL_API_KEY",
-  "URLHAUS_API_KEY",
   "URLSCAN_API_KEY",
 ];
 
