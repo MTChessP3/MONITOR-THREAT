@@ -220,15 +220,19 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   let visualScreenshotLabel = "";
   let visualScreenshotSrc: "real" | "text" | "intro" = "intro";
 
-  // NUEVO: Start fetching the server-side redirect chain in the
-  // background. Visual screenshots now come from INSIDE the popup
-  // (html2canvas loaded via /sandbox/html2canvas.min.js as same-origin
-  // script) — this gives us the REAL rendered page, not an external
-  // service's cached/placeholder image.
-  onProgress(0, "Analizando redirecciones y capturando pantalla del popup...");
+  // NUEVO: Start fetching in parallel:
+  //   1. Server-side redirect chain (fast — just a few HTTP requests)
+  //   2. External screenshot of the ORIGINAL URL (PRIMARY source for
+  //      the video AND the PDF — these services have already been
+  //      verified to work for the user's test URL)
+  //   3. External screenshot of the FINAL URL (after redirects) —
+  //      shown as the "FINAL STATE" frame at t=15s
+  // The popup's html2canvas (loaded via /sandbox/html2canvas.min.js)
+  // remains as a SECONDARY source — if it works, it overwrites the
+  // external screenshot (more accurate, no placeholder).
+  onProgress(0, "Capturando screenshot visual del sitio...");
 
-  // Promise for the server-side redirect chain. Resolves quickly
-  // (just a few HTTP HEAD-like requests with manual redirect).
+  // Promise for the server-side redirect chain.
   fetchRedirectChain(url).then((redirectData) => {
     if (!redirectData) return;
     // Push each redirect step to the timeline + redirects[]
@@ -255,9 +259,68 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
           : `Redirección HTTP ${step.status}: ${step.url.slice(0, 60)} → ${next.url.slice(0, 60)}`,
         severity: crossDomain ? "danger" : "warning",
       });
+      // Fetch a screenshot of the redirect target URL (for the PDF
+      // report and as a frame in the video).
+      fetchVisualScreenshot(next.url).then((dataUrl) => {
+        if (dataUrl) {
+          screenshots.push(dataUrl);
+          debugLog.push(`✓ external screenshot of redirect ${step.status} → ${next.url.slice(0, 60)} (${(dataUrl.length / 1024).toFixed(0)}KB)`);
+          const img = new Image();
+          img.onload = () => {
+            visualScreenshotImg = img;
+            visualScreenshotLabel = `REDIRECT ${step.status} → ${next.url}`;
+            visualScreenshotSrc = "real";
+          };
+          img.src = dataUrl;
+        }
+      });
     }
     finalUrl = redirectData.final || url;
+    // Fetch the FINAL URL screenshot at t=15s for the "FINAL STATE" frame
+    setTimeout(() => {
+      fetchVisualScreenshot(finalUrl).then((dataUrl) => {
+        if (dataUrl) {
+          screenshots.push(dataUrl);
+          debugLog.push(`✓ external screenshot of FINAL URL → ${finalUrl.slice(0, 60)} (${(dataUrl.length / 1024).toFixed(0)}KB)`);
+          const img = new Image();
+          img.onload = () => {
+            visualScreenshotImg = img;
+            visualScreenshotLabel = `FINAL STATE — ${finalUrl}`;
+            visualScreenshotSrc = "real";
+            onProgress(Date.now() - startTime, `Screenshot FINAL capturado`);
+          };
+          img.src = dataUrl;
+        }
+      });
+    }, 15000);
     onProgress(Date.now() - startTime, `Cadena de redirección: ${redirectData.redirectCount} hop(s) → ${finalUrl.slice(0, 60)}`);
+  });
+
+  // PRIMARY: External visual screenshot of the ORIGINAL URL.
+  // This is shown as the FIRST frame of the video (after the brief
+  // "Capturando..." intro) so the user immediately sees the real
+  // visual screenshot of the page being analyzed. It's also used in
+  // the PDF report's "Initial Screenshot" section.
+  fetchVisualScreenshot(url).then((dataUrl) => {
+    if (dataUrl) {
+      screenshots.push(dataUrl);
+      debugLog.push(`✓ external screenshot of ORIGINAL URL (${(dataUrl.length / 1024).toFixed(0)}KB)`);
+      const img = new Image();
+      img.onload = () => {
+        // Only set as the visual if the popup hasn't already produced
+        // a more accurate screenshot. If the popup's html2canvas
+        // produced one first, keep that one.
+        if (visualScreenshotSrc !== "real" || !visualScreenshotLabel.includes("POPUP")) {
+          visualScreenshotImg = img;
+          visualScreenshotLabel = `ORIGINAL URL — ${url.slice(0, 80)}`;
+          visualScreenshotSrc = "real";
+          onProgress(Date.now() - startTime, `Screenshot visual de URL original capturado`);
+        }
+      };
+      img.src = dataUrl;
+    } else {
+      debugLog.push(`✗ external screenshot of ORIGINAL URL failed (all services returned null)`);
+    }
   });
 
   // NUEVO: Usar el proxy en lugar de la URL directa.
@@ -1093,10 +1156,32 @@ function downloadPdf(d: SandboxResult) {
     y = (doc as any).lastAutoTable.finalY + 18;
   };
 
-  // Screenshots — only first 3 (inicio, medio, final)
+  // Screenshots — INITIAL screenshot (PRIORITARIO — primera sección del informe)
+  // This is the visual screenshot of the URL being analyzed, captured
+  // by the external screenshot service (WordPress mshots / thum.io /
+  // microlink.io). It's the FIRST thing the user should see in the PDF.
   if (d.screenshots.length > 0) {
-    sectionHeading("Screenshots (inicio, medio, final)");
-    for (const s of d.screenshots.slice(0, 3)) {
+    sectionHeading("Captura inicial del sitio analizado");
+    const initialShot = d.screenshots[0];
+    try {
+      const imgWidth = contentWidth;
+      const imgHeight = imgWidth * (720 / 1280);
+      // Check if we have enough vertical space; if not, add a new page
+      if (y > pageHeight - margin - imgHeight - 40) { doc.addPage(); y = margin + 6; }
+      doc.addImage(initialShot, "PNG", margin, y, imgWidth, imgHeight);
+      y += imgHeight + 6;
+      doc.setFont("helvetica", "italic"); doc.setFontSize(9); doc.setTextColor(100, 116, 139);
+      doc.text(`Captura visual de: ${d.url.slice(0, 100)}`, margin, y);
+      y += 14;
+    } catch (e) {
+      kvTable([["Captura inicial", "No se pudo renderizar la imagen en el PDF"]]);
+    }
+  }
+
+  // Additional screenshots (medio, final) — separate section
+  if (d.screenshots.length > 1) {
+    sectionHeading(`Screenshots adicionales (${d.screenshots.length - 1} más)`);
+    for (const s of d.screenshots.slice(1, 5)) {
       if (y > pageHeight - 300) { doc.addPage(); y = margin + 6; }
       try {
         const imgWidth = contentWidth;
