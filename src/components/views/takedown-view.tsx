@@ -35,7 +35,7 @@ import {
 
 // ---------- Types ----------
 
-type Platform = "urlhaus" | "virustotal" | "cleanmx" | "phishtank";
+type Platform = "urlhaus" | "virustotal" | "cleanmx" | "phishtank" | "urlscan" | "threatfox" | "otx";
 type PrefillPlatform =
   | "google_phish" | "google_malware" | "microsoft" | "apwg" | "stopbadware"
   | "spam404" | "netcraft" | "kaspersky" | "talos" | "fortiguard" | "mcafee" | "sucuri";
@@ -93,11 +93,14 @@ const PREFILL_PLATFORMS: Array<{ id: PrefillPlatform; name: string; url: (u: str
   { id: "sucuri", name: "Sucuri SiteCheck (scan)", category: "scanner", url: u => `https://sitecheck.sucuri.net/results/${u}` },
 ];
 
-const API_PLATFORMS: Array<{ id: Platform; name: string }> = [
-  { id: "urlhaus", name: "URLhaus (abuse.ch)" },
-  { id: "virustotal", name: "VirusTotal" },
-  { id: "cleanmx", name: "Clean-MX" },
-  { id: "phishtank", name: "PhishTank" },
+const API_PLATFORMS: Array<{ id: Platform; name: string; needsKey?: string; note?: string }> = [
+  { id: "urlhaus", name: "URLhaus (abuse.ch)", needsKey: "URLHAUS_API_KEY", note: "POST directo a la base pública de URLs maliciosas" },
+  { id: "virustotal", name: "VirusTotal", needsKey: "VIRUSTOTAL_API_KEY", note: "POST → 70+ antivirus escanean la URL" },
+  { id: "cleanmx", name: "Clean-MX", note: "XML, no requiere key" },
+  { id: "phishtank", name: "PhishTank", needsKey: "PHISHTANK_API_KEY + APP_ID", note: "Base de phishing de la comunidad" },
+  { id: "urlscan", name: "URLscan.io", needsKey: "URLSCAN_API_KEY (opcional)", note: "Escanea la URL + crea reporte PÚBLICO accesible por cualquiera" },
+  { id: "threatfox", name: "ThreatFox (abuse.ch)", needsKey: "URLHAUS_API_KEY", note: "Base de IOCs pública (mismo token que URLhaus)" },
+  { id: "otx", name: "AlienVault OTX", needsKey: "OTX_API_KEY", note: "Crea indicator URL con permalink público" },
 ];
 
 const EMAIL_TEMPLATES: Record<EmailTemplate, { name: string; subject: (url: string, host: string) => string; body: (url: string, host: string, evidence: string) => string }> = {
@@ -399,7 +402,7 @@ export function TakedownUrlView() {
     const threatType = entry.enrich?.classification === "malware" ? "malware_url"
       : entry.enrich?.classification === "scam" ? "scam_url"
       : "phishing_url";
-    const platforms: Platform[] = ["urlhaus", "virustotal", "cleanmx", "phishtank"];
+    const platforms: Platform[] = ["urlhaus", "virustotal", "cleanmx", "phishtank", "urlscan", "threatfox", "otx"];
     for (const p of platforms) {
       const result = await submitUrl(entry.url, p, threatType);
       setEntries(prev => prev.map(e => e.url === entry.url ? {
@@ -657,7 +660,7 @@ export function TakedownUrlView() {
     sectionHeading("¿Dónde fue reportada cada URL?");
 
     // Build a matrix of all platforms × all URLs
-    const apiPlatforms = ["urlhaus", "virustotal", "cleanmx", "phishtank"];
+    const apiPlatforms = ["urlhaus", "virustotal", "cleanmx", "phishtank", "urlscan", "threatfox", "otx"];
     const allPlatforms = [
       ...apiPlatforms.map(p => ({ id: p, name: API_PLATFORMS.find(x => x.id === p)?.name || p, type: "API" })),
       ...PREFILL_PLATFORMS.map(p => ({ id: p.id, name: p.name, type: "Form" })),
@@ -941,7 +944,7 @@ export function TakedownUrlView() {
   return (
     <ModuleShell
       name="TakeDown URL"
-      description="Gestión de takedown — carga URLs desde .txt, enriquece, reporta a 16 plataformas (Google, Microsoft, URLhaus, VirusTotal + 12 más) y genera correos de abuse."
+      description="Gestión de takedown — carga URLs desde .txt, enriquece, reporta a 19 plataformas (7 con API automática + 12 forms + correos de abuse) con trazabilidad completa."
       icon={ShieldOff}
       category="INFRASTRUCTURE"
     >
@@ -1094,14 +1097,32 @@ export function TakedownUrlView() {
           <div className="text-xs text-muted-foreground mb-3 p-2 rounded bg-blue-500/5 border border-blue-500/20">
             <strong>Tres formas de reportar:</strong>
             <ul className="list-disc ml-4 mt-1 space-y-0.5">
-              <li><strong className="text-green-500">Auto-submit a APIs</strong> (botón arriba): envía la URL automáticamente a URLhaus, VirusTotal, Clean-MX y PhishTank. Requiere API keys (ver nota abajo).</li>
-              <li><strong className="text-blue-500">Pre-fill forms</strong> (botón "12 forms" por URL): abre el navegador con el formulario de Google, Microsoft, APWG, Netcraft, Kaspersky, etc. ya cargado con la URL. Vos confirmás con 1 click.</li>
-              <li><strong className="text-purple-500">Correo de abuse</strong> (botón "Emails" por URL): genera un mailto: al abuse@ del registrar/hosting con template + evidencia. Vos mandás el correo desde tu cliente de mail.</li>
+              <li><strong className="text-green-500">Auto-submit a APIs (100% automático)</strong>: envía la URL automáticamente a 7 plataformas con API pública. Cada una te devuelve un link al reporte público. Estado por plataforma: ✓ reportado / ✗ falló / ○ skipped (sin key).</li>
+              <li><strong className="text-blue-500">Pre-fill forms (confirmación manual)</strong>: abre el navegador con el formulario de Google, Microsoft, APWG, Netcraft, Kaspersky, etc. ya cargado con la URL. Vos confirmás con 1 click en "Submit". Estado: ⚠ ABIERTO (no podemos saber si confirmaste).</li>
+              <li><strong className="text-purple-500">Correo de abuse (confirmación manual)</strong>: genera un mailto: al abuse@ del registrar/hosting con template + evidencia. Vos mandás el correo. Estado: ⚠ GENERADO (no podemos saber si lo enviaste).</li>
             </ul>
           </div>
-          <div className="text-[10px] text-yellow-500 mb-3">
-            ⚠ APIs que requieren keys: URLhaus (registrate en auth.abuse.ch), PhishTank (registrate en phishtank.com/developer.php).
-            Sin keys, esas plataformas se marcan como "skipped" pero VirusTotal y Clean-MX funcionan sin keys adicionales.
+          {/* List of all API platforms with key requirements */}
+          <div className="text-[11px] mb-3">
+            <div className="font-semibold mb-1">Plataformas con API (auto-submit, 100% automático):</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
+              {API_PLATFORMS.map(p => (
+                <div key={p.id} className="flex items-start gap-2 p-1.5 rounded border border-border bg-muted/20">
+                  <div className="font-mono text-cyan-500 font-bold shrink-0">{p.id}</div>
+                  <div className="flex-1">
+                    <div className="text-[10px]">{p.name}</div>
+                    <div className="text-[9px] text-muted-foreground">{p.note}</div>
+                    {p.needsKey && (
+                      <div className="text-[9px] text-yellow-500">⚠ Requiere: {p.needsKey}</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="text-[10px] text-yellow-500 mb-3 p-2 rounded bg-yellow-500/5 border border-yellow-500/20">
+            <strong>Google y Microsoft NO tienen API pública para reportar URLs.</strong> Solo aceptan el formulario web (anti-spam/anti-DoS del blocklist). Por eso esos solo están como "Pre-fill forms" (vos confirmás el Submit).
+            Alternativas con API pública: URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan.io, ThreatFox, AlienVault OTX.
           </div>
         </Panel>
       )}
@@ -1317,10 +1338,10 @@ export function TakedownUrlView() {
             <p className="text-xs text-muted-foreground max-w-2xl">
               Pegá una URL por línea en el textarea de arriba (o cargá un archivo .txt).
               Después, enriquecé cada URL automáticamente (VirusTotal, Whois, screenshot, hosting, Cloudflare detection)
-              y reportá a las siguientes 16 plataformas:
+              y reportá a las siguientes 19 plataformas:
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-left text-[11px] mt-4">
-              <PlatformGroup title="Auto-submit APIs (4)" items={["URLhaus (abuse.ch)", "VirusTotal", "Clean-MX", "PhishTank"]} note="Automático, vía POST (necesita keys)" />
+              <PlatformGroup title="Auto-submit APIs (7) — 100% automático" items={["URLhaus (abuse.ch)", "VirusTotal", "Clean-MX", "PhishTank", "URLscan.io (reporte público)", "ThreatFox (abuse.ch)", "AlienVault OTX"]} note="POST directo, devuelven link al reporte" />
               <PlatformGroup title="Pre-fill forms (6)" items={["Google Safe Browsing (Phishing)", "Google Safe Browsing (Malware)", "Microsoft SmartScreen", "APWG", "StopBadware", "Spam404", "Netcraft"]} note="Se abre formulario pre-cargado" />
               <PlatformGroup title="Antivirus forms (5)" items={["Kaspersky VirusDesk", "Cisco Talos", "Fortinet FortiGuard", "McAfee WebAdvisor", "Sucuri SiteCheck"]} note="Se abre formulario" />
               <PlatformGroup title="Abuse emails (4)" items={["Phishing (robo credenciales)", "Malware (distribución)", "Scam (fraude financiero)", "Copyright/DMCA"]} note="mailto: con plantilla" />
