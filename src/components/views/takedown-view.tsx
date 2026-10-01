@@ -462,11 +462,9 @@ export function TakedownUrlView() {
       `Se va a ejecutar el TAKEDOWN AUTOMATICO para ${entries.length} URL(s).\n\n` +
       `Pasos:\n` +
       `  1. Enriquecer cada URL (VirusTotal, Whois, hosting, screenshot, Cloudflare)\n` +
-      `  2. Reportar automaticamente a 3 APIs (VirusTotal, Clean-MX, URLscan.io)\n` +
-      `  3. Abrir formularios de Google y Microsoft para que vos confirmes el reporte manualmente\n\n` +
+      `  2. Reportar automaticamente a 3 APIs (VirusTotal, Clean-MX, URLscan.io)\n\n` +
       `Si alguna API key no esta configurada, esa plataforma se marcara como "Salteado (sin key)" (no falla el resto).\n` +
-      `Al terminar, vas a poder revisar los resultados y generar el PDF vos mismo con el boton "Imprimir PDF".\n\n` +
-      `IMPORTANTE: Si el browser bloquea los popups, vas a ver 2 botones por URL (Google y Microsoft) para abrirlos manualmente.\n\n` +
+      `Despues de los APIs automaticos, vas a ver 2 botones por URL (Google y Microsoft) para abrirlos manualmente cuando quieras.\n\n` +
       `¿Continuar?`
     )) {
       return;
@@ -479,16 +477,16 @@ export function TakedownUrlView() {
 
     // Step 1: Enrich all
     let done = 0;
-    setProgress({ done: 0, total, step: `[1/3] Enriqueciendo URLs (VirusTotal, Whois, hosting, screenshot)...` });
+    setProgress({ done: 0, total, step: `[1/2] Enriqueciendo URLs (VirusTotal, Whois, hosting, screenshot)...` });
     const toEnrich = entries.filter(e => e.status !== "enriched");
     for (const e of toEnrich) {
       await enrichOne(e.url);
       done++;
-      setProgress({ done, total, step: `[1/3] Enriquecido ${e.url.slice(0, 60)}... (${done}/${total})` });
+      setProgress({ done, total, step: `[1/2] Enriquecido ${e.url.slice(0, 60)}... (${done}/${total})` });
     }
 
-    // Step 2: Auto-submit to the 3 APIs
-    setProgress({ done: 0, total, step: `[2/3] Reportando a 3 APIs (VirusTotal, Clean-MX, URLscan)...` });
+    // Step 2: Auto-submit to the 3 APIs ONLY (no Google/Microsoft auto-open — user does it manually per URL)
+    setProgress({ done: 0, total, step: `[2/2] Reportando a 3 APIs (VirusTotal, Clean-MX, URLscan)...` });
     done = 0;
     await new Promise(r => setTimeout(r, 100));
     const currentEntries = (await new Promise<UrlEntry[]>(resolve => {
@@ -497,30 +495,7 @@ export function TakedownUrlView() {
     for (const entry of currentEntries.filter(e => e.status === "enriched")) {
       await submitOne(entry);
       done++;
-      setProgress({ done, total, step: `[2/3] Reportado ${entry.url.slice(0, 60)}... (${done}/${total})` });
-    }
-
-    // Step 3: Open Google + Microsoft pre-fill forms for each enriched URL.
-    // Open one form per URL with a small delay so the browser doesn't
-    // block them as spam popups. The user will see the form pre-loaded
-    // and just needs to click "Submit" on each.
-    setProgress({ done: 0, total, step: `[3/3] Abriendo formularios de Google y Microsoft (vas a confirmar el Submit en cada uno)...` });
-    done = 0;
-    for (const entry of currentEntries.filter(e => e.status === "enriched")) {
-      // Open Google Phishing form first (most important)
-      const formsToOpen = PREFILL_PLATFORMS.filter(p => !entry.prefillOpened.includes(p.id));
-      for (const p of formsToOpen) {
-        try {
-          window.open(p.url(entry.url), "_blank");
-        } catch {}
-        await new Promise(r => setTimeout(r, 300)); // small delay to avoid popup blocking
-      }
-      setEntries(prev => prev.map(e => e.url === entry.url ? {
-        ...e,
-        prefillOpened: [...e.prefillOpened, ...formsToOpen.map(p => p.id)],
-      } : e));
-      done++;
-      setProgress({ done, total, step: `[3/3] Forms abiertos para ${entry.url.slice(0, 60)}... (${done}/${total})` });
+      setProgress({ done, total, step: `[2/2] Reportado ${entry.url.slice(0, 60)}... (${done}/${total})` });
     }
 
     // Done — show a summary alert, but DO NOT auto-generate the PDF.
@@ -534,20 +509,14 @@ export function TakedownUrlView() {
     const ok = allSubmits.filter(s => s.status === "success").length;
     const fail = allSubmits.filter(s => s.status === "failed").length;
     const skipped = allSubmits.filter(s => s.status === "skipped").length;
-    const formsOpened = currentEntries.filter(e => e.status === "enriched").length * PREFILL_PLATFORMS.length;
     alert(
-      `Takedown completado para ${total} URL(s).\n\n` +
-      `Resumen:\n` +
-      `  Reportes automaticos a APIs:\n` +
-      `    ${ok} reportados exitosamente\n` +
-      `    ${fail} fallaron\n` +
-      `    ${skipped} salteados (sin API key)\n` +
-      `  Forms manuales abiertos:\n` +
-      `    ${formsOpened} formularios de Google y Microsoft abiertos en pestañas nuevas\n` +
-      `    (vas a tener que hacer click en "Submit" en cada uno)\n\n` +
-      `Revisa los resultados en la tabla de abajo (click en una fila para ver detalle).\n` +
-      `Si el browser bloqueo los popups, vas a ver 2 botones por URL (Google y Microsoft) para abrirlos manualmente.\n` +
-      `Para generar el informe PDF con trazabilidad completa, hace click en el boton "Imprimir PDF".`
+      `Takedown automatico completado para ${total} URL(s).\n\n` +
+      `Reportes a APIs (automatico):\n` +
+      `  ${ok} reportados exitosamente\n` +
+      `  ${fail} fallaron\n` +
+      `  ${skipped} salteados (sin API key)\n\n` +
+      `Para reportar a Google y Microsoft: usa los botones 'Google' y 'Microsoft' que aparecen al lado de cada URL en la tabla de abajo.\n` +
+      `Para generar el PDF: hace click en el boton 'Imprimir PDF'.`
     );
   };
 
@@ -951,15 +920,16 @@ export function TakedownUrlView() {
       <div className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-muted/20 text-[11px]">
         <StepBar label="1. Cargar URLs" done={step1Done} />
         <StepBar label="2. Enriquecer (auto)" done={step2Done} />
-        <StepBar label="3. Reportar a 3 APIs (auto)" done={step3Done} />
-        <StepBar label="4. Imprimir PDF (auto)" done={step5Done} last />
+        <StepBar label="3. Reportar 3 APIs (auto)" done={step3Done} />
+        <StepBar label="4. Google/Microsoft (manual)" done={false} />
+        <StepBar label="5. Imprimir PDF" done={step5Done} last />
       </div>
 
       {/* Hint banner: simple workflow */}
       <div className="flex items-start gap-2 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-[11px]">
         <div className="text-cyan-500 font-bold shrink-0">💡</div>
         <div className="text-muted-foreground">
-          <strong>PASO 1</strong>: Cargá las URLs (textarea o .txt) — una por línea. Después hacé click en el botón <strong className="text-cyan-500">🚀 Takedown automático completo</strong> que aparece abajo. El sistema ejecuta todo solo: enriquece cada URL + reporta a 3 APIs (VirusTotal, Clean-MX, URLscan) + genera el PDF con trazabilidad.
+          <strong>PASO 1</strong>: Carga las URLs (textarea o .txt) - una por linea. Despues hace click en el boton <strong className="text-cyan-500">🚀 Takedown automatico completo</strong> que aparece abajo. El sistema ejecuta todo solo: enriquece cada URL + reporta a 3 APIs (VirusTotal, Clean-MX, URLscan). Para Google y Microsoft, usa los botones al lado de cada URL en la tabla (manual).
         </div>
       </div>
 
@@ -1001,10 +971,9 @@ export function TakedownUrlView() {
               <ol className="list-decimal ml-4 mt-1 space-y-0.5 text-[11px]">
                 <li><strong>Enriquece</strong> cada URL - VirusTotal, Whois, hosting, screenshot, Cloudflare, clasificacion</li>
                 <li><strong>Reporta a 3 APIs (automatico)</strong> - VirusTotal, Clean-MX, URLscan.io (cada una devuelve link al reporte publico)</li>
-                <li><strong>Abre Google y Microsoft (manual)</strong> - abre los formularios pre-cargados en pestañas nuevas; vos haces click en "Submit" en cada uno</li>
               </ol>
               <div className="mt-2 text-[10px] text-muted-foreground">
-                Al terminar, vas a ver un resumen. Despues vos generas el PDF con el boton "Imprimir PDF".
+                NO abre Google ni Microsoft automaticamente. Para esos, usa los botones 'Google' y 'Microsoft' al lado de cada URL en la tabla.
               </div>
             </div>
             <div className="flex items-center gap-3 flex-wrap">
@@ -1077,7 +1046,7 @@ export function TakedownUrlView() {
       {/* ---------- Step 3: Auto-report to APIs (solo APIs automáticas) ---------- */}
       {step2Done && (
         <Panel
-          title="PASO 3 - Reporte a 3 APIs (automatico) + Google/Microsoft (manual)"
+          title="PASO 3 - Reporte a 3 APIs (automatico) - Google/Microsoft son manuales"
           className="md:col-span-2"
           action={
             <div className="flex gap-2">
@@ -1256,14 +1225,34 @@ export function TakedownUrlView() {
                           <div className="flex gap-1 flex-wrap">
                             {API_PLATFORMS.map(p => {
                               const s = entry.submits.find(x => x.platform === p.id);
+                              let label = `${p.id}: ?`;
+                              let variant: "default" | "destructive" | "outline" | "secondary" = "secondary";
+                              let colorClass = "text-muted-foreground";
+                              if (s?.status === "success") {
+                                label = `${p.id}: OK`;
+                                variant = "default";
+                                colorClass = "text-green-500";
+                              } else if (s?.status === "failed") {
+                                label = `${p.id}: Fallo`;
+                                variant = "destructive";
+                                colorClass = "text-red-500";
+                              } else if (s?.status === "skipped") {
+                                label = `${p.id}: Sin key`;
+                                variant = "outline";
+                                colorClass = "text-yellow-500";
+                              } else if (s?.status === "pending" || s?.status === "error") {
+                                label = `${p.id}: Pendiente`;
+                                variant = "secondary";
+                                colorClass = "text-muted-foreground";
+                              }
                               return (
                                 <Badge
                                   key={p.id}
-                                  variant={s?.status === "success" ? "default" : s?.status === "failed" ? "destructive" : s?.status === "skipped" ? "outline" : "secondary"}
-                                  className="text-[8px] font-mono"
-                                  title={s?.message || (s ? "" : "Click en Auto-submit a APIs (arriba)")}
+                                  variant={variant}
+                                  className={`text-[8px] font-mono ${colorClass}`}
+                                  title={s?.message || (s ? "" : "Hace click en 'Reportar APIs' para enviar")}
                                 >
-                                  {p.id} {s ? (s.status === "success" ? "✓" : s.status === "failed" ? "✗" : s.status === "skipped" ? "○" : "·") : "?"}
+                                  {label}
                                 </Badge>
                               );
                             })}
