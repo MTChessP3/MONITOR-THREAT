@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Filter,
   Activity,
+  Download,
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -402,8 +403,77 @@ export function TakedownUrlView() {
   };
 
   const handleClearAll = () => {
-    if (confirm(`¿Eliminar las ${entries.length} URLs del historial?`)) {
+    if (entries.length === 0) return;
+    if (confirm(`¿Vaciar el contenedor? Se van a eliminar las ${entries.length} URLs y todos sus datos.\n\nSi queres guardar los datos, primero exporta en .txt o .zip o PDF.\n\n¿Continuar?`)) {
       setEntries([]);
+      saveToStorage([]);
+    }
+  };
+
+  // ---- Exportar URLs a .txt ----
+  const exportTxt = () => {
+    const lines = entries.map(e => `${e.url}\t${e.enrich?.classification || "unknown"}\t${e.enrich?.vt?.malicious || 0} malicious\t${e.monitoring?.classification || "no monitoreada"}`).join("\n");
+    const header = `# MONITOR-THREAT TakeDown Export\n# Fecha: ${new Date().toISOString()}\n# Total URLs: ${entries.length}\n# Formato: URL \\t Clasificacion \\t VT_Malicious \\t Estado_Monitoreo\n\n`;
+    const blob = new Blob([header + lines], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `takedown-urls-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ---- Exportar URLs a .zip (txt + resumen + csv) ----
+  const exportZip = async () => {
+    try {
+      const JSZip = (await import("jszip")).default;
+      const zip = new JSZip();
+
+      // File 1: urls.txt — solo URLs, una por linea
+      zip.file("urls.txt", entries.map(e => e.url).join("\n"));
+
+      // File 2: resumen.txt — estadisticas del mes
+      const ban = entries.filter(e => e.monitoring && ["BANEADA", "SUSPENDIDA", "BORRADA", "DOMINIO_ELIMINADO", "DOMINIO_CADUCO"].includes(e.monitoring.classification)).length;
+      const activas = entries.filter(e => e.monitoring?.classification === "ACTIVA").length;
+      const reportadas = entries.reduce((s, e) => s + e.submits.filter(x => x.status === "success").length, 0);
+      const resumen =
+        `MONITOR-THREAT TakeDown - Resumen Mensual\n` +
+        `========================================\n` +
+        `Fecha de exportacion: ${new Date().toISOString()}\n` +
+        `Total URLs: ${entries.length}\n` +
+        `Baneadas/Suspendidas/Borradas: ${ban}\n` +
+        `Aun activas: ${activas}\n` +
+        `Reportes a APIs exitosos: ${reportadas}\n\n` +
+        `Detalle:\n` +
+        entries.map((e, i) => `${i + 1}. ${e.url} | ${e.enrich?.classification || "?"} | VT: ${e.enrich?.vt?.malicious || 0} | Monitoreo: ${e.monitoring?.classification || "no monitoreada"} | Hosting: ${e.enrich?.hosting?.asnOrg || "?"}`).join("\n");
+      zip.file("resumen.txt", resumen);
+
+      // File 3: detalle.csv — para Excel
+      const csvHeader = "URL,Clasificacion,VT_Malicious,Hosting,Registrar,Abuse_Email,Cloudflare,Estado_Monitoreo,Fecha_Carga\n";
+      const csvRows = entries.map(e => {
+        return [
+          `"${e.url}"`,
+          e.enrich?.classification || "",
+          String(e.enrich?.vt?.malicious || 0),
+          `"${e.enrich?.hosting?.asnOrg || ""}"`,
+          `"${e.enrich?.whois?.registrar || ""}"`,
+          `"${e.enrich?.whois?.abuseEmail || ""}"`,
+          e.enrich?.cloudflare ? "SI" : "no",
+          e.monitoring?.classification || "",
+          e.addedAt,
+        ].join(",");
+      }).join("\n");
+      zip.file("detalle.csv", csvHeader + csvRows);
+
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `takedown-export-${new Date().toISOString().slice(0, 10)}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert("Error al exportar .zip: " + String(e));
     }
   };
 
@@ -1080,16 +1150,33 @@ export function TakedownUrlView() {
         />
       </Panel>
 
-      {/* ---------- URLs loaded indicator (shows when URLs are loaded) ---------- */}
+      {/* ---------- URLs loaded indicator + monthly cycle ---------- */}
       {step1Done && (
-        <div className="flex items-center gap-3 p-3 rounded bg-green-500/5 border border-green-500/30 text-xs">
-          <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
-          <span className="text-green-500 font-semibold">
-            {entries.length} URL{entries.length === 1 ? "" : "s"} cargada{entries.length === 1 ? "" : "s"}:
-          </span>
-          <span className="text-muted-foreground font-mono text-[10px] truncate">
-            {entries.slice(0, 3).map(e => e.url.slice(0, 60)).join(", ")}{entries.length > 3 ? ` +${entries.length - 3} mas` : ""}
-          </span>
+        <div className="flex items-center justify-between gap-3 flex-wrap p-3 rounded bg-green-500/5 border border-green-500/30 text-xs">
+          <div className="flex items-center gap-3">
+            <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+            <span className="text-green-500 font-semibold">
+              {entries.length} URL{entries.length === 1 ? "" : "s"} cargada{entries.length === 1 ? "" : "s"}
+            </span>
+            <span className="text-muted-foreground font-mono text-[10px] truncate">
+              {entries.slice(0, 3).map(e => e.url.slice(0, 60)).join(", ")}{entries.length > 3 ? ` +${entries.length - 3} mas` : ""}
+            </span>
+          </div>
+          {entries.length > 0 && (() => {
+            const oldest = entries.reduce((min, e) => e.addedAt < min ? e.addedAt : min, entries[0].addedAt);
+            const daysSince = Math.floor((Date.now() - new Date(oldest).getTime()) / 86400000);
+            const dayOfMonth = new Date().getDate();
+            return (
+              <div className="flex items-center gap-2 text-[10px] font-mono">
+                <span className="text-cyan-500">Dia {dayOfMonth} de 30</span>
+                <span className="text-muted-foreground">|</span>
+                <span className="text-yellow-500">Recopilando hace {daysSince} dia{daysSince === 1 ? "" : "s"}</span>
+                {daysSince >= 30 && (
+                  <span className="text-red-500 font-bold animate-pulse">| ¡Exporta y vacia!</span>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -1256,13 +1343,19 @@ export function TakedownUrlView() {
           title={`URLs Cargadas — ${filtered.length}/${entries.length} — click en una fila para ver detalle`}
           className="md:col-span-2"
           action={
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               <Input type="text" placeholder="Filtrar..." value={filter} onChange={e => setFilter(e.target.value)} className="h-7 text-xs w-40" />
               <Button size="sm" variant="outline" onClick={generatePdf}>
-                <Printer className="w-3 h-3 mr-1.5" /> Imprimir PDF (PASO 5)
+                <Printer className="w-3 h-3 mr-1.5" /> PDF
               </Button>
-              <Button size="sm" variant="ghost" onClick={handleClearAll}>
-                <Trash2 className="w-3 h-3 mr-1.5" /> Limpiar
+              <Button size="sm" variant="outline" onClick={exportTxt} disabled={entries.length === 0} className="text-cyan-500 border-cyan-500/40">
+                <Download className="w-3 h-3 mr-1.5" /> .txt
+              </Button>
+              <Button size="sm" variant="outline" onClick={exportZip} disabled={entries.length === 0} className="text-purple-500 border-purple-500/40">
+                <Download className="w-3 h-3 mr-1.5" /> .zip
+              </Button>
+              <Button size="sm" variant="destructive" onClick={handleClearAll} disabled={entries.length === 0}>
+                <Trash2 className="w-3 h-3 mr-1.5" /> Vaciar
               </Button>
             </div>
           }
