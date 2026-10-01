@@ -292,6 +292,7 @@ export function TakedownUrlView() {
   const [filter, setFilter] = React.useState("");
   const [statModal, setStatModal] = React.useState<{ key: string; label: string; description: string } | null>(null);
   const [expandedUrls, setExpandedUrls] = React.useState<Set<string>>(new Set());
+  const [imagePreview, setImagePreview] = React.useState<{ url: string; src: string; caption?: string } | null>(null);
   const [bulkSubmitting, setBulkSubmitting] = React.useState(false);
   const [progress, setProgress] = React.useState({ done: 0, total: 0, step: "" });
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -308,6 +309,15 @@ export function TakedownUrlView() {
   React.useEffect(() => {
     saveToStorage(entries);
   }, [entries]);
+
+  // Close image preview on Escape key
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && imagePreview) setImagePreview(null);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [imagePreview]);
 
   // ---- URL loading ----
   const handleLoadFromTextarea = () => {
@@ -1055,10 +1065,24 @@ export function TakedownUrlView() {
                         <TableRow className="bg-muted/30 border-l-4 border-l-cyan-500">
                           <TableCell colSpan={7} className="p-3">
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[10px]">
-                              {/* Screenshot */}
+                              {/* Screenshot — clickable to open preview modal */}
                               <div className="md:col-span-1">
-                                <div className="text-muted-foreground mb-1">Screenshot visual del sitio:</div>
-                                <img src={entry.enrich.screenshotUrl} alt="screenshot" className="rounded border border-border w-full max-h-48 object-cover" loading="lazy" />
+                                <div className="text-muted-foreground mb-1 flex items-center gap-1">
+                                  <Eye className="w-3 h-3" /> Screenshot visual (click para ampliar):
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setImagePreview({ url: entry.url, src: entry.enrich!.screenshotUrl, caption: entry.url })}
+                                  className="block w-full rounded border border-border overflow-hidden hover:border-cyan-500 hover:shadow-md transition-all cursor-zoom-in group relative"
+                                  title="Click para ver la imagen en tamaño completo"
+                                >
+                                  <img src={entry.enrich.screenshotUrl} alt="screenshot" className="w-full max-h-48 object-cover group-hover:opacity-90" loading="lazy" />
+                                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                                    <span className="opacity-0 group-hover:opacity-100 text-white text-xs bg-black/70 px-2 py-1 rounded transition-opacity">
+                                      🔍 Click para ampliar
+                                    </span>
+                                  </div>
+                                </button>
                               </div>
                               {/* Details */}
                               <div className="md:col-span-2 space-y-1">
@@ -1242,6 +1266,24 @@ export function TakedownUrlView() {
                             <div>Registrar: {e.whois?.registrar || "?"} · Abuse: {e.whois?.abuseEmail || "?"}</div>
                           </div>
                         )}
+                        {/* Screenshot thumbnail — clickable to open preview modal */}
+                        {entry.status === "enriched" && (
+                          <div className="mb-2">
+                            <button
+                              type="button"
+                              onClick={() => setImagePreview({ url: entry.url, src: entry.enrich!.screenshotUrl, caption: entry.url })}
+                              className="block w-full rounded border border-border overflow-hidden hover:border-cyan-500 hover:shadow-md transition-all cursor-zoom-in group relative"
+                              title="Click para ver la imagen en tamaño completo"
+                            >
+                              <img src={entry.enrich!.screenshotUrl} alt="screenshot" className="w-full max-h-32 object-cover group-hover:opacity-90" loading="lazy" />
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                                <span className="opacity-0 group-hover:opacity-100 text-white text-[10px] bg-black/70 px-2 py-1 rounded transition-opacity">
+                                  🔍 Click para ampliar
+                                </span>
+                              </div>
+                            </button>
+                          </div>
+                        )}
                         {/* Per-URL actions */}
                         <div className="flex flex-wrap gap-2">
                           {entry.status === "pending" && (
@@ -1277,6 +1319,42 @@ export function TakedownUrlView() {
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Image Preview Modal: full-size screenshot ---------- */}
+      {imagePreview && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 backdrop-blur-sm p-4"
+          onClick={() => setImagePreview(null)}
+        >
+          <button
+            onClick={() => setImagePreview(null)}
+            className="absolute top-4 right-4 text-white/80 hover:text-white bg-white/10 hover:bg-white/20 rounded-full p-2 transition-colors z-10"
+            title="Cerrar (Esc)"
+          >
+            <XCircle className="w-6 h-6" />
+          </button>
+          <div
+            className="relative max-w-[95vw] max-h-[90vh] flex flex-col items-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={imagePreview.src}
+              alt={imagePreview.caption || "screenshot"}
+              className="max-w-full max-h-[80vh] object-contain rounded shadow-2xl border-2 border-cyan-500/40"
+            />
+            {imagePreview.caption && (
+              <div className="mt-3 px-4 py-2 rounded bg-black/60 backdrop-blur-sm max-w-full overflow-x-auto">
+                <div className="text-xs font-mono text-cyan-300 break-all">
+                  📸 {imagePreview.caption}
+                </div>
+                <div className="text-[10px] text-white/60 mt-1">
+                  Click fuera de la imagen o presioná Esc para cerrar.
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
