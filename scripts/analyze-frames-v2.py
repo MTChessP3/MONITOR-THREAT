@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Analyze frames extracted from the sandbox video webm to detect what's shown."""
-import os, struct, zlib
+"""Analyze frames from the new sandbox video to diagnose what's shown."""
+import struct, zlib
 from pathlib import Path
 
-FRAMES_DIR = Path("/tmp/sandbox_frames")
+FRAMES_DIR = Path("/tmp/sb2")
 
 def analyze_png(path):
     data = path.read_bytes()
@@ -33,8 +33,7 @@ def analyze_png(path):
         ftype = raw[pos]
         line = bytearray(raw[pos+1:pos+1+stride])
         pos += 1 + stride
-        if ftype == 0:
-            pass
+        if ftype == 0: pass
         elif ftype == 1:
             for i in range(bpp, stride): line[i] = (line[i] + line[i-bpp]) & 0xff
         elif ftype == 2:
@@ -54,12 +53,11 @@ def analyze_png(path):
                 line[i] = (line[i] + pr) & 0xff
         out[y*stride:(y+1)*stride] = line
         prev = line
-    # Sample 32x18 grid (matches 16:9 aspect)
     samples = []
-    for gy in range(18):
-        for gx in range(32):
-            x = (gx * width) // 32
-            y = (gy * height) // 18
+    for gy in range(36):
+        for gx in range(64):
+            x = (gx * width) // 64
+            y = (gy * height) // 36
             off = y * stride + x * bpp
             samples.append((out[off], out[off+1], out[off+2]))
     n = len(samples)
@@ -69,26 +67,38 @@ def analyze_png(path):
         bins[(r >> 5, g >> 5, b >> 5)] = bins.get((r >> 5, g >> 5, b >> 5), 0) + 1
     unique = len(bins)
     dominant = max(bins.items(), key=lambda x: x[1])
-    is_dark = sum(avg) < 200
-    is_white = sum(avg) > 720
-    dark_ink = sum(1 for r, g, b in samples if (r + g + b) < 200)
-    # Detect "MONITOR-THREAT" red: ~ (233, 69, 96) → bin (7, 2, 3)
-    monitor_red = bins.get((7, 2, 3), 0)
+    # Detect specific regions
+    # Top URL bar (y=0-28): teal(0f766e ~ (3,30,3-4)/8 ~ bin (3,30,3))... let's just check what's in y=0-28
+    top_samples = [(out[(y*height//36)*stride + (x*width//64)*bpp:][:3]) for y in range(2) for x in range(64)]
+    top_avg = tuple(sum(c[i] for c in top_samples)//len(top_samples) for i in range(3)) if top_samples else (0,0,0)
+    # Banner area (y=28-90) — redirects banner
+    mid_samples = [(out[(y*height//36)*stride + (x*width//64)*bpp:][:3]) for y in range(2,5) for x in range(64)]
+    mid_avg = tuple(sum(c[i] for c in mid_samples)//len(mid_samples) for i in range(3)) if mid_samples else (0,0,0)
+    # Bottom stats bar (y=680-720)
+    bot_samples = [(out[(y*height//36)*stride + (x*width//64)*bpp:][:3]) for y in range(34,36) for x in range(64)]
+    bot_avg = tuple(sum(c[i] for c in bot_samples)//len(bot_samples) for i in range(3)) if bot_samples else (0,0,0)
+    # Main body (y=90-680)
+    body_samples = [(out[(y*height//36)*stride + (x*width//64)*bpp:][:3]) for y in range(5,34) for x in range(64)]
+    body_avg = tuple(sum(c[i] for c in body_samples)//len(body_samples) for i in range(3)) if body_samples else (0,0,0)
+    body_bins = {}
+    for r, g, b in body_samples:
+        body_bins[(r >> 6, g >> 6, b >> 6)] = body_bins.get((r >> 6, g >> 6, b >> 6), 0) + 1
+    body_unique = len(body_bins)
     return {
         "frame": path.stem,
         "avg": avg,
         "unique": unique,
-        "dominant_pct": round(dominant[1] / n * 100, 1),
-        "is_dark": is_dark,
-        "is_white": is_white,
-        "ink_pct": round(dark_ink / n * 100, 1),
-        "monitor_red_pct": round(monitor_red / n * 100, 1),
+        "dom_pct": round(dominant[1] / n * 100, 1),
+        "top": top_avg,
+        "mid": mid_avg,
+        "body_avg": body_avg,
+        "body_unique": body_unique,
+        "bot": bot_avg,
     }
 
 frames = sorted(FRAMES_DIR.glob("*.png"))
 print(f"Found {len(frames)} frames\n")
-print(f"{'frame':<14} {'avg_rgb':<22} {'uniq':<5} {'dom%':<6} {'ink%':<6} {'mt_red%':<8} {'bg'}")
+print(f"{'frame':<10} {'avg_rgb':<22} {'top_rgb':<22} {'mid_rgb':<22} {'body_avg':<22} {'body_uniq':<10} {'bot_rgb'}")
 for f in frames:
     info = analyze_png(f)
-    bg = "DARK" if info["is_dark"] else ("WHITE" if info["is_white"] else "color")
-    print(f"{info['frame']:<14} {str(info['avg']):<22} {info['unique']:<5} {info['dominant_pct']:<6} {info['ink_pct']:<6} {info['monitor_red_pct']:<8} {bg}")
+    print(f"{info['frame']:<10} {str(info['avg']):<22} {str(info['top']):<22} {str(info['mid']):<22} {str(info['body_avg']):<22} {info['body_unique']:<10} {str(info['bot'])}")

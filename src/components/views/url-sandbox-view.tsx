@@ -215,11 +215,12 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   let visualScreenshotLabel = "";
   let visualScreenshotSrc: "real" | "text" | "intro" = "intro";
 
-  // NUEVO: Start fetching the server-side redirect chain + the visual
-  // screenshot of the original URL in parallel. These run in the
-  // background; when they arrive we push the results to the timeline,
-  // queue screenshots, and draw them onto the video canvas.
-  onProgress(0, "Analizando redirecciones y capturando pantalla...");
+  // NUEVO: Start fetching the server-side redirect chain in the
+  // background. Visual screenshots now come from INSIDE the popup
+  // (html2canvas loaded via /sandbox/html2canvas.min.js as same-origin
+  // script) — this gives us the REAL rendered page, not an external
+  // service's cached/placeholder image.
+  onProgress(0, "Analizando redirecciones y capturando pantalla del popup...");
 
   // Promise for the server-side redirect chain. Resolves quickly
   // (just a few HTTP HEAD-like requests with manual redirect).
@@ -249,42 +250,9 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
           : `Redirección HTTP ${step.status}: ${step.url.slice(0, 60)} → ${next.url.slice(0, 60)}`,
         severity: crossDomain ? "danger" : "warning",
       });
-      // Fetch a screenshot of the redirect target URL and display it
-      // on the video when ready.
-      fetchVisualScreenshot(next.url).then((dataUrl) => {
-        if (dataUrl) {
-          screenshots.push(dataUrl);
-          const img = new Image();
-          img.onload = () => {
-            visualScreenshotImg = img;
-            visualScreenshotLabel = `REDIRECT ${step.status} → ${next.url}`;
-            visualScreenshotSrc = "real";
-          };
-          img.src = dataUrl;
-          onProgress(Date.now() - startTime, `Screenshot de redirect ${step.status} capturado`);
-        }
-      });
     }
     finalUrl = redirectData.final || url;
     onProgress(Date.now() - startTime, `Cadena de redirección: ${redirectData.redirectCount} hop(s) → ${finalUrl.slice(0, 60)}`);
-  });
-
-  // Promise for the visual screenshot of the ORIGINAL URL.
-  // This is shown as the FIRST frame of the video (after the brief
-  // "Analyzing..." intro) so the user immediately sees the real
-  // visual screenshot of the page being analyzed.
-  fetchVisualScreenshot(url).then((dataUrl) => {
-    if (dataUrl) {
-      screenshots.push(dataUrl);
-      const img = new Image();
-      img.onload = () => {
-        visualScreenshotImg = img;
-        visualScreenshotLabel = `ORIGINAL URL — ${url}`;
-        visualScreenshotSrc = "real";
-        onProgress(Date.now() - startTime, `Screenshot visual de URL original capturado`);
-      };
-      img.src = dataUrl;
-    }
   });
 
   // NUEVO: Usar el proxy en lugar de la URL directa.
@@ -531,11 +499,23 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
         });
         break;
       case "screenshot":
-        // Legacy case — the popup no longer sends screenshots. The
-        // parent now captures text snapshots directly from
-        // popup.document.body.innerText (same-origin via proxy).
-        // Kept for backward compat with cached proxy scripts.
-        if (d.dataUrl) screenshots.push(d.dataUrl);
+        // REAL popup screenshot from html2canvas running INSIDE the
+        // popup's own window scope (loaded via /sandbox/html2canvas.min.js).
+        // This is the REAL visual screenshot of the page being analyzed.
+        if (d.dataUrl) {
+          screenshots.push(d.dataUrl);
+          const img = new Image();
+          img.onload = () => {
+            // Popup screenshots take priority over external service
+            // screenshots AND text snapshots — they show the actual
+            // rendered page as the user would see it.
+            visualScreenshotImg = img;
+            visualScreenshotLabel = `POPUP SCREENSHOT @ ${(d.delay / 1000).toFixed(0)}s — ${url.slice(0, 80)}`;
+            visualScreenshotSrc = "real";
+          };
+          img.src = d.dataUrl;
+          onProgress(Date.now() - startTime, `Popup screenshot @ ${(d.delay / 1000).toFixed(0)}s capturado (source: ${d.source || "popup"})`);
+        }
         break;
       case "domSnapshot":
         // Legacy case — no longer used. Ignored.
@@ -803,30 +783,10 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
 
 
   // Note: the parent-side text snapshots at 3s/7s/11s/15s (scheduled in
-  // the sandboxReady handler above) provide continuous "page snapshot"
-  // frames for the video. No additional fallback is needed — if the
-  // popup closes before any snapshot fires, the initial MONITOR-THREAT
-  // frame remains visible for the rest of the recording, and the
-  // timeline/console/errors panels still show the captured telemetry.
-
-  // NUEVO: At t=15s, fetch a screenshot of the FINAL URL (which may
-  // differ from the original if there were redirects). This shows the
-  // "FINAL STATE" of the page after all redirects + JS execution.
-  setTimeout(() => {
-    fetchVisualScreenshot(finalUrl).then((dataUrl) => {
-      if (dataUrl) {
-        screenshots.push(dataUrl);
-        const img = new Image();
-        img.onload = () => {
-          visualScreenshotImg = img;
-          visualScreenshotLabel = `FINAL STATE — ${finalUrl}`;
-          visualScreenshotSrc = "real";
-          onProgress(Date.now() - startTime, `Screenshot FINAL capturado: ${finalUrl.slice(0, 60)}`);
-        };
-        img.src = dataUrl;
-      }
-    });
-  }, 15000);
+  // the sandboxReady handler above) serve as a FALLBACK if the popup's
+  // html2canvas screenshots fail. The popup takes its OWN real visual
+  // screenshots at 2s/6s/10s/14s (via /sandbox/html2canvas.min.js loaded
+  // as a same-origin script) — those take priority over everything.
 
   // Wait for SANDBOX_DURATION
   await new Promise(resolve => setTimeout(resolve, SANDBOX_DURATION));
