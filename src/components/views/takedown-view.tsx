@@ -483,7 +483,7 @@ export function TakedownUrlView() {
     const contentWidth = pageWidth - margin * 2;
     let y = margin;
 
-    // Cover
+    // ---------- Cover ----------
     doc.setFont("helvetica", "bold"); doc.setFontSize(22); doc.setTextColor(15, 23, 42);
     doc.text("TakeDown Report", margin, y + 8);
     doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(220, 38, 38);
@@ -492,7 +492,7 @@ export function TakedownUrlView() {
     doc.text("Cyber Threat Intelligence Platform · Takedown Management", margin + 105, y + 26);
     const ts = new Date().toLocaleString();
     doc.setFontSize(10); doc.setTextColor(71, 85, 105);
-    doc.text(`Generated: ${ts}`, pageWidth - margin, y + 8, { align: "right" });
+    doc.text(`Generado: ${ts}`, pageWidth - margin, y + 8, { align: "right" });
     doc.text(`URLs: ${entries.length}`, pageWidth - margin, y + 22, { align: "right" });
     y += 48; doc.setDrawColor(220, 220, 220); doc.setLineWidth(0.5);
     doc.line(margin, y, pageWidth - margin, y); y += 28;
@@ -506,7 +506,7 @@ export function TakedownUrlView() {
     };
 
     const kvTable = (rows: Array<[string, string]>) => {
-      autoTable(doc, { startY: y, head: [["Field", "Value"]], body: rows, theme: "striped",
+      autoTable(doc, { startY: y, head: [["Campo", "Valor"]], body: rows, theme: "striped",
         margin: { left: margin, right: margin },
         styles: { fontSize: 9, cellPadding: 5, textColor: [30, 41, 59] },
         headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontSize: 9 },
@@ -516,89 +516,183 @@ export function TakedownUrlView() {
       y = (doc as any).lastAutoTable.finalY + 18;
     };
 
-    // Stats
-    sectionHeading("Resumen");
-    kvTable([
-      ["Total URLs", String(entries.length)],
-      ["Enriquecidas", String(entries.filter(e => e.status === "enriched").length)],
-      ["Auto-submits enviados", String(entries.reduce((s, e) => s + e.submits.filter(x => x.status === "success").length, 0))],
-      ["Forms pre-fill abiertos", String(entries.reduce((s, e) => s + e.prefillOpened.length, 0))],
-      ["Correos de abuse generados", String(entries.reduce((s, e) => s + e.emailsGenerated.length, 0))],
-      ["Phishing detectadas", String(entries.filter(e => e.enrich?.classification === "phishing").length)],
-      ["Malware detectadas", String(entries.filter(e => e.enrich?.classification === "malware").length)],
-      ["Scam detectadas", String(entries.filter(e => e.enrich?.classification === "scam").length)],
-      ["Detrás de Cloudflare", String(entries.filter(e => e.enrich?.cloudflare).length)],
-    ]);
+    // ---------- Section 1: ¿Dónde se reportó cada URL? (RESUMEN DE DESTINOS) ----------
+    sectionHeading("¿Dónde fue reportada cada URL?");
 
-    // URL table
-    sectionHeading("URLs Reportadas");
+    // Build a matrix of all platforms × all URLs
+    const apiPlatforms = ["urlhaus", "virustotal", "cleanmx", "phishtank"];
+    const allPlatforms = [
+      ...apiPlatforms.map(p => ({ id: p, name: API_PLATFORMS.find(x => x.id === p)?.name || p, type: "API" })),
+      ...PREFILL_PLATFORMS.map(p => ({ id: p.id, name: p.name, type: "Form" })),
+      { id: "abuse-email" as any, name: "Correo de Abuse (registrar + hosting)", type: "Email" },
+    ];
+
+    // Summary table: Platform | Reportados | Fallidos | Pendientes
+    const summaryRows: Array<[string, string, string, string]> = [];
+    for (const p of allPlatforms) {
+      let success = 0, failed = 0, pending = 0;
+      for (const entry of entries) {
+        if (p.type === "API") {
+          const s = entry.submits.find(x => x.platform === p.id);
+          if (s?.status === "success") success++;
+          else if (s?.status === "failed" || s?.status === "error") failed++;
+          else if (s?.status === "skipped") pending++;
+          else pending++;
+        } else if (p.type === "Form") {
+          if (entry.prefillOpened.includes(p.id as PrefillPlatform)) success++;
+          else pending++;
+        } else if (p.type === "Email") {
+          if (entry.emailsGenerated.length > 0) success++;
+          else pending++;
+        }
+      }
+      if (success > 0 || pending > 0) {
+        summaryRows.push([`${p.name}  [${p.type}]`, String(success), String(failed), String(pending)]);
+      }
+    }
     autoTable(doc, {
       startY: y,
-      head: [["URL", "Class", "VT Mal", "Hosting", "Cloudflare", "Submits", "Forms", "Emails"]],
-      body: entries.map(e => [
-        e.url.slice(0, 60),
-        e.enrich?.classification || "?",
-        String(e.enrich?.vt?.malicious || 0),
-        e.enrich?.hosting?.asnOrg?.slice(0, 25) || "?",
-        e.enrich?.cloudflare ? "SÍ" : "no",
-        `${e.submits.filter(s => s.status === "success").length}/${e.submits.length}`,
-        String(e.prefillOpened.length),
-        String(e.emailsGenerated.length),
-      ]),
+      head: [["Plataforma (API / Formulario / Email)", "✓ Reportado", "✗ Fallido", "○ Pendiente"]],
+      body: summaryRows,
       theme: "grid",
       margin: { left: margin, right: margin },
-      styles: { fontSize: 8, cellPadding: 4, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
-      headStyles: { fillColor: [220, 38, 38], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
+      styles: { fontSize: 9, cellPadding: 5, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
+      headStyles: { fillColor: [220, 38, 38], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 9 },
+      columnStyles: {
+        0: { cellWidth: contentWidth * 0.55 },
+        1: { cellWidth: contentWidth * 0.15, halign: "center", textColor: [22, 163, 74] },
+        2: { cellWidth: contentWidth * 0.15, halign: "center", textColor: [220, 38, 38] },
+        3: { cellWidth: contentWidth * 0.15, halign: "center", textColor: [161, 98, 7] },
+      },
     });
     // @ts-ignore
     y = (doc as any).lastAutoTable.finalY + 18;
 
-    // Per-URL details
+    // ---------- Section 2: Detalle por URL — ¿a dónde fue reportada cada una? ----------
+    sectionHeading("Detalle por URL — ¿a dónde fue reportada cada una?");
+
     for (const entry of entries.slice(0, 50)) {
-      sectionHeading(`Detalle: ${entry.url.slice(0, 70)}`);
-      const e = entry.enrich;
-      kvTable([
-        ["URL completa", entry.url],
-        ["Hostname", e?.hostname || "?"],
-        ["Clasificación", e ? `${e.classification} (${e.classificationReason})` : "?"],
-        ["VirusTotal", e?.vt ? `${e.vt.malicious} mal / ${e.vt.suspicious} susp / ${e.vt.undetected} undetected` : "?"],
-        ["VT permalink", e?.vt?.permalink || "?"],
-        ["Registrar", e?.whois?.registrar || "?"],
-        ["Abuse email (registrar)", e?.whois?.abuseEmail || "?"],
-        ["Hosting", e?.hosting ? `${e.hosting.asnOrg || "?"} (${e.hosting.asn || "?"})` : "?"],
-        ["Cloudflare", e?.cloudflare ? "SÍ" : "no"],
-        ["URL final", e?.finalUrl || entry.url],
-      ]);
-      // Auto-submit results
-      if (entry.submits.length > 0) {
-        autoTable(doc, {
-          startY: y,
-          head: [["Platform", "Status", "Message", "Timestamp"]],
-          body: entry.submits.map(s => [s.platform, s.status, (s.message || "").slice(0, 60), new Date(s.timestamp).toLocaleString()]),
-          theme: "striped",
-          margin: { left: margin, right: margin },
-          styles: { fontSize: 8, cellPadding: 4 },
-          headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontSize: 8 },
-        });
-        // @ts-ignore
-        y = (doc as any).lastAutoTable.finalY + 18;
+      // URL header
+      doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(15, 23, 42);
+      if (y > pageHeight - margin - 200) { doc.addPage(); y = margin + 6; }
+      doc.text(`URL: ${entry.url.slice(0, 90)}`, margin, y);
+      y += 14;
+      doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(100, 116, 139);
+      if (entry.enrich?.hostname) {
+        doc.text(`Hostname: ${entry.enrich.hostname}  ·  Class: ${entry.enrich.classification || "?"}  ·  VT: ${entry.enrich.vt?.malicious || 0} malicious`, margin, y);
+        y += 12;
       }
-      // Pre-fill forms opened
-      if (entry.prefillOpened.length > 0) {
-        kvTable([["Forms pre-fill abiertos", entry.prefillOpened.map(p => PREFILL_PLATFORMS.find(pp => pp.id === p)?.name || p).join(", ")]]);
+      if (entry.enrich?.finalUrl && entry.enrich.finalUrl !== entry.url) {
+        doc.setTextColor(220, 38, 38);
+        doc.text(`→ URL final (después de redirects): ${entry.enrich.finalUrl.slice(0, 90)}`, margin, y);
+        y += 12;
+        doc.setTextColor(100, 116, 139);
       }
-      // Emails generated
+      y += 4;
+
+      // Where it was reported (matrix row)
+      const reportedRows: Array<[string, string, string]> = [];
+
+      // APIs
+      for (const p of apiPlatforms) {
+        const name = API_PLATFORMS.find(x => x.id === p)?.name || p;
+        const s = entry.submits.find(x => x.platform === p);
+        if (s?.status === "success") {
+          const link = s.permalink || (p === "virustotal" && entry.enrich?.vt?.permalink) || entry.enrich?.vt?.permalink || "—";
+          reportedRows.push([name, "✓ REPORTADO", link && link !== "—" ? link.slice(0, 60) : "OK"]);
+        } else if (s?.status === "failed" || s?.status === "error") {
+          reportedRows.push([name, "✗ FALLÓ", (s.message || "error").slice(0, 60)]);
+        } else if (s?.status === "skipped") {
+          reportedRows.push([name, "○ SKIPPED", (s.message || "API key no configurada").slice(0, 60)]);
+        } else {
+          reportedRows.push([name, "○ PENDIENTE", "—"]);
+        }
+      }
+
+      // Pre-fill forms
+      for (const p of PREFILL_PLATFORMS) {
+        const wasOpened = entry.prefillOpened.includes(p.id);
+        const link = p.url(entry.url);
+        reportedRows.push([p.name, wasOpened ? "✓ ABIERTO" : "○ NO ABIERTO", link.slice(0, 80)]);
+      }
+
+      // Abuse email
       if (entry.emailsGenerated.length > 0) {
-        kvTable([["Emails generados", entry.emailsGenerated.map(t => EMAIL_TEMPLATES[t].name).join(", ")]]);
+        const recipients = new Set<string>();
+        if (entry.enrich?.whois?.abuseEmail) recipients.add(entry.enrich.whois.abuseEmail);
+        if (entry.enrich?.hosting?.abuseEmail) recipients.add(entry.enrich.hosting.abuseEmail);
+        if (entry.enrich?.cloudflare) recipients.add("abuse@cloudflare.com");
+        if (recipients.size === 0) {
+          try {
+            const parts = entry.enrich?.hostname?.split(".") || [];
+            if (parts.length >= 2) recipients.add(`abuse@${parts.slice(-2).join(".")}`);
+          } catch {}
+        }
+        reportedRows.push([
+          "Correo de Abuse (" + entry.emailsGenerated.map(t => EMAIL_TEMPLATES[t].name.split(" ")[0]).join(", ") + ")",
+          "✓ GENERADO",
+          Array.from(recipients).join(", ").slice(0, 60),
+        ]);
+      } else {
+        reportedRows.push(["Correo de Abuse", "○ NO GENERADO", "—"]);
       }
+
+      autoTable(doc, {
+        startY: y,
+        head: [["Plataforma / Destino", "Estado", "Link / Detalle"]],
+        body: reportedRows,
+        theme: "striped",
+        margin: { left: margin, right: margin },
+        styles: { fontSize: 8, cellPadding: 4, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.3 },
+        headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontSize: 8 },
+        columnStyles: {
+          0: { cellWidth: contentWidth * 0.40, fontStyle: "bold" },
+          1: { cellWidth: contentWidth * 0.18, halign: "center" },
+          2: { cellWidth: contentWidth * 0.42, textColor: [59, 130, 246] },
+        },
+        didParseCell: (data: any) => {
+          if (data.section === "body" && data.column.index === 1) {
+            const v = String(data.cell.raw || "");
+            if (v.startsWith("✓")) data.cell.styles.textColor = [22, 163, 74];
+            else if (v.startsWith("✗")) data.cell.styles.textColor = [220, 38, 38];
+            else if (v.startsWith("○")) data.cell.styles.textColor = [161, 98, 7];
+          }
+        },
+      });
+      // @ts-ignore
+      y = (doc as any).lastAutoTable.finalY + 18;
     }
 
-    // Footer on each page
+    // ---------- Section 3: Datos de enriquecimiento (registrar, hosting, etc.) ----------
+    sectionHeading("Datos de Enriquecimiento (registrar, hosting, VirusTotal)");
+
+    for (const entry of entries.slice(0, 50)) {
+      const e = entry.enrich;
+      if (!e) continue;
+      if (y > pageHeight - margin - 100) { doc.addPage(); y = margin + 6; }
+      doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(15, 23, 42);
+      doc.text(entry.url.slice(0, 80), margin, y);
+      y += 12;
+      kvTable([
+        ["Hostname", e.hostname || "?"],
+        ["Clasificación", `${e.classification} (${e.classificationReason})`],
+        ["VirusTotal", e.vt ? `${e.vt.malicious} malicious / ${e.vt.suspicious} suspicious / ${e.vt.undetected} undetected` : "?"],
+        ["VT permalink", e.vt?.permalink || "?"],
+        ["Registrar", e.whois?.registrar || "?"],
+        ["Abuse email (registrar)", e.whois?.abuseEmail || "?"],
+        ["Hosting provider", e.hosting ? `${e.hosting.asnOrg || "?"} (${e.hosting.asn || "?"})` : "?"],
+        ["ISP", e.hosting?.isp || "?"],
+        ["Detrás de Cloudflare", e.cloudflare ? "SÍ — también contactar abuse@cloudflare.com" : "no"],
+        ["URL final (después de redirects)", e.finalUrl || entry.url],
+      ]);
+    }
+
+    // ---------- Footer on each page ----------
     const pageCount = doc.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
       doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(150, 150, 150);
-      doc.text(`MONITOR-THREAT · TakeDown Report · Page ${i} of ${pageCount}`, pageWidth / 2, pageHeight - 20, { align: "center" });
+      doc.text(`MONITOR-THREAT · TakeDown Report · Página ${i} de ${pageCount}`, pageWidth / 2, pageHeight - 20, { align: "center" });
     }
 
     doc.save(`takedown-report-${Date.now()}.pdf`);
@@ -624,15 +718,33 @@ export function TakedownUrlView() {
     emails: entries.reduce((s, e) => s + e.emailsGenerated.length, 0),
   };
 
+  // ---- Compute wizard step status ----
+  const step1Done = entries.length > 0;       // URLs loaded
+  const step2Done = stats.enriched > 0;        // Enriched
+  const step3Done = stats.submits > 0 || stats.forms > 0;  // Reported
+  const step4Done = stats.emails > 0;          // Abuse emails generated
+  const step5Done = false;                     // PDF downloaded (always allow)
+
   return (
     <ModuleShell
       name="TakeDown URL"
-      description="Gestión de takedown — carga URLs desde .txt, enriquece, reporta a Google/Microsoft/URLhaus/VirusTotal + 12 plataformas + genera correos de abuse."
+      description="Gestión de takedown — carga URLs desde .txt, enriquece, reporta a 16 plataformas (Google, Microsoft, URLhaus, VirusTotal + 12 más) y genera correos de abuse."
       icon={ShieldOff}
       category="INFRASTRUCTURE"
     >
-      {/* URL Loader */}
-      <Panel title="1. Cargar URLs" className="md:col-span-2"
+      {/* ---------- Wizard step bar (always visible) ---------- */}
+      <div className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-muted/20 text-[11px]">
+        <StepBar label="1. Cargar URLs" done={step1Done} />
+        <StepBar label="2. Enriquecer" done={step2Done} />
+        <StepBar label="3. Reportar a plataformas" done={step3Done} />
+        <StepBar label="4. Generar correos de abuse" done={step4Done} />
+        <StepBar label="5. Imprimir PDF" done={step5Done} last />
+      </div>
+
+      {/* ---------- Step 1: Load URLs ---------- */}
+      <Panel
+        title="PASO 1 — Cargar URLs a reportar"
+        className="md:col-span-2"
         action={<div className="flex gap-2">
           <input type="file" accept=".txt,text/plain" ref={fileInputRef} onChange={handleLoadFromFile} className="hidden" />
           <Button size="sm" variant="outline" onClick={() => fileInputRef.current?.click()}>
@@ -643,72 +755,114 @@ export function TakedownUrlView() {
           </Button>
         </div>}
       >
+        <div className="text-xs text-muted-foreground mb-2 p-2 rounded bg-blue-500/5 border border-blue-500/20">
+          <strong>Cómo funciona:</strong> Pegá una URL por línea (o cargá un archivo .txt). Las URLs se normalizan automáticamente
+          (si no tienen <code className="text-cyan-500">http://</code> se lo agregamos) y se deduplican. Las inválidas se ignoran.
+        </div>
         <textarea
           value={textareaInput}
           onChange={e => setTextareaInput(e.target.value)}
-          placeholder={"Pegá una URL por línea, o cargá un archivo .txt:\nhttp://example.com/phishing-login\nhttps://fake-bank.com/login\nmalware-site.net/download/free-crack\n\n(Las URLs sin http:// se normalizan automáticamente)"}
+          placeholder={"http://phishing-site.com/login\nfake-bank.com\nmalware-site.net/download\n\n(una URL por línea)"}
           className="w-full h-32 p-3 rounded border border-border bg-background font-mono text-xs resize-y"
         />
-        <div className="text-[10px] text-muted-foreground mt-2">
-          Una URL por línea. Se deduplica y normaliza automáticamente. Las URLs inválidas se ignoran.
-        </div>
       </Panel>
 
-      {/* Stats Bar */}
-      {entries.length > 0 && (
-        <Panel title="Estado del Takedown" className="md:col-span-2"
-          action={<div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={enrichAll} disabled={loading || stats.pending === 0}>
+      {/* ---------- Step 2: Enrich ---------- */}
+      {step1Done && (
+        <Panel
+          title="PASO 2 — Enriquecer las URLs (VirusTotal, Whois, hosting, screenshot)"
+          className="md:col-span-2"
+          action={
+            <Button size="sm" onClick={enrichAll} disabled={loading || stats.pending === 0}>
               {loading ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><RefreshCw className="w-3 h-3 mr-1.5" /> Enriquecer todas</>}
             </Button>
-            <Button size="sm" onClick={submitAll} disabled={bulkSubmitting || stats.enriched === 0}>
-              {bulkSubmitting ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><Send className="w-3 h-3 mr-1.5" /> Auto-submit a APIs</>}
-            </Button>
-            <Button size="sm" variant="outline" onClick={recheckOld}>
-              <Clock className="w-3 h-3 mr-1.5" /> Re-check +7 días
-            </Button>
-            <Button size="sm" variant="outline" onClick={generatePdf}>
-              <Printer className="w-3 h-3 mr-1.5" /> PDF
-            </Button>
-            <Button size="sm" variant="ghost" onClick={handleClearAll}>
-              <Trash2 className="w-3 h-3 mr-1.5" /> Limpiar
-            </Button>
-          </div>}
+          }
         >
-          {loading || bulkSubmitting ? (
-            <div className="text-xs font-mono mb-3 text-yellow-500">{progress.step} ({progress.done}/{progress.total})</div>
-          ) : null}
-          <div className="grid grid-cols-2 md:grid-cols-5 lg:grid-cols-10 gap-2">
-            <StatBox label="Total" value={stats.total} color="cyan" />
-            <StatBox label="Enriquecidas" value={stats.enriched} color="green" />
+          <div className="text-xs text-muted-foreground mb-3 p-2 rounded bg-blue-500/5 border border-blue-500/20">
+            <strong>Qué hace este paso:</strong> Para cada URL, consulta VirusTotal (cuántos antivirus la marcan como maliciosa),
+            obtiene el registrar y email de abuse vía Whois, identifica el hosting provider (ASN), detecta si está detrás de Cloudflare,
+            clasifica la URL (phishing/malware/scam) y toma un screenshot visual del sitio.
+          </div>
+          {(loading || bulkSubmitting) && (
+            <div className="text-xs font-mono mb-3 text-yellow-500">
+              {progress.step} — progreso: {progress.done}/{progress.total}
+            </div>
+          )}
+          {/* Stats grid */}
+          <div className="grid grid-cols-2 md:grid-cols-5 lg:grid-cols-10 gap-2 mb-3">
+            <StatBox label="Total URLs" value={stats.total} color="cyan" />
+            <StatBox label="Enriquecidas ✓" value={stats.enriched} color="green" />
             <StatBox label="Pendientes" value={stats.pending} color="yellow" />
             <StatBox label="Phishing" value={stats.phishing} color="red" />
             <StatBox label="Malware" value={stats.malware} color="red" />
             <StatBox label="Scam" value={stats.scam} color="orange" />
             <StatBox label="Cloudflare" value={stats.cf} color="purple" />
-            <StatBox label="API submits ✓" value={stats.submits} color="green" />
+            <StatBox label="APIs enviados ✓" value={stats.submits} color="green" />
             <StatBox label="Forms abiertos" value={stats.forms} color="blue" />
-            <StatBox label="Emails gen." value={stats.emails} color="pink" />
+            <StatBox label="Emails generados" value={stats.emails} color="pink" />
           </div>
         </Panel>
       )}
 
-      {/* Filter + URL list */}
-      {entries.length > 0 && (
-        <Panel title={`URLs Cargadas (${filtered.length}/${entries.length})`} className="md:col-span-2"
-          action={<Input type="text" placeholder="Filtrar..." value={filter} onChange={e => setFilter(e.target.value)} className="h-7 text-xs w-40" />}
+      {/* ---------- Step 3: Report to platforms ---------- */}
+      {step2Done && (
+        <Panel
+          title="PASO 3 — Reportar a las plataformas de takedown"
+          className="md:col-span-2"
+          action={
+            <div className="flex gap-2">
+              <Button size="sm" onClick={submitAll} disabled={bulkSubmitting || stats.enriched === 0}>
+                {bulkSubmitting ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><Send className="w-3 h-3 mr-1.5" /> Auto-submit a APIs</>}
+              </Button>
+              <Button size="sm" variant="outline" onClick={recheckOld}>
+                <Clock className="w-3 h-3 mr-1.5" /> Re-check +7 días
+              </Button>
+            </div>
+          }
+        >
+          <div className="text-xs text-muted-foreground mb-3 p-2 rounded bg-blue-500/5 border border-blue-500/20">
+            <strong>Tres formas de reportar:</strong>
+            <ul className="list-disc ml-4 mt-1 space-y-0.5">
+              <li><strong className="text-green-500">Auto-submit a APIs</strong> (botón arriba): envía la URL automáticamente a URLhaus, VirusTotal, Clean-MX y PhishTank. Requiere API keys (ver nota abajo).</li>
+              <li><strong className="text-blue-500">Pre-fill forms</strong> (botón "12 forms" por URL): abre el navegador con el formulario de Google, Microsoft, APWG, Netcraft, Kaspersky, etc. ya cargado con la URL. Vos confirmás con 1 click.</li>
+              <li><strong className="text-purple-500">Correo de abuse</strong> (botón "Emails" por URL): genera un mailto: al abuse@ del registrar/hosting con template + evidencia. Vos mandás el correo desde tu cliente de mail.</li>
+            </ul>
+          </div>
+          <div className="text-[10px] text-yellow-500 mb-3">
+            ⚠ APIs que requieren keys: URLhaus (registrate en auth.abuse.ch), PhishTank (registrate en phishtank.com/developer.php).
+            Sin keys, esas plataformas se marcan como "skipped" pero VirusTotal y Clean-MX funcionan sin keys adicionales.
+          </div>
+        </Panel>
+      )}
+
+      {/* ---------- Step 4 & 5: Per-URL table with actions ---------- */}
+      {step1Done && (
+        <Panel
+          title={`URLs Cargadas — ${filtered.length}/${entries.length} — Acciones por URL`}
+          className="md:col-span-2"
+          action={
+            <div className="flex gap-2">
+              <Input type="text" placeholder="Filtrar..." value={filter} onChange={e => setFilter(e.target.value)} className="h-7 text-xs w-40" />
+              <Button size="sm" variant="outline" onClick={generatePdf}>
+                <Printer className="w-3 h-3 mr-1.5" /> Imprimir PDF (PASO 5)
+              </Button>
+              <Button size="sm" variant="ghost" onClick={handleClearAll}>
+                <Trash2 className="w-3 h-3 mr-1.5" /> Limpiar
+              </Button>
+            </div>
+          }
         >
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[40%]">URL</TableHead>
+                  <TableHead className="w-[35%]">URL</TableHead>
                   <TableHead>Class</TableHead>
                   <TableHead>VT</TableHead>
                   <TableHead>Hosting</TableHead>
                   <TableHead>CF</TableHead>
-                  <TableHead>Auto-submit APIs</TableHead>
-                  <TableHead>Acciones</TableHead>
+                  <TableHead>APIs (auto-submit)</TableHead>
+                  <TableHead>PASO 3: Reportar</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -753,15 +907,20 @@ export function TakedownUrlView() {
                           {API_PLATFORMS.map(p => {
                             const s = entry.submits.find(x => x.platform === p.id);
                             return (
-                              <Badge key={p.id} variant={s?.status === "success" ? "default" : s?.status === "failed" ? "destructive" : s?.status === "skipped" ? "outline" : "secondary"} className="text-[8px] font-mono" title={s?.message || ""}>
-                                {p.id}{s ? ` ${s.status === "success" ? "✓" : s.status === "failed" ? "✗" : s.status === "skipped" ? "○" : "·"}` : ""}
+                              <Badge
+                                key={p.id}
+                                variant={s?.status === "success" ? "default" : s?.status === "failed" ? "destructive" : s?.status === "skipped" ? "outline" : "secondary"}
+                                className="text-[8px] font-mono"
+                                title={s?.message || (s ? "" : "Click en Auto-submit a APIs (arriba)")}
+                              >
+                                {p.id} {s ? (s.status === "success" ? "✓" : s.status === "failed" ? "✗" : s.status === "skipped" ? "○" : "·") : "?"}
                               </Badge>
                             );
                           })}
                         </div>
                       </TableCell>
                       <TableCell>
-                        <div className="flex gap-1">
+                        <div className="flex gap-1 items-center">
                           {entry.status === "pending" && (
                             <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
                               <Eye className="w-3 h-3 mr-1" /> Enriquecer
@@ -769,11 +928,16 @@ export function TakedownUrlView() {
                           )}
                           {entry.status === "enriched" && (
                             <>
-                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => openAllPrefills(entry)} title="Abrir 6 formularios pre-fill">
+                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => openAllPrefills(entry)} title="Abrir formularios pre-fill en navegador (6 pestañas por vez)">
                                 <Globe className="w-3 h-3 mr-1" /> 12 forms
                               </Button>
                               <EmailButtons entry={entry} onOpen={openAbuseEmail} />
                             </>
+                          )}
+                          {entry.status === "failed" && (
+                            <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
+                              <RefreshCw className="w-3 h-3 mr-1" /> Reintentar
+                            </Button>
                           )}
                         </div>
                       </TableCell>
@@ -784,25 +948,25 @@ export function TakedownUrlView() {
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[10px]">
                             {/* Screenshot */}
                             <div className="md:col-span-1">
-                              <div className="text-muted-foreground mb-1">Screenshot:</div>
+                              <div className="text-muted-foreground mb-1">Screenshot visual del sitio:</div>
                               <img src={entry.enrich.screenshotUrl} alt="screenshot" className="rounded border border-border w-full max-h-32 object-cover" loading="lazy" />
                             </div>
                             {/* Details */}
                             <div className="md:col-span-2 space-y-1">
                               <FieldRow label="Registrar" value={entry.enrich.whois?.registrar || "?"} mono />
-                              <FieldRow label="Abuse (registrar)" value={entry.enrich.whois?.abuseEmail || "?"} mono />
+                              <FieldRow label="Abuse email (registrar)" value={entry.enrich.whois?.abuseEmail || "?"} mono />
                               <FieldRow label="Hosting" value={`${entry.enrich.hosting?.asnOrg || "?"} (${entry.enrich.hosting?.asn || "?"})`} mono />
                               <FieldRow label="ISP" value={entry.enrich.hosting?.isp || "?"} mono />
-                              <FieldRow label="Cloudflare" value={entry.enrich.cloudflare ? "SÍ — también contactar abuse@cloudflare.com" : "no"} mono />
-                              <FieldRow label="VT" value={entry.enrich.vt ? `${entry.enrich.vt.malicious} malicious, ${entry.enrich.vt.suspicious} suspicious` : "?"} mono />
+                              <FieldRow label="Detrás de Cloudflare" value={entry.enrich.cloudflare ? "SÍ — también contactar abuse@cloudflare.com" : "no"} mono />
+                              <FieldRow label="VirusTotal" value={entry.enrich.vt ? `${entry.enrich.vt.malicious} malicious, ${entry.enrich.vt.suspicious} suspicious` : "?"} mono />
                               {entry.enrich.vt?.permalink && (
                                 <a href={entry.enrich.vt.permalink} target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline inline-flex items-center gap-1 text-[10px]">
-                                  <ExternalLink className="w-3 h-3" /> Ver en VirusTotal
+                                  <ExternalLink className="w-3 h-3" /> Ver reporte completo en VirusTotal
                                 </a>
                               )}
                               {entry.enrich.redirectChain.length > 1 && (
                                 <div>
-                                  <div className="text-muted-foreground mb-0.5">Redirect chain:</div>
+                                  <div className="text-muted-foreground mb-0.5">Cadena de redirecciones HTTP:</div>
                                   <div className="font-mono text-[9px] text-yellow-500">
                                     {entry.enrich.redirectChain.map(c => `${c.status}→${c.url.slice(0, 50)}`).join(" → ")}
                                   </div>
@@ -826,27 +990,39 @@ export function TakedownUrlView() {
         </Panel>
       )}
 
-      {/* Empty state */}
+      {/* ---------- Empty state with platform list ---------- */}
       {entries.length === 0 && (
-        <Panel title="Plataformas de Takedown" className="md:col-span-2">
+        <Panel title="Plataformas de Takedown (¿a dónde se reporta?)" className="md:col-span-2">
           <div className="flex flex-col items-center justify-center py-8 text-center gap-3">
             <ShieldOff className="w-12 h-12 text-muted-foreground/50" />
             <h3 className="text-base font-semibold">Cargá URLs para iniciar el takedown</h3>
             <p className="text-xs text-muted-foreground max-w-2xl">
               Pegá una URL por línea en el textarea de arriba (o cargá un archivo .txt).
               Después, enriquecé cada URL automáticamente (VirusTotal, Whois, screenshot, hosting, Cloudflare detection)
-              y reportá a las siguientes plataformas:
+              y reportá a las siguientes 16 plataformas:
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-left text-[11px] mt-4">
-              <PlatformGroup title="Auto-submit APIs" items={["URLhaus (abuse.ch)", "VirusTotal", "Clean-MX", "PhishTank"]} note="Automático, vía POST" />
-              <PlatformGroup title="Pre-fill forms" items={["Google Safe Browsing", "Microsoft SmartScreen", "APWG", "StopBadware", "Spam404", "Netcraft"]} note="Se abre formulario pre-cargado" />
-              <PlatformGroup title="Antivirus" items={["Kaspersky", "Cisco Talos", "Fortinet", "McAfee", "Sucuri"]} note="Se abre formulario" />
-              <PlatformGroup title="Abuse emails" items={["Phishing template", "Malware template", "Scam template", "Copyright/DMCA"]} note="mailto: con plantilla" />
+              <PlatformGroup title="Auto-submit APIs (4)" items={["URLhaus (abuse.ch)", "VirusTotal", "Clean-MX", "PhishTank"]} note="Automático, vía POST (necesita keys)" />
+              <PlatformGroup title="Pre-fill forms (6)" items={["Google Safe Browsing (Phishing)", "Google Safe Browsing (Malware)", "Microsoft SmartScreen", "APWG", "StopBadware", "Spam404", "Netcraft"]} note="Se abre formulario pre-cargado" />
+              <PlatformGroup title="Antivirus forms (5)" items={["Kaspersky VirusDesk", "Cisco Talos", "Fortinet FortiGuard", "McAfee WebAdvisor", "Sucuri SiteCheck"]} note="Se abre formulario" />
+              <PlatformGroup title="Abuse emails (4)" items={["Phishing (robo credenciales)", "Malware (distribución)", "Scam (fraude financiero)", "Copyright/DMCA"]} note="mailto: con plantilla" />
             </div>
           </div>
         </Panel>
       )}
     </ModuleShell>
+  );
+}
+
+function StepBar({ label, done, last }: { label: string; done: boolean; last?: boolean }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono ${done ? "bg-green-500/15 text-green-500 border border-green-500/30" : "bg-muted text-muted-foreground border border-border"}`}>
+        {done ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+        {label}
+      </div>
+      {!last && <span className="text-muted-foreground text-[10px]">→</span>}
+    </div>
   );
 }
 
