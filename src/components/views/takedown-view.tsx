@@ -299,6 +299,7 @@ export function TakedownUrlView() {
   const [bulkSubmitting, setBulkSubmitting] = React.useState(false);
   const [autoTakedownRunning, setAutoTakedownRunning] = React.useState(false);
   const [progress, setProgress] = React.useState({ done: 0, total: 0, step: "" });
+  const [apiKeyStatus, setApiKeyStatus] = React.useState<{ summary: { total: number; configured: number; missing: number }; keys: Array<{ id: string; name: string; envVar: string; registerUrl: string; note: string; configured: boolean; sharedWith?: string }> } | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Load from localStorage on mount
@@ -307,6 +308,10 @@ export function TakedownUrlView() {
     if (stored.length > 0) {
       setEntries(stored);
     }
+    // Fetch the API keys status from the backend — shows the user
+    // which keys are configured (✓) and which are missing (✗) with
+    // setup links, so they know what's actually being reported.
+    fetch("/api/takedown/status").then(r => r.json()).then(setApiKeyStatus).catch(() => {});
   }, []);
 
   // Persist to localStorage on change
@@ -433,13 +438,11 @@ export function TakedownUrlView() {
     }
     if (!confirm(
       `Se va a ejecutar el TAKEDOWN AUTOMÁTICO COMPLETO para ${entries.length} URL(s).\n\n` +
-      `Esto va a:\n` +
-      `  1. Enriquecer cada URL (VirusTotal, Whois, hosting, screenshot)\n` +
-      `  2. Auto-reportar a 4 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank) — 100% automático\n` +
-      `  3. Abrir formularios de Google, Microsoft, APWG, etc. — vas a tener que hacer click en "Submit" en cada uno (los browsers no permiten auto-submit por seguridad)\n` +
-      `  4. Abrir tu cliente de mail con el correo de abuse pre-cargado — vas a tener que hacer click en "Enviar" (no podemos mandar correos sin tu acción)\n` +
-      `  5. Al final, generar el PDF con trazabilidad completa de todo lo hecho.\n\n` +
-      `⚠ IMPORTANTE: Permití popups para este sitio cuando el browser te lo pida (necesario para abrir los formularios).\n\n` +
+      `Pasos automáticos:\n` +
+      `  1. Enriquecer cada URL (VirusTotal, Whois, hosting, screenshot, Cloudflare)\n` +
+      `  2. Reportar automáticamente a 7 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan.io, ThreatFox, OTX)\n` +
+      `  3. Generar el PDF con trazabilidad completa\n\n` +
+      `Si alguna API key no está configurada, esa plataforma se marcará como "○ SKIPPED" en el PDF (no falla el resto).\n\n` +
       `¿Continuar?`
     )) {
       return;
@@ -450,21 +453,19 @@ export function TakedownUrlView() {
     const total = entries.length;
     setProgress({ done: 0, total, step: `Iniciando takedown automático de ${total} URL(s)...` });
 
-    // Step 1+2: Enrich all
+    // Step 1: Enrich all
     let done = 0;
-    setProgress({ done: 0, total, step: `[1/4] Enriqueciendo URLs (VirusTotal, Whois, hosting, screenshot)...` });
+    setProgress({ done: 0, total, step: `[1/3] Enriqueciendo URLs (VirusTotal, Whois, hosting, screenshot)...` });
     const toEnrich = entries.filter(e => e.status !== "enriched");
     for (const e of toEnrich) {
       await enrichOne(e.url);
       done++;
-      setProgress({ done, total, step: `[1/4] Enriquecido ${e.url.slice(0, 60)}... (${done}/${total})` });
+      setProgress({ done, total, step: `[1/3] Enriquecido ${e.url.slice(0, 60)}... (${done}/${total})` });
     }
 
-    // Refresh entries state for downstream — they need the enrich data
-    // We'll fetch the latest state via setEntries callback each time we update
-    setProgress({ done: 0, total, step: `[2/4] Auto-submiteando a APIs (URLhaus, VirusTotal, Clean-MX, PhishTank)...` });
+    // Step 2: Auto-submit to all 7 APIs
+    setProgress({ done: 0, total, step: `[2/3] Reportando a 7 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan, ThreatFox, OTX)...` });
     done = 0;
-    // We need to get the latest entries after enrichment. Use a microtask wait.
     await new Promise(r => setTimeout(r, 100));
     const currentEntries = (await new Promise<UrlEntry[]>(resolve => {
       setEntries(prev => { resolve(prev); return prev; });
@@ -472,67 +473,19 @@ export function TakedownUrlView() {
     for (const entry of currentEntries.filter(e => e.status === "enriched")) {
       await submitOne(entry);
       done++;
-      setProgress({ done, total, step: `[2/4] Auto-submiteado ${entry.url.slice(0, 60)}... (${done}/${total})` });
+      setProgress({ done, total, step: `[2/3] Reportado ${entry.url.slice(0, 60)}... (${done}/${total})` });
     }
 
-    // Step 3: Open pre-fill forms (up to 6 per URL, all that haven't been opened yet)
-    setProgress({ done: 0, total, step: `[3/4] Abriendo formularios de Google, Microsoft, APWG, etc. (vas a confirmar el submit en cada uno)...` });
-    done = 0;
-    for (const entry of currentEntries.filter(e => e.status === "enriched")) {
-      // Open up to 6 forms per URL (browser popup limit per user gesture)
-      const toOpen = PREFILL_PLATFORMS.filter(p => !entry.prefillOpened.includes(p.id)).slice(0, 6);
-      toOpen.forEach(p => {
-        try {
-          window.open(p.url(entry.url), "_blank");
-        } catch {}
-      });
-      setEntries(prev => prev.map(e => e.url === entry.url ? {
-        ...e,
-        prefillOpened: [...e.prefillOpened, ...toOpen.map(p => p.id)],
-      } : e));
-      done++;
-      setProgress({ done, total, step: `[3/4] Forms abiertos para ${entry.url.slice(0, 60)}... (${done}/${total})` });
-      // Small delay so the browser doesn't block popups
-      await new Promise(r => setTimeout(r, 200));
-    }
-
-    // Step 4: Open abuse email (one template per URL based on classification)
-    setProgress({ done: 0, total, step: `[4/4] Abriendo correo de abuse pre-cargado (vas a enviarlo)...` });
-    done = 0;
-    for (const entry of currentEntries.filter(e => e.status === "enriched")) {
-      // Determine the most appropriate template based on classification
-      const tpl: EmailTemplate =
-        entry.enrich?.classification === "malware" ? "malware" :
-        entry.enrich?.classification === "scam" ? "scam" :
-        entry.enrich?.classification === "phishing" ? "phishing" :
-        "phishing";  // default to phishing
-      if (!entry.emailsGenerated.includes(tpl)) {
-        // Open mailto — this will open the user's email client
-        openAbuseEmail(entry, tpl);
-        await new Promise(r => setTimeout(r, 100));
-      }
-      done++;
-      setProgress({ done, total, step: `[4/4] Email pre-cargado para ${entry.url.slice(0, 60)}... (${done}/${total})` });
-    }
-
-    // Step 5: Wait a moment, then auto-generate the PDF report
-    setProgress({ done: total, total, step: `Generando PDF con trazabilidad...` });
+    // Step 3: Wait a moment, then auto-generate the PDF report
+    setProgress({ done: total, total, step: `[3/3] Generando PDF con trazabilidad...` });
     await new Promise(r => setTimeout(r, 500));
     setLoading(false);
     setAutoTakedownRunning(false);
     setProgress({ done: 0, total: 0, step: "" });
 
-    if (confirm(
-      `Takedown automático completado para ${total} URL(s).\n\n` +
-      `Resumen:\n` +
-      `  • ${toEnrich.length} URLs enriquecidas (VirusTotal, Whois, hosting)\n` +
-      `  • ${currentEntries.filter(e => e.status === "enriched").length} URLs auto-reportadas a APIs (URLhaus, VirusTotal, Clean-MX, PhishTank)\n` +
-      `  • Forms de Google/Microsoft/APWG abiertos — REVISÁ Y CONFIRMÁ EL SUBMIT EN CADA PESTAÑA\n` +
-      `  • Correos de abuse pre-cargados — REVISÁ Y ENVIÁ CADA CORREO\n\n` +
-      `¿Generar el informe PDF con trazabilidad completa ahora?`
-    )) {
-      generatePdf();
-    }
+    // Auto-generate the PDF (no confirmation dialog needed — user clicked
+    // "auto completo" so they want the report).
+    generatePdf();
   };
 
   // ---- Pre-fill forms ----
@@ -944,7 +897,7 @@ export function TakedownUrlView() {
   return (
     <ModuleShell
       name="TakeDown URL"
-      description="Gestión de takedown — carga URLs desde .txt, enriquece, reporta a 19 plataformas (7 con API automática + 12 forms + correos de abuse) con trazabilidad completa."
+      description="Cargá URLs desde .txt o pegá una por línea. El sistema las enriquece y reporta automáticamente a 7 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan, ThreatFox, OTX) con trazabilidad completa."
       icon={ShieldOff}
       category="INFRASTRUCTURE"
     >
@@ -952,16 +905,15 @@ export function TakedownUrlView() {
       <div className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-muted/20 text-[11px]">
         <StepBar label="1. Cargar URLs" done={step1Done} />
         <StepBar label="2. Enriquecer (auto)" done={step2Done} />
-        <StepBar label="3. Reportar a plataformas (auto)" done={step3Done} />
-        <StepBar label="4. Correos de abuse (auto)" done={step4Done} />
-        <StepBar label="5. Imprimir PDF" done={step5Done} last />
+        <StepBar label="3. Reportar a 7 APIs (auto)" done={step3Done} />
+        <StepBar label="4. Imprimir PDF (auto)" done={step5Done} last />
       </div>
 
-      {/* Hint banner: explain the workflow */}
+      {/* Hint banner: simple workflow */}
       <div className="flex items-start gap-2 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-[11px]">
-        <div className="text-cyan-500 font-bold shrink-0">💡 Flujo de uso:</div>
+        <div className="text-cyan-500 font-bold shrink-0">💡</div>
         <div className="text-muted-foreground">
-          <strong>PASO 1</strong>: Cargá las URLs (textarea o .txt). Luego hacé click en el botón <strong className="text-cyan-500">🚀 Takedown automático completo</strong> que aparece abajo — ese botón ejecuta TODOS los pasos (enriquecer, reportar a APIs, abrir forms, abrir emails, generar PDF) de una sola vez. Los PASOs 2-4 también podés ejecutarlos individualmente si querés ver cada paso.
+          <strong>PASO 1</strong>: Cargá las URLs (textarea o .txt) — una por línea. Después hacé click en el botón <strong className="text-cyan-500">🚀 Takedown automático completo</strong> que aparece abajo. El sistema ejecuta todo solo: enriquece cada URL + reporta a 7 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan, ThreatFox, OTX) + genera el PDF con trazabilidad.
         </div>
       </div>
 
@@ -999,13 +951,11 @@ export function TakedownUrlView() {
         >
           <div className="flex flex-col gap-3">
             <div className="text-xs text-muted-foreground p-3 rounded bg-cyan-500/5 border border-cyan-500/30">
-              <strong className="text-cyan-500">Cómo funciona:</strong> Al hacer click en este botón, el sistema ejecuta TODO automáticamente:
+              <strong className="text-cyan-500">Qué hace este botón (todo automático):</strong>
               <ol className="list-decimal ml-4 mt-1 space-y-0.5 text-[11px]">
-                <li><strong>Enriquece</strong> cada URL (VirusTotal, Whois, hosting, screenshot, Cloudflare, clasificación) — 100% automático</li>
-                <li><strong>Auto-reporta</strong> a 4 APIs (URLhaus, VirusTotal, Clean-MX, PhishTank) — 100% automático</li>
-                <li><strong>Abre</strong> los formularios de Google, Microsoft, APWG, etc. — vas a confirmar el "Submit" en cada uno (el browser no permite auto-submit por seguridad)</li>
-                <li><strong>Abre</strong> tu cliente de mail con el correo de abuse pre-cargado — vas a hacer click en "Enviar" (no podemos mandar correos sin tu acción)</li>
-                <li><strong>Genera el PDF</strong> con trazabilidad completa de todo lo hecho — 100% automático</li>
+                <li><strong>Enriquece</strong> cada URL — VirusTotal, Whois, hosting, screenshot, Cloudflare, clasificación</li>
+                <li><strong>Reporta a 7 APIs</strong> — URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan.io, ThreatFox, OTX (cada una devuelve link al reporte público)</li>
+                <li><strong>Genera el PDF</strong> con trazabilidad: para cada URL te dice qué plataforma aceptó (✓), cuál falló (✗), cuál se salteó por falta de key (○)</li>
               </ol>
             </div>
             <div className="flex items-center gap-3 flex-wrap">
@@ -1021,9 +971,6 @@ export function TakedownUrlView() {
                   <><Send className="w-4 h-4 mr-2" /> 🚀 Ejecutar takedown automático completo ({entries.length} URL{entries.length === 1 ? "" : "s"})</>
                 )}
               </Button>
-              <span className="text-[10px] text-muted-foreground">
-                ⚠ Necesitás permitir popups en tu browser para que se abran los formularios
-              </span>
             </div>
             {(autoTakedownRunning || (loading && progress.step)) && (
               <div className="p-3 rounded bg-yellow-500/10 border border-yellow-500/40 text-xs font-mono text-yellow-600">
@@ -1078,15 +1025,15 @@ export function TakedownUrlView() {
         </Panel>
       )}
 
-      {/* ---------- Step 3: Report to platforms ---------- */}
+      {/* ---------- Step 3: Auto-report to APIs (solo APIs automáticas) ---------- */}
       {step2Done && (
         <Panel
-          title="PASO 3 — Reportar a las plataformas de takedown"
+          title="PASO 3 — Reporte automático a 7 APIs"
           className="md:col-span-2"
           action={
             <div className="flex gap-2">
               <Button size="sm" onClick={submitAll} disabled={bulkSubmitting || stats.enriched === 0}>
-                {bulkSubmitting ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><Send className="w-3 h-3 mr-1.5" /> Auto-submit a APIs</>}
+                {bulkSubmitting ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><Send className="w-3 h-3 mr-1.5" /> Reportar a las 7 APIs</>}
               </Button>
               <Button size="sm" variant="outline" onClick={recheckOld}>
                 <Clock className="w-3 h-3 mr-1.5" /> Re-check +7 días
@@ -1094,36 +1041,53 @@ export function TakedownUrlView() {
             </div>
           }
         >
-          <div className="text-xs text-muted-foreground mb-3 p-2 rounded bg-blue-500/5 border border-blue-500/20">
-            <strong>Tres formas de reportar:</strong>
-            <ul className="list-disc ml-4 mt-1 space-y-0.5">
-              <li><strong className="text-green-500">Auto-submit a APIs (100% automático)</strong>: envía la URL automáticamente a 7 plataformas con API pública. Cada una te devuelve un link al reporte público. Estado por plataforma: ✓ reportado / ✗ falló / ○ skipped (sin key).</li>
-              <li><strong className="text-blue-500">Pre-fill forms (confirmación manual)</strong>: abre el navegador con el formulario de Google, Microsoft, APWG, Netcraft, Kaspersky, etc. ya cargado con la URL. Vos confirmás con 1 click en "Submit". Estado: ⚠ ABIERTO (no podemos saber si confirmaste).</li>
-              <li><strong className="text-purple-500">Correo de abuse (confirmación manual)</strong>: genera un mailto: al abuse@ del registrar/hosting con template + evidencia. Vos mandás el correo. Estado: ⚠ GENERADO (no podemos saber si lo enviaste).</li>
-            </ul>
-          </div>
-          {/* List of all API platforms with key requirements */}
-          <div className="text-[11px] mb-3">
-            <div className="font-semibold mb-1">Plataformas con API (auto-submit, 100% automático):</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
-              {API_PLATFORMS.map(p => (
-                <div key={p.id} className="flex items-start gap-2 p-1.5 rounded border border-border bg-muted/20">
-                  <div className="font-mono text-cyan-500 font-bold shrink-0">{p.id}</div>
-                  <div className="flex-1">
-                    <div className="text-[10px]">{p.name}</div>
-                    <div className="text-[9px] text-muted-foreground">{p.note}</div>
-                    {p.needsKey && (
-                      <div className="text-[9px] text-yellow-500">⚠ Requiere: {p.needsKey}</div>
-                    )}
-                  </div>
+          {/* API Keys status panel — shows ✓/✗ for each key + setup links */}
+          {apiKeyStatus && (
+            <div className="mb-3 p-3 rounded border border-border bg-muted/20">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold">
+                  Estado de las API Keys:{" "}
+                  <span className="text-green-500">{apiKeyStatus.summary.configured} configuradas</span>
+                  {" / "}
+                  <span className="text-yellow-500">{apiKeyStatus.summary.missing} faltantes</span>
                 </div>
-              ))}
+                {apiKeyStatus.summary.missing > 0 && (
+                  <a href="https://vercel.com/dashboard" target="_blank" rel="noreferrer" className="text-[10px] text-cyan-500 hover:underline">
+                    Configurar en Vercel →
+                  </a>
+                )}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-1.5">
+                {apiKeyStatus.keys.map(k => (
+                  <div key={k.id} className={`flex items-start gap-2 p-2 rounded border ${k.configured ? "border-green-500/30 bg-green-500/5" : "border-yellow-500/30 bg-yellow-500/5"}`}>
+                    <div className={`shrink-0 ${k.configured ? "text-green-500" : "text-yellow-500"}`}>
+                      {k.configured ? "✓" : "✗"}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[11px] font-mono font-bold">{k.name}</div>
+                      <div className="text-[10px] text-muted-foreground">{k.note}</div>
+                      {!k.configured && k.envVar && (
+                        <div className="text-[10px] mt-1">
+                          <div className="text-yellow-500">Falta: <code className="font-mono">{k.envVar}</code></div>
+                          {k.registerUrl && (
+                            <a href={k.registerUrl} target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline inline-flex items-center gap-0.5">
+                              Registrate acá <ExternalLink className="w-2.5 h-2.5" />
+                            </a>
+                          )}
+                          <div className="text-[9px] text-muted-foreground mt-0.5">
+                            Después agregalo en Vercel → Settings → Environment Variables → {k.envVar.split(" + ")[0]}
+                          </div>
+                        </div>
+                      )}
+                      {k.configured && k.envVar && (
+                        <div className="text-[9px] text-green-600 mt-0.5">Key: {k.envVar.split(" + ")[0]}</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-          <div className="text-[10px] text-yellow-500 mb-3 p-2 rounded bg-yellow-500/5 border border-yellow-500/20">
-            <strong>Google y Microsoft NO tienen API pública para reportar URLs.</strong> Solo aceptan el formulario web (anti-spam/anti-DoS del blocklist). Por eso esos solo están como "Pre-fill forms" (vos confirmás el Submit).
-            Alternativas con API pública: URLhaus, VirusTotal, Clean-MX, PhishTank, URLscan.io, ThreatFox, AlienVault OTX.
-          </div>
+          )}
         </Panel>
       )}
 
@@ -1232,12 +1196,9 @@ export function TakedownUrlView() {
                               </Button>
                             )}
                             {entry.status === "enriched" && (
-                              <>
-                                <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => openAllPrefills(entry)} title="Abrir formularios pre-fill en navegador (6 pestañas por vez)">
-                                  <Globe className="w-3 h-3 mr-1" /> 12 forms
-                                </Button>
-                                <EmailButtons entry={entry} onOpen={openAbuseEmail} />
-                              </>
+                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => submitOne(entry)} title="Reportar esta URL a las 7 APIs">
+                                <Send className="w-3 h-3 mr-1" /> Reportar a APIs
+                              </Button>
                             )}
                             {entry.status === "failed" && (
                               <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
@@ -1381,14 +1342,9 @@ export function TakedownUrlView() {
                   <RefreshCw className="w-3 h-3 mr-1.5" /> Enriquecer las {modalEntries.filter(e => e.status !== "enriched").length} URL(s) no enriquecidas
                 </Button>
                 {modalEntries.some(e => e.status === "enriched") && (
-                  <>
-                    <Button size="sm" onClick={() => bulkSubmitFromModal(modalEntries.filter(e => e.status === "enriched"))} disabled={bulkSubmitting}>
-                      <Send className="w-3 h-3 mr-1.5" /> Auto-submit a APIs ({modalEntries.filter(e => e.status === "enriched").length} URLs)
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => bulkPrefillsFromModal(modalEntries.filter(e => e.status === "enriched"))}>
-                      <Globe className="w-3 h-3 mr-1.5" /> Abrir 12 forms (hasta 5 URLs)
-                    </Button>
-                  </>
+                  <Button size="sm" onClick={() => bulkSubmitFromModal(modalEntries.filter(e => e.status === "enriched"))} disabled={bulkSubmitting}>
+                    <Send className="w-3 h-3 mr-1.5" /> Reportar a las 7 APIs ({modalEntries.filter(e => e.status === "enriched").length} URLs)
+                  </Button>
                 )}
               </div>
             )}
@@ -1479,10 +1435,9 @@ export function TakedownUrlView() {
                           )}
                           {entry.status === "enriched" && (
                             <>
-                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => openAllPrefills(entry)}>
-                                <Globe className="w-3 h-3 mr-1" /> 12 forms
+                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => submitOne(entry)}>
+                                <Send className="w-3 h-3 mr-1" /> Reportar a APIs
                               </Button>
-                              <EmailButtons entry={entry} onOpen={openAbuseEmail} />
                               {e?.vt?.permalink && (
                                 <a href={e.vt.permalink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] text-cyan-500 hover:underline px-2 py-1">
                                   <ExternalLink className="w-3 h-3" /> VT
