@@ -885,6 +885,10 @@ export function TakedownUrlView() {
   };
 
   // ---- Filtering ----
+  const monitoredBaneadas = entries.filter(e => e.monitoring && ["BANEADA", "SUSPENDIDA", "BORRADA", "DOMINIO_ELIMINADO", "DOMINIO_CADUCO"].includes(e.monitoring.classification)).length;
+  const monitoredActivas = entries.filter(e => e.monitoring?.classification === "ACTIVA").length;
+  const monitoredTotal = entries.filter(e => e.monitoring).length;
+
   const stats = {
     total: entries.length,
     enriched: entries.filter(e => e.status === "enriched").length,
@@ -896,6 +900,9 @@ export function TakedownUrlView() {
     submits: entries.reduce((s, e) => s + e.submits.filter(x => x.status === "success").length, 0),
     forms: entries.reduce((s, e) => s + e.prefillOpened.length, 0),
     emails: entries.reduce((s, e) => s + e.emailsGenerated.length, 0),
+    ban: monitoredBaneadas,
+    activas: monitoredActivas,
+    monTotal: monitoredTotal,
   };
 
   // ---- Compute wizard step status ----
@@ -918,15 +925,17 @@ export function TakedownUrlView() {
   // ---- Stat metadata (label, description, predicate) for the modal ----
   const STAT_META: Record<string, { label: string; description: string; predicate: (e: UrlEntry) => boolean; bulkAction?: string }> = {
     total:      { label: "Total URLs",          description: "Todas las URLs cargadas en el sistema.", predicate: () => true },
-    enriched:   { label: "Enriquecidas ✓",      description: "URLs con enriquecimiento completo (VirusTotal, Whois, hosting, screenshot, clasificación, Cloudflare).", predicate: e => e.status === "enriched" },
-    pending:    { label: "Pendientes",          description: "URLs cargadas pero todavía no enriquecidas. Hacé click en 'Enriquecer todas' (arriba) o en 'Enriquecer' por cada URL.", predicate: e => e.status === "pending" || e.status === "failed", bulkAction: "enrich" },
-    phishing:   { label: "Phishing",            description: "URLs clasificadas como phishing (robo de credenciales) por patrones en la URL (login, paypal, bank, etc.).", predicate: e => e.enrich?.classification === "phishing" },
-    malware:    { label: "Malware",             description: "URLs clasificadas como distribución de malware (download, crack, keygen, exe, etc.).", predicate: e => e.enrich?.classification === "malware" },
+    enriched:   { label: "Enriquecidas",        description: "URLs con enriquecimiento completo (VirusTotal, Whois, hosting, screenshot, clasificacion, Cloudflare).", predicate: e => e.status === "enriched" },
+    pending:    { label: "Sin enriquecer",     description: "URLs cargadas pero todavia no enriquecidas. Hace click en 'Enriquecer todas' (arriba) o en 'Enriquecer' por cada URL.", predicate: e => e.status === "pending" || e.status === "failed", bulkAction: "enrich" },
+    phishing:   { label: "Phishing",           description: "URLs clasificadas como phishing (robo de credenciales) por patrones en la URL (login, paypal, bank, etc.).", predicate: e => e.enrich?.classification === "phishing" },
+    malware:    { label: "Malware",             description: "URLs clasificadas como distribucion de malware (download, crack, keygen, exe, etc.).", predicate: e => e.enrich?.classification === "malware" },
     scam:       { label: "Scam",                description: "URLs clasificadas como scam/fraude financiero (prize, winner, lottery, investment, etc.).", predicate: e => e.enrich?.classification === "scam" },
-    cloudflare: { label: "Cloudflare",          description: "URLs detectadas detrás de Cloudflare. Además del abuse del registrar/hosting, también contactar abuse@cloudflare.com.", predicate: e => !!e.enrich?.cloudflare },
-    submits:    { label: "APIs enviados ✓",     description: "URLs reportadas exitosamente a al menos una API (VirusTotal, URLscan).", predicate: e => e.submits.some(s => s.status === "success") },
-    forms:      { label: "Forms abiertos",      description: "URLs donde se abrió al menos un formulario pre-fill (Google, Microsoft, APWG, etc.).", predicate: e => e.prefillOpened.length > 0 },
-    emails:     { label: "Emails generados",    description: "URLs donde se generó al menos un correo de abuse (phishing, malware, scam, copyright).", predicate: e => e.emailsGenerated.length > 0 },
+    cf:         { label: "Cloudflare",          description: "URLs detectadas detras de Cloudflare. Tambien contactar abuse@cloudflare.com.", predicate: e => !!e.enrich?.cloudflare },
+    submits:    { label: "Reportadas a APIs",   description: "URLs reportadas exitosamente a al menos una API (VirusTotal, URLscan).", predicate: e => e.submits.some(s => s.status === "success") },
+    forms:      { label: "Forms abiertos",      description: "URLs donde se abrio al menos un formulario manual (Google, Microsoft, Netcraft).", predicate: e => e.prefillOpened.length > 0 },
+    ban:        { label: "Baneadas",            description: "URLs monitoreadas que fueron baneadas, suspendidas, borradas o con dominio eliminado. Takedown exitoso!", predicate: e => e.monitoring && ["BANEADA", "SUSPENDIDA", "BORRADA", "DOMINIO_ELIMINADO", "DOMINIO_CADUCO"].includes(e.monitoring.classification) },
+    activas:    { label: "Aun activas",        description: "URLs monitoreadas que siguen activas (el phishing sigue operativo). Hay que seguir reportando.", predicate: e => e.monitoring?.classification === "ACTIVA" },
+    monTotal:   { label: "Monitoreadas",       description: "URLs que ya fueron monitoreadas (se ejecuto el check HTTP).", predicate: e => !!e.monitoring },
   };
 
   // ---- Helper: open stat modal ----
@@ -1097,17 +1106,19 @@ export function TakedownUrlView() {
           <div className="text-xs text-muted-foreground mb-2 p-2 rounded bg-cyan-500/5 border border-cyan-500/20">
             💡 Click en cualquier stat para ver las URLs de esa categoría y gestionarlas (enriquecer, abrir forms, generar emails).
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-5 lg:grid-cols-10 gap-2 mb-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2 mb-3">
             <StatBox label="Total URLs" value={stats.total} color="cyan" filterKey="total" onClick={openStatModal} />
-            <StatBox label="Enriquecidas ✓" value={stats.enriched} color="green" filterKey="enriched" onClick={openStatModal} />
-            <StatBox label="Pendientes" value={stats.pending} color="yellow" filterKey="pending" onClick={openStatModal} />
+            <StatBox label="Enriquecidas" value={stats.enriched} color="green" filterKey="enriched" onClick={openStatModal} />
+            <StatBox label="Sin enriquecer" value={stats.pending} color="yellow" filterKey="pending" onClick={openStatModal} />
             <StatBox label="Phishing" value={stats.phishing} color="red" filterKey="phishing" onClick={openStatModal} />
             <StatBox label="Malware" value={stats.malware} color="red" filterKey="malware" onClick={openStatModal} />
             <StatBox label="Scam" value={stats.scam} color="orange" filterKey="scam" onClick={openStatModal} />
-            <StatBox label="Cloudflare" value={stats.cf} color="purple" filterKey="cloudflare" onClick={openStatModal} />
-            <StatBox label="APIs enviados ✓" value={stats.submits} color="green" filterKey="submits" onClick={openStatModal} />
+            <StatBox label="Cloudflare" value={stats.cf} color="purple" filterKey="cf" onClick={openStatModal} />
+            <StatBox label="Reportadas a APIs" value={stats.submits} color="green" filterKey="submits" onClick={openStatModal} />
             <StatBox label="Forms abiertos" value={stats.forms} color="blue" filterKey="forms" onClick={openStatModal} />
-            <StatBox label="Emails generados" value={stats.emails} color="pink" filterKey="emails" onClick={openStatModal} />
+            <StatBox label="Monitoreadas" value={stats.monTotal} color="cyan" filterKey="monTotal" onClick={openStatModal} />
+            <StatBox label="Baneadas" value={stats.ban} color="green" filterKey="ban" onClick={openStatModal} />
+            <StatBox label="Aun activas" value={stats.activas} color="red" filterKey="activas" onClick={openStatModal} />
           </div>
         </Panel>
       )}
