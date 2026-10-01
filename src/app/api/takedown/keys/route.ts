@@ -17,10 +17,7 @@ import { NextResponse } from "next/server";
 const KEY_IDS = [
   "VIRUSTOTAL_API_KEY",
   "URLHAUS_API_KEY",
-  "PHISHTANK_API_KEY",
-  "PHISHTANK_APP_ID",
   "URLSCAN_API_KEY",
-  "OTX_API_KEY",
 ];
 
 export async function GET(request: Request) {

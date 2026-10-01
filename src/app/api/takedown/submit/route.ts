@@ -9,11 +9,6 @@
 //   - URLscan.io         — POST https://urlscan.io/api/v1/scan/
 //     No auth required for basic usage (rate-limited). Creates a PUBLIC
 //     scan report that anyone can view.
-//   - ThreatFox (abuse.ch) — POST https://threatfox-api.abuse.ch/api/v1/
-//     Same token as URLhaus. action=insert-ioc, ioc_value=url,
-//     threat_type=url, malware_id=0 (unspecified), comment, anonymous
-//   - AlienVault OTX      — POST https://otx.alienvault.com/api/v1/indicators
-//     Requires X-OTX-API-KEY header. Can create pulses with URL indicators.
 
 import { NextResponse } from "next/server";
 
@@ -38,10 +33,9 @@ function getKey(request: Request, id: string): string {
 const getVirustotalKey = (req: Request) => getKey(req, "VIRUSTOTAL_API_KEY");
 const getUrlhausKey = (req: Request) => getKey(req, "URLHAUS_API_KEY");
 const getUrlscanKey = (req: Request) => getKey(req, "URLSCAN_API_KEY");
-const getOtxKey = (req: Request) => getKey(req, "OTX_API_KEY");
 
 interface SubmitRequest {
-  platform: "urlhaus" | "virustotal" | "cleanmx" | "phishtank" | "urlscan" | "threatfox" | "otx";
+  platform: "urlhaus" | "virustotal" | "cleanmx" | "urlscan";
   url: string;
   threatType?: "phishing_url" | "malware_url" | "scam_url";
   tags?: string;
@@ -158,43 +152,6 @@ export async function POST(request: Request) {
         return NextResponse.json({ platform, url, status: "error", error: String(e?.message || e) }, { status: 200 });
       }
     }
-    case "phishtank": {
-      const PHISHTANK_API_KEY = getKey(request, "PHISHTANK_API_KEY");
-      const PHISHTANK_APP_ID = getKey(request, "PHISHTANK_APP_ID");
-      if (!PHISHTANK_API_KEY || !PHISHTANK_APP_ID) {
-        return NextResponse.json({
-          platform,
-          url,
-          status: "skipped",
-          message: "PHISHTANK_API_KEY o PHISHTANK_APP_ID no configuradas. Configuralas en el panel 'Estado de las API Keys' del dashboard.",
-        }, { status: 200 });
-      }
-      try {
-        const fd = new URLSearchParams();
-        fd.append("url", url);
-        fd.append("phish_detail_id", "0");
-        fd.append("format", "json");
-        fd.append("app_key", PHISHTANK_API_KEY);
-        fd.append("app_id", PHISHTANK_APP_ID);
-        const r = await fetch("https://checkurl.phishtank.com/checkurl/", {
-          method: "POST",
-          body: fd,
-          signal: AbortSignal.timeout(15000),
-        });
-        const text = await r.text();
-        let j: any;
-        try { j = JSON.parse(text); } catch { j = { raw: text.slice(0, 500) }; }
-        return NextResponse.json({
-          platform,
-          url,
-          status: j?.results?.in_database ? "success" : "submitted",
-          responseStatus: r.status,
-          response: j,
-        });
-      } catch (e: any) {
-        return NextResponse.json({ platform, url, status: "error", error: String(e?.message || e) }, { status: 200 });
-      }
-    }
     case "urlscan": {
       // URLscan.io — free scan API. Creates a PUBLIC report that anyone
       // can view. No auth required for basic usage (rate-limited to ~100
@@ -224,91 +181,6 @@ export async function POST(request: Request) {
           responseStatus: r.status,
           permalink,
           response: j,
-        });
-      } catch (e: any) {
-        return NextResponse.json({ platform, url, status: "error", error: String(e?.message || e) }, { status: 200 });
-      }
-    }
-    case "threatfox": {
-      // ThreatFox (abuse.ch) — same token as URLhaus.
-      // Required: action=insert-ioc, ioc_value, threat_type (url),
-      // malware_id, malware_printable, confidence_level, comment
-      const URLHAUS_API_KEY = getUrlhausKey(request);
-      if (!URLHAUS_API_KEY) {
-        return NextResponse.json({
-          platform,
-          url,
-          status: "skipped",
-          message: "URLHAUS_API_KEY no configurada (ThreatFox usa el mismo token de abuse.ch que URLhaus). Configurá la key en el panel 'Estado de las API Keys' del dashboard.",
-        }, { status: 200 });
-      }
-      try {
-        const fd = new URLSearchParams();
-        fd.append("token", URLHAUS_API_KEY);
-        fd.append("action", "insert-ioc");
-        fd.append("ioc_value", url);
-        fd.append("threat_type", "url");
-        fd.append("malware_id", "0"); // 0 = unspecified
-        fd.append("malware_printable", "Unspecified");
-        fd.append("confidence_level", 75 + "");
-        fd.append("comment", `Reported by MONITOR-THREAT (${tType})`);
-        fd.append("anonymous", "1");
-        const r = await fetch("https://threatfox-api.abuse.ch/api/v1/", {
-          method: "POST",
-          body: fd,
-          signal: AbortSignal.timeout(15000),
-        });
-        const text = await r.text();
-        let j: any;
-        try { j = JSON.parse(text); } catch { j = { raw: text.slice(0, 500) }; }
-        return NextResponse.json({
-          platform,
-          url,
-          status: j.query_status === "ioc_added" || j.query_status === "ok" ? "success" : "failed",
-          responseStatus: r.status,
-          permalink: j?.id ? `https://threatfox.abuse.ch/ioc/${j.id}` : null,
-          response: j,
-        });
-      } catch (e: any) {
-        return NextResponse.json({ platform, url, status: "error", error: String(e?.message || e) }, { status: 200 });
-      }
-    }
-    case "otx": {
-      // AlienVault OTX — create an indicator URL. Requires API key.
-      // Note: OTX's main submission is via pulses (threat reports), but
-      // we can also submit URL indicators via the indicators endpoint.
-      const OTX_API_KEY = getOtxKey(request);
-      if (!OTX_API_KEY) {
-        return NextResponse.json({
-          platform,
-          url,
-          status: "skipped",
-          message: "OTX_API_KEY no configurada. Configurá la key en el panel 'Estado de las API Keys' del dashboard.",
-        }, { status: 200 });
-      }
-      try {
-        // OTX indicator submission endpoint
-        // Endpoint: /api/v1/indicators/{indicator_type}/{indicator_value}
-        // We use POST to create a "URL" indicator (type=url) with a
-        // pulse metadata.
-        const r = await fetch(`https://otx.alienvault.com/api/v1/indicators/url/${encodeURIComponent(url)}/general`, {
-          method: "GET", // GET to check if exists first
-          headers: { "X-OTX-API-KEY": OTX_API_KEY },
-          signal: AbortSignal.timeout(8000),
-        });
-        // OTX does not allow direct indicator submission via API for
-        // non-members — but the indicator page IS a public record
-        // (it creates a permalink when accessed). We treat this as a
-        // "submission" because the URL becomes a tracked indicator.
-        const j: any = await r.json();
-        const permalink = `https://otx.alienvault.com/indicator/url/${encodeURIComponent(url)}`;
-        return NextResponse.json({
-          platform,
-          url,
-          status: r.ok ? "success" : "failed",
-          responseStatus: r.status,
-          permalink,
-          response: { general: j?.general || null },
         });
       } catch (e: any) {
         return NextResponse.json({ platform, url, status: "error", error: String(e?.message || e) }, { status: 200 });

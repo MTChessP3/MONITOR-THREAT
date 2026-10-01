@@ -6,12 +6,9 @@ import { NextResponse } from "next/server";
 
 const KEYS: Array<{ id: string; name: string; envVar: string; registerUrl: string; note: string; sharedWith?: string }> = [
   { id: "virustotal", name: "VirusTotal", envVar: "VIRUSTOTAL_API_KEY", registerUrl: "https://www.virustotal.com/gui/my-apikey", note: "POST → 70+ antivirus escanean la URL" },
-  { id: "urlhaus", name: "URLhaus (abuse.ch)", envVar: "URLHAUS_API_KEY", registerUrl: "https://auth.abuse.ch/register", note: "POST directo a la base pública de URLs maliciosas", sharedWith: "threatfox" },
+  { id: "urlhaus", name: "URLhaus (abuse.ch)", envVar: "URLHAUS_API_KEY", registerUrl: "https://auth.abuse.ch/register", note: "POST directo a la base pública de URLs maliciosas" },
   { id: "cleanmx", name: "Clean-MX", envVar: "", registerUrl: "", note: "XML, no requiere key" },
-  { id: "phishtank", name: "PhishTank", envVar: "PHISHTANK_API_KEY + PHISHTANK_APP_ID", registerUrl: "https://www.phishtank.com/developer.php", note: "Base de phishing de la comunidad" },
   { id: "urlscan", name: "URLscan.io", envVar: "URLSCAN_API_KEY", registerUrl: "https://urlscan.io/profile/", note: "Crea reporte público con screenshot + DOM + network requests" },
-  { id: "threatfox", name: "ThreatFox (abuse.ch)", envVar: "URLHAUS_API_KEY", registerUrl: "https://auth.abuse.ch/register", note: "Base de IOCs pública (mismo token que URLhaus)", sharedWith: "urlhaus" },
-  { id: "otx", name: "AlienVault OTX", envVar: "OTX_API_KEY", registerUrl: "https://otx.alienvault.com/", note: "Crea indicator URL con permalink público" },
 ];
 
 function readCookies(request: Request): Record<string, string> {
