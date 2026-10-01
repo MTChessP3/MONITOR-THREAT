@@ -623,7 +623,7 @@ export function TakedownUrlView() {
     doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(220, 38, 38);
     doc.text("MONITOR-THREAT", margin, y + 26);
     doc.setTextColor(100, 116, 139);
-    doc.text("Cyber Threat Intelligence Platform · Takedown Management", margin + 105, y + 26);
+    doc.text("Cyber Threat Intelligence Platform - Takedown Management", margin + 105, y + 26);
     const ts = new Date().toLocaleString();
     doc.setFontSize(10); doc.setTextColor(71, 85, 105);
     doc.text(`Generado: ${ts}`, pageWidth - margin, y + 8, { align: "right" });
@@ -650,146 +650,119 @@ export function TakedownUrlView() {
       y = (doc as any).lastAutoTable.finalY + 18;
     };
 
-    // ---------- Section 1: ¿Dónde se reportó cada URL? (RESUMEN DE DESTINOS) ----------
-    sectionHeading("¿Dónde fue reportada cada URL?");
+    // ---------- Section 1: Resumen de reportes ----------
+    sectionHeading("Resumen de Reportes a APIs");
 
-    // Build a matrix of all platforms × all URLs
+    // Only the 3 API platforms (no pre-fill forms, no emails — those
+    // are not automatic and don't belong in this report).
     const apiPlatforms = ["virustotal", "cleanmx", "urlscan"];
-    const allPlatforms = [
-      ...apiPlatforms.map(p => ({ id: p, name: API_PLATFORMS.find(x => x.id === p)?.name || p, type: "API" })),
-      ...PREFILL_PLATFORMS.map(p => ({ id: p.id, name: p.name, type: "Form" })),
-      { id: "abuse-email" as any, name: "Correo de Abuse (registrar + hosting)", type: "Email" },
-    ];
 
-    // Summary table: Platform | Reportados | Fallidos | Pendientes
+    // Summary table: Platform | Reportados | Fallidos | Salteados
     const summaryRows: Array<[string, string, string, string]> = [];
-    for (const p of allPlatforms) {
-      let success = 0, failed = 0, pending = 0;
+    for (const p of apiPlatforms) {
+      const name = API_PLATFORMS.find(x => x.id === p)?.name || p;
+      let success = 0, failed = 0, skipped = 0;
       for (const entry of entries) {
-        if (p.type === "API") {
-          const s = entry.submits.find(x => x.platform === p.id);
-          if (s?.status === "success") success++;
-          else if (s?.status === "failed" || s?.status === "error") failed++;
-          else if (s?.status === "skipped") pending++;
-          else pending++;
-        } else if (p.type === "Form") {
-          if (entry.prefillOpened.includes(p.id as PrefillPlatform)) success++;
-          else pending++;
-        } else if (p.type === "Email") {
-          if (entry.emailsGenerated.length > 0) success++;
-          else pending++;
-        }
+        const s = entry.submits.find(x => x.platform === p);
+        if (s?.status === "success") success++;
+        else if (s?.status === "failed" || s?.status === "error") failed++;
+        else if (s?.status === "skipped") skipped++;
+        else skipped++; // no submit attempted yet = counted as skipped
       }
-      if (success > 0 || pending > 0) {
-        summaryRows.push([`${p.name}  [${p.type}]`, String(success), String(failed), String(pending)]);
-      }
+      summaryRows.push([name, String(success), String(failed), String(skipped)]);
     }
     autoTable(doc, {
       startY: y,
-      head: [["Plataforma (API / Formulario / Email)", "✓ Reportado", "✗ Fallido", "○ Pendiente"]],
+      head: [["Plataforma API", "Reportado OK", "Fallo", "Salteado (sin key)"]],
       body: summaryRows,
       theme: "grid",
       margin: { left: margin, right: margin },
-      styles: { fontSize: 9, cellPadding: 5, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
-      headStyles: { fillColor: [220, 38, 38], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 9 },
+      styles: { fontSize: 10, cellPadding: 6, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.5 },
+      headStyles: { fillColor: [220, 38, 38], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 10 },
       columnStyles: {
-        0: { cellWidth: contentWidth * 0.55 },
-        1: { cellWidth: contentWidth * 0.15, halign: "center", textColor: [22, 163, 74] },
-        2: { cellWidth: contentWidth * 0.15, halign: "center", textColor: [220, 38, 38] },
-        3: { cellWidth: contentWidth * 0.15, halign: "center", textColor: [161, 98, 7] },
+        0: { cellWidth: contentWidth * 0.45, fontStyle: "bold" },
+        1: { cellWidth: contentWidth * 0.18, halign: "center", textColor: [22, 163, 74] },
+        2: { cellWidth: contentWidth * 0.18, halign: "center", textColor: [220, 38, 38] },
+        3: { cellWidth: contentWidth * 0.19, halign: "center", textColor: [161, 98, 7] },
       },
     });
     // @ts-ignore
     y = (doc as any).lastAutoTable.finalY + 18;
 
-    // ---------- Section 2: Detalle por URL — ¿a dónde fue reportada cada una? ----------
-    sectionHeading("Detalle por URL — ¿a dónde fue reportada cada una?");
+    // Total counts
+    const totalOk = entries.flatMap(e => e.submits).filter(s => s.status === "success").length;
+    const totalFail = entries.flatMap(e => e.submits).filter(s => s.status === "failed" || s.status === "error").length;
+    const totalSkip = entries.flatMap(e => e.submits).filter(s => s.status === "skipped").length;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(15, 23, 42);
+    doc.text(`Total: ${totalOk} reportes OK, ${totalFail} fallos, ${totalSkip} salteados (sin API key)`, margin, y);
+    y += 18;
+
+    // ---------- Section 2: Detalle por URL ----------
+    sectionHeading("Detalle por URL - Estado de Reporte por API");
 
     for (const entry of entries.slice(0, 50)) {
       // URL header
       doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(15, 23, 42);
-      if (y > pageHeight - margin - 200) { doc.addPage(); y = margin + 6; }
+      if (y > pageHeight - margin - 120) { doc.addPage(); y = margin + 6; }
       doc.text(`URL: ${entry.url.slice(0, 90)}`, margin, y);
       y += 14;
       doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(100, 116, 139);
       if (entry.enrich?.hostname) {
-        doc.text(`Hostname: ${entry.enrich.hostname}  ·  Class: ${entry.enrich.classification || "?"}  ·  VT: ${entry.enrich.vt?.malicious || 0} malicious`, margin, y);
+        doc.text(`Hostname: ${entry.enrich.hostname}  -  Clase: ${entry.enrich.classification || "?"}  -  VT: ${entry.enrich.vt?.malicious || 0} malicious`, margin, y);
         y += 12;
       }
       if (entry.enrich?.finalUrl && entry.enrich.finalUrl !== entry.url) {
         doc.setTextColor(220, 38, 38);
-        doc.text(`→ URL final (después de redirects): ${entry.enrich.finalUrl.slice(0, 90)}`, margin, y);
+        doc.text(`URL final (despues de redirects): ${entry.enrich.finalUrl.slice(0, 90)}`, margin, y);
         y += 12;
         doc.setTextColor(100, 116, 139);
       }
       y += 4;
 
-      // Where it was reported (matrix row)
+      // Per-URL status table — only the 3 API platforms
       const reportedRows: Array<[string, string, string]> = [];
-
-      // APIs
       for (const p of apiPlatforms) {
         const name = API_PLATFORMS.find(x => x.id === p)?.name || p;
         const s = entry.submits.find(x => x.platform === p);
+        let status = "Pendiente";
+        let detail = "-";
+        let color: [number, number, number] = [161, 98, 7]; // amber
         if (s?.status === "success") {
-          const link = s.permalink || (p === "virustotal" && entry.enrich?.vt?.permalink) || entry.enrich?.vt?.permalink || "—";
-          reportedRows.push([name, "✓ REPORTADO", link && link !== "—" ? link.slice(0, 60) : "OK"]);
+          status = "Reportado OK";
+          color = [22, 163, 74]; // green
+          const link = s.permalink || (p === "virustotal" && entry.enrich?.vt?.permalink) || entry.enrich?.vt?.permalink;
+          detail = link && link !== "-" ? link.slice(0, 70) : "OK";
         } else if (s?.status === "failed" || s?.status === "error") {
-          reportedRows.push([name, "✗ FALLÓ", (s.message || "error").slice(0, 60)]);
+          status = "Fallo";
+          color = [220, 38, 38]; // red
+          detail = (s.message || "error desconocido").slice(0, 70);
         } else if (s?.status === "skipped") {
-          reportedRows.push([name, "○ SKIPPED", (s.message || "API key no configurada").slice(0, 60)]);
-        } else {
-          reportedRows.push([name, "○ PENDIENTE", "—"]);
+          status = "Salteado (sin key)";
+          color = [161, 98, 7]; // amber
+          detail = (s.message || "API key no configurada").slice(0, 70);
         }
-      }
-
-      // Pre-fill forms
-      for (const p of PREFILL_PLATFORMS) {
-        const wasOpened = entry.prefillOpened.includes(p.id);
-        const link = p.url(entry.url);
-        reportedRows.push([p.name, wasOpened ? "✓ ABIERTO" : "○ NO ABIERTO", link.slice(0, 80)]);
-      }
-
-      // Abuse email
-      if (entry.emailsGenerated.length > 0) {
-        const recipients = new Set<string>();
-        if (entry.enrich?.whois?.abuseEmail) recipients.add(entry.enrich.whois.abuseEmail);
-        if (entry.enrich?.hosting?.abuseEmail) recipients.add(entry.enrich.hosting.abuseEmail);
-        if (entry.enrich?.cloudflare) recipients.add("abuse@cloudflare.com");
-        if (recipients.size === 0) {
-          try {
-            const parts = entry.enrich?.hostname?.split(".") || [];
-            if (parts.length >= 2) recipients.add(`abuse@${parts.slice(-2).join(".")}`);
-          } catch {}
-        }
-        reportedRows.push([
-          "Correo de Abuse (" + entry.emailsGenerated.map(t => EMAIL_TEMPLATES[t].name.split(" ")[0]).join(", ") + ")",
-          "✓ GENERADO",
-          Array.from(recipients).join(", ").slice(0, 60),
-        ]);
-      } else {
-        reportedRows.push(["Correo de Abuse", "○ NO GENERADO", "—"]);
+        reportedRows.push([name, status, detail]);
       }
 
       autoTable(doc, {
         startY: y,
-        head: [["Plataforma / Destino", "Estado", "Link / Detalle"]],
+        head: [["Plataforma API", "Estado", "Detalle / Link al reporte"]],
         body: reportedRows,
         theme: "striped",
         margin: { left: margin, right: margin },
-        styles: { fontSize: 8, cellPadding: 4, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.3 },
-        headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontSize: 8 },
+        styles: { fontSize: 9, cellPadding: 5, textColor: [30, 41, 59], lineColor: [226, 232, 240], lineWidth: 0.3 },
+        headStyles: { fillColor: [241, 245, 249], textColor: [71, 85, 105], fontSize: 9, fontStyle: "bold" },
         columnStyles: {
-          0: { cellWidth: contentWidth * 0.40, fontStyle: "bold" },
-          1: { cellWidth: contentWidth * 0.18, halign: "center" },
-          2: { cellWidth: contentWidth * 0.42, textColor: [59, 130, 246] },
+          0: { cellWidth: contentWidth * 0.22, fontStyle: "bold" },
+          1: { cellWidth: contentWidth * 0.22, halign: "center" },
+          2: { cellWidth: contentWidth * 0.56, textColor: [59, 130, 246] },
         },
         didParseCell: (data: any) => {
           if (data.section === "body" && data.column.index === 1) {
             const v = String(data.cell.raw || "");
-            if (v.startsWith("✓")) data.cell.styles.textColor = [22, 163, 74];
-            else if (v.startsWith("✗")) data.cell.styles.textColor = [220, 38, 38];
-            else if (v.startsWith("○")) data.cell.styles.textColor = [161, 98, 7];
+            if (v.startsWith("Reportado")) data.cell.styles.textColor = [22, 163, 74];
+            else if (v.startsWith("Fallo")) data.cell.styles.textColor = [220, 38, 38];
+            else if (v.startsWith("Salteado") || v.startsWith("Pendiente")) data.cell.styles.textColor = [161, 98, 7];
           }
         },
       });
@@ -809,15 +782,15 @@ export function TakedownUrlView() {
       y += 12;
       kvTable([
         ["Hostname", e.hostname || "?"],
-        ["Clasificación", `${e.classification} (${e.classificationReason})`],
+        ["Clasificacion", `${e.classification} (${e.classificationReason})`],
         ["VirusTotal", e.vt ? `${e.vt.malicious} malicious / ${e.vt.suspicious} suspicious / ${e.vt.undetected} undetected` : "?"],
         ["VT permalink", e.vt?.permalink || "?"],
         ["Registrar", e.whois?.registrar || "?"],
         ["Abuse email (registrar)", e.whois?.abuseEmail || "?"],
         ["Hosting provider", e.hosting ? `${e.hosting.asnOrg || "?"} (${e.hosting.asn || "?"})` : "?"],
         ["ISP", e.hosting?.isp || "?"],
-        ["Detrás de Cloudflare", e.cloudflare ? "SÍ — también contactar abuse@cloudflare.com" : "no"],
-        ["URL final (después de redirects)", e.finalUrl || entry.url],
+        ["Detras de Cloudflare", e.cloudflare ? "SI - tambien contactar abuse@cloudflare.com" : "no"],
+        ["URL final (despues de redirects)", e.finalUrl || entry.url],
       ]);
     }
 
@@ -826,7 +799,7 @@ export function TakedownUrlView() {
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
       doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(150, 150, 150);
-      doc.text(`MONITOR-THREAT · TakeDown Report · Página ${i} de ${pageCount}`, pageWidth / 2, pageHeight - 20, { align: "center" });
+      doc.text(`MONITOR-THREAT - TakeDown Report - Pagina ${i} de ${pageCount}`, pageWidth / 2, pageHeight - 20, { align: "center" });
     }
 
     doc.save(`takedown-report-${Date.now()}.pdf`);
