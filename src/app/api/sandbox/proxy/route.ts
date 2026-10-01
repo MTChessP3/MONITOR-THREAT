@@ -125,19 +125,23 @@ const MONITOR_SCRIPT = `
     // By loading html2canvas via <script src>, it executes in the
     // popup's own scope and CAN access document.body normally.
     var h2cScript = document.createElement('script');
-    h2cScript.src = '/sandbox/html2canvas.min.js';
+    // Cache-bust the script URL with a timestamp so the browser always
+    // loads the latest version (avoids stale cached scripts in popups).
+    h2cScript.src = '/sandbox/html2canvas.min.js?v=' + Date.now();
+    h2cScript.async = false;
     h2cScript.onload = function() {
       // html2canvas is now loaded in the popup's window scope
       function shoot(delay) {
         setTimeout(function() {
           try {
             if (typeof window.html2canvas !== 'function') {
-              parent.postMessage({type:'screenshotError', delay: delay, error: 'html2canvas not loaded'}, '*');
+              parent.postMessage({type:'screenshotError', delay: delay, error: 'html2canvas not loaded (typeof=' + typeof window.html2canvas + ')'}, '*');
               return;
             }
             // Re-run URL rewriting right before the screenshot so
             // dynamically added images go through our CORS proxy
             rewriteResourceUrls();
+            parent.postMessage({type:'screenshotProgress', delay: delay, step: 'calling html2canvas'}, '*');
             window.html2canvas(document.body, {
               useCORS: true,
               allowTaint: false,
@@ -153,7 +157,7 @@ const MONITOR_SCRIPT = `
             }).then(function(canvas) {
               try {
                 var dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-                parent.postMessage({type:'screenshot', delay: delay, dataUrl: dataUrl, source: 'popup-html2canvas'}, '*');
+                parent.postMessage({type:'screenshot', delay: delay, dataUrl: dataUrl, source: 'popup-html2canvas', canvasW: canvas.width, canvasH: canvas.height}, '*');
               } catch(e) {
                 // tainted canvas — try with allowTaint
                 window.html2canvas(document.body, {
@@ -167,7 +171,7 @@ const MONITOR_SCRIPT = `
                 }).then(function(canvas2) {
                   try {
                     var dataUrl = canvas2.toDataURL('image/jpeg', 0.7);
-                    parent.postMessage({type:'screenshot', delay: delay, dataUrl: dataUrl, source: 'popup-html2canvas-taint'}, '*');
+                    parent.postMessage({type:'screenshot', delay: delay, dataUrl: dataUrl, source: 'popup-html2canvas-taint', canvasW: canvas2.width, canvasH: canvas2.height}, '*');
                   } catch(e2) {
                     parent.postMessage({type:'screenshotError', delay: delay, error: 'toDataURL failed (tainted): ' + String(e2).slice(0,200)}, '*');
                   }
@@ -187,10 +191,10 @@ const MONITOR_SCRIPT = `
       shoot(10000);
       shoot(14000);
       // Notify parent that html2canvas is ready
-      parent.postMessage({type:'h2cReady'}, '*');
+      parent.postMessage({type:'h2cReady', loaded: true, html2canvasType: typeof window.html2canvas}, '*');
     };
     h2cScript.onerror = function() {
-      parent.postMessage({type:'screenshotError', delay: 0, error: 'failed to load html2canvas.min.js'}, '*');
+      parent.postMessage({type:'screenshotError', delay: 0, error: 'failed to load html2canvas.min.js from /sandbox/'}, '*');
     };
     document.head.appendChild(h2cScript);
   });
@@ -299,6 +303,11 @@ export async function GET(request: Request) {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "X-Sandbox-Origin": finalUrl,
+        // No caching — always re-fetch the latest proxy HTML (which
+        // contains the latest monitor script + html2canvas loader).
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
       },
     });
   } catch (err: any) {

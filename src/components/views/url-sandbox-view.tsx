@@ -113,6 +113,7 @@ interface SandboxResult {
   riskClassification: "SAFE" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
   verdict: string;
   loaded: boolean;
+  debugLog: string[];
 }
 
 const SANDBOX_DURATION = 20000;
@@ -208,6 +209,10 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   let lastPopupUrl = url;
   let behavior: BehaviorType = "NORMAL";
 
+  // DEBUG log — tracks every screenshot-related event so we can see
+  // exactly what's happening in the popup's html2canvas pipeline.
+  const debugLog: string[] = [];
+
   // NUEVO: Visor state — track which visual screenshot is currently
   // displayed on the video canvas. Real screenshots (from external
   // services) take priority over text snapshots.
@@ -266,6 +271,7 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   const popup = window.open(proxyUrl, "_blank", "width=1280,height=720,scrollbars=yes,resizable=yes,noopener=no");
 
   if (!popup) {
+    debugLog.push("✗ popup NOT opened — popup blocker is on (allow popups for this site)");
     return {
       url, timestamp: new Date(startTime).toISOString(), duration: 0,
       screenshots: [], videoBlobUrl: undefined, finalDom: "", finalTitle: "",
@@ -273,9 +279,13 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
       domMutations: [], cookies: [], localStorage: [], sessionStorage: [], popups: [],
       evalCalls: [], cryptoMining: [], webglFingerprint: false, canvasFingerprint: false,
       formAutoSubmit: false, hiddenRedirect: null, serviceWorker: false,
+      redirects: [], timeline: [], externalLinks: [], behavior: "NORMAL", summary: "",
       riskScore: 0, riskClassification: "SAFE", verdict: "Sandbox could not start — popup blocked.", loaded: false,
+      debugLog: ["Popup blocked — could not open popup window"],
     };
   }
+
+  debugLog.push(`✓ popup opened @ ${((Date.now() - startTime) / 1000).toFixed(2)}s (proxyUrl=${proxyUrl.slice(0, 80)})`);
 
   onProgress(500, "Waiting for page to load...");
 
@@ -504,6 +514,7 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
         // This is the REAL visual screenshot of the page being analyzed.
         if (d.dataUrl) {
           screenshots.push(d.dataUrl);
+          debugLog.push(`✓ screenshot @ ${(d.delay / 1000).toFixed(0)}s source=${d.source} size=${(d.dataUrl.length / 1024).toFixed(0)}KB canvas=${d.canvasW}x${d.canvasH}`);
           const img = new Image();
           img.onload = () => {
             // Popup screenshots take priority over external service
@@ -512,15 +523,27 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
             visualScreenshotImg = img;
             visualScreenshotLabel = `POPUP SCREENSHOT @ ${(d.delay / 1000).toFixed(0)}s — ${url.slice(0, 80)}`;
             visualScreenshotSrc = "real";
+            debugLog.push(`✓ screenshot drawn to video canvas @ ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+          };
+          img.onerror = () => {
+            debugLog.push(`✗ screenshot image failed to load`);
           };
           img.src = d.dataUrl;
           onProgress(Date.now() - startTime, `Popup screenshot @ ${(d.delay / 1000).toFixed(0)}s capturado (source: ${d.source || "popup"})`);
         }
         break;
+      case "screenshotProgress":
+        debugLog.push(`→ progress @ ${(d.delay / 1000).toFixed(0)}s: ${d.step}`);
+        break;
+      case "h2cReady":
+        debugLog.push(`✓ html2canvas loaded in popup (typeof=${d.html2canvasType}) @ ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+        onProgress(Date.now() - startTime, `html2canvas loaded in popup`);
+        break;
       case "domSnapshot":
         // Legacy case — no longer used. Ignored.
         break;
       case "screenshotError":
+        debugLog.push(`✗ screenshotError @ ${(d.delay / 1000).toFixed(0)}s: ${d.error}`);
         timeline.push({
           time: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
           timestamp: new Date().toISOString(),
@@ -1025,6 +1048,7 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
     webglFingerprint, canvasFingerprint, formAutoSubmit, hiddenRedirect, serviceWorker,
     redirects, timeline, externalLinks, behavior, summary,
     riskScore: score, riskClassification: classification, verdict, loaded,
+    debugLog,
   };
 }
 
@@ -1531,6 +1555,35 @@ export function UrlSandboxView() {
                 <p className="text-xs">This happens when the browser blocks screen capture. On your next run, allow screen sharing when prompted to get a real video of the sandbox session.</p>
               </div>
             )}
+          </Panel>
+
+          {/* DEBUG: Screenshot Pipeline Log — ALWAYS show to help diagnose */}
+          <Panel title={`Screenshot Pipeline Debug (${(data.debugLog || []).length} events)`} className="md:col-span-2">
+            <div className="max-h-48 overflow-y-auto bg-slate-950 rounded p-3 font-mono text-[11px] leading-relaxed">
+              {(data.debugLog || []).map((line, i) => (
+                <div key={i} className={
+                  line.startsWith("✓") ? "text-green-400" :
+                  line.startsWith("✗") ? "text-red-400" :
+                  line.startsWith("→") ? "text-yellow-400" :
+                  "text-slate-300"
+                }>
+                  {line}
+                </div>
+              ))}
+              {(data.debugLog || []).length === 0 && (
+                <div className="text-slate-500">
+                  No events received — html2canvas did not load in the popup, or the popup was blocked.
+                  <br />Check: (1) popups are allowed for this site, (2) /sandbox/html2canvas.min.js is reachable,
+                  (3) the popup actually opened.
+                </div>
+              )}
+            </div>
+            <div className="text-[10px] text-muted-foreground mt-2">
+              ✓ = success · ✗ = error · → = progress · The popup's html2canvas script posts events here.
+              If you see "✓ html2canvas loaded in popup" but no "✓ screenshot", html2canvas ran but failed
+              to capture. If you see "✗ screenshotError" with a tainted canvas message, the popup has
+              cross-origin images that we couldn't rewrite through the proxy.
+            </div>
           </Panel>
 
           {/* 1. Network */}
