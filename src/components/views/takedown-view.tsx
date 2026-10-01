@@ -914,20 +914,11 @@ export function TakedownUrlView() {
       icon={ShieldOff}
       category="INFRASTRUCTURE"
     >
-      {/* ---------- Wizard step bar (always visible) ---------- */}
-      <div className="flex flex-wrap items-center gap-2 p-3 rounded-lg border border-border bg-muted/20 text-[11px]">
-        <StepBar label="1. Cargar URLs" done={step1Done} />
-        <StepBar label="2. Enriquecer (auto)" done={step2Done} />
-        <StepBar label="3. Reportar 2 APIs (auto)" done={step3Done} />
-        <StepBar label="4. Google/Microsoft (manual)" done={false} />
-        <StepBar label="5. Imprimir PDF" done={step5Done} last />
-      </div>
-
       {/* Hint banner: simple workflow */}
       <div className="flex items-start gap-2 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-[11px]">
         <div className="text-cyan-500 font-bold shrink-0">💡</div>
         <div className="text-muted-foreground">
-          <strong>PASO 1</strong>: Carga las URLs (textarea o .txt) - una por linea. Despues hace click en el boton <strong className="text-cyan-500">🚀 Takedown automatico completo</strong> que aparece abajo. El sistema ejecuta todo solo: enriquece cada URL + reporta a 2 APIs (VirusTotal, URLscan). Para Google y Microsoft, usa los botones al lado de cada URL en la tabla (manual).
+          <strong>PASO 1</strong>: Carga las URLs (textarea o .txt) - una por linea. Despues hace click en el boton <strong className="text-cyan-500">🚀 Takedown automatico completo</strong> que aparece abajo. El sistema ejecuta todo solo: enriquece cada URL + reporta a 2 APIs (VirusTotal, URLscan). Para Google, Microsoft y Netcraft, usa los botones al lado de cada URL en la tabla (manual).
         </div>
       </div>
 
