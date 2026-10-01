@@ -418,25 +418,68 @@ export function TakedownUrlView() {
     }
   };
 
+  // ---- Analizar URLs: analiza + reporta a APIs + inicia monitoreo automatico ----
   const enrichAll = async () => {
     setLoading(true);
-    // Enrich any URL that is NOT yet enriched (pending, failed, or stuck
-    // in "enriching" state from a previous session).
+    setAutoTakedownRunning(true);
+    const total = entries.length;
+
+    // Step 1: Analizar todas las URLs (VirusTotal, Whois, hosting, screenshot, Cloudflare)
     const toEnrich = entries.filter(e => e.status !== "enriched");
-    setProgress({ done: 0, total: toEnrich.length, step: `Analizando ${toEnrich.length} URL(s)...` });
+    setProgress({ done: 0, total, step: `[1/3] Analizando ${toEnrich.length} URL(s)...` });
     let done = 0;
-    // Run in batches of 5 to avoid overwhelming the server
-    const batchSize = 5;
-    for (let i = 0; i < toEnrich.length; i += batchSize) {
-      const batch = toEnrich.slice(i, i + batchSize);
-      await Promise.all(batch.map(async e => {
-        await enrichOne(e.url);
-        done++;
-        setProgress({ done, total: toEnrich.length, step: `Analizado ${e.url.slice(0, 50)}...` });
-      }));
+    for (const e of toEnrich) {
+      await enrichOne(e.url);
+      done++;
+      setProgress({ done, total, step: `[1/3] Analizado ${e.url.slice(0, 50)}... (${done}/${total})` });
     }
+
+    // Get latest entries after enrichment
+    await new Promise(r => setTimeout(r, 100));
+    const currentEntries = (await new Promise<UrlEntry[]>(resolve => {
+      setEntries(prev => { resolve(prev); return prev; });
+    }));
+
+    // Step 2: Reportar a las 2 APIs automaticamente
+    const enriched = currentEntries.filter(e => e.status === "enriched");
+    setProgress({ done: 0, total, step: `[2/3] Reportando a 2 APIs (VirusTotal, URLscan)...` });
+    done = 0;
+    for (const entry of enriched) {
+      await submitOne(entry);
+      done++;
+      setProgress({ done, total, step: `[2/3] Reportado ${entry.url.slice(0, 50)}... (${done}/${total})` });
+    }
+
+    // Step 3: Monitoreo automatico (HTTP check de cada URL)
+    setProgress({ done: 0, total, step: `[3/3] Monitoreando URLs (detectando si estan activas/baneadas)...` });
+    done = 0;
+    for (const e of currentEntries) {
+      await monitorOne(e.url);
+      done++;
+      setProgress({ done, total, step: `[3/3] Monitoreado ${e.url.slice(0, 50)}... (${done}/${total})` });
+    }
+
     setLoading(false);
+    setAutoTakedownRunning(false);
     setProgress({ done: 0, total: 0, step: "" });
+
+    // Summary alert
+    const finalEntries = (await new Promise<UrlEntry[]>(resolve => {
+      setEntries(prev => { resolve(prev); return prev; });
+    }));
+    const ok = finalEntries.flatMap(e => e.submits).filter(s => s.status === "success").length;
+    const fail = finalEntries.flatMap(e => e.submits).filter(s => s.status === "failed").length;
+    const skipped = finalEntries.flatMap(e => e.submits).filter(s => s.status === "skipped").length;
+    const activas = finalEntries.filter(e => e.monitoring?.classification === "ACTIVA").length;
+    const baneadas = finalEntries.filter(e => e.monitoring && ["BANEADA", "SUSPENDIDA", "BORRADA", "DOMINIO_ELIMINADO", "DOMINIO_CADUCO"].includes(e.monitoring.classification)).length;
+    alert(
+      `Proceso completado para ${total} URL(s).\n\n` +
+      `Analisis: ${enriched.length} URL(s) analizadas\n` +
+      `Reportes a APIs: ${ok} OK, ${fail} fallos, ${skipped} salteados\n` +
+      `Monitoreo: ${activas} activas, ${baneadas} baneadas/suspendidas\n\n` +
+      `Para reportes manuales (Google, Microsoft, Netcraft), usa los botones al lado de cada URL en la tabla.\n` +
+      `Para generar el PDF, usa el boton 'Imprimir PDF'.`
+    );
   };
 
   // ---- Auto-submit ----
@@ -1007,7 +1050,7 @@ export function TakedownUrlView() {
       <div className="flex items-start gap-2 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-[11px]">
         <div className="text-cyan-500 font-bold shrink-0">💡</div>
         <div className="text-muted-foreground">
-          <strong>PASO 1</strong>: Carga las URLs (textarea o .txt) - una por linea. Despues hace click en el boton <strong className="text-cyan-500">🚀 Takedown automatico completo</strong> que aparece abajo. El sistema ejecuta todo solo: analiza cada URL + reporta a 2 APIs (VirusTotal, URLscan). Para Google, Microsoft y Netcraft, usa los botones al lado de cada URL en la tabla (manual).
+          <strong>PASO 1</strong>: Carga las URLs (textarea o .txt) - una por linea. Despues hace click en el boton <strong className="text-cyan-500">Analizar URLs</strong> en el PASO 2. El sistema analiza cada URL + reporta a 2 APIs (VirusTotal, URLscan) + inicia el monitoreo automatico. Para Google, Microsoft y Netcraft, usa los botones al lado de cada URL en la tabla (manual).
         </div>
       </div>
 
@@ -1037,48 +1080,27 @@ export function TakedownUrlView() {
         />
       </Panel>
 
-      {/* ---------- BIG AUTO-TAKEDOWN BUTTON — runs the entire pipeline ---------- */}
+      {/* ---------- URLs loaded indicator (shows when URLs are loaded) ---------- */}
       {step1Done && (
-        <Panel
-          title="🚀 Takedown automatico completo (UN solo boton)"
-          className="md:col-span-2"
-        >
-          <div className="flex flex-col gap-3">
-            {/* URLs cargadas indicator — shows when URLs are loaded (manual or from .txt) */}
-            <div className="flex items-center gap-3 p-3 rounded bg-green-500/5 border border-green-500/30 text-xs">
-              <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
-              <span className="text-green-500 font-semibold">
-                {entries.length} URL{entries.length === 1 ? "" : "s"} cargada{entries.length === 1 ? "" : "s"}:
-              </span>
-              <span className="text-muted-foreground font-mono text-[10px] truncate">
-                {entries.slice(0, 3).map(e => e.url.slice(0, 60)).join(", ")}{entries.length > 3 ? ` +${entries.length - 3} mas` : ""}
-              </span>
-            </div>
-            <div className="flex items-center gap-3 flex-wrap">
-              <Button
-                size="lg"
-                onClick={runFullTakedown}
-                disabled={autoTakedownRunning || loading || entries.length === 0}
-                className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-6 text-base"
-              >
-                {autoTakedownRunning || loading ? (
-                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Ejecutando takedown automatico... {progress.done}/{progress.total}</>
-                ) : (
-                  <><Send className="w-4 h-4 mr-2" /> 🚀 Ejecutar takedown automatico completo ({entries.length} URL{entries.length === 1 ? "" : "s"})</>
-                )}
-              </Button>
-            </div>
-            {(autoTakedownRunning || (loading && progress.step)) && (
-              <div className="p-3 rounded bg-yellow-500/10 border border-yellow-500/40 text-xs font-mono text-yellow-600">
-                <div className="font-bold mb-1">Progreso en tiempo real:</div>
-                <div>{progress.step}</div>
-                <div className="mt-2 w-full bg-yellow-500/20 rounded-full h-1.5 overflow-hidden">
-                  <div className="bg-yellow-500 h-full transition-all" style={{ width: `${progress.total > 0 ? (progress.done / progress.total) * 100 : 0}%` }} />
-                </div>
-              </div>
-            )}
+        <div className="flex items-center gap-3 p-3 rounded bg-green-500/5 border border-green-500/30 text-xs">
+          <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+          <span className="text-green-500 font-semibold">
+            {entries.length} URL{entries.length === 1 ? "" : "s"} cargada{entries.length === 1 ? "" : "s"}:
+          </span>
+          <span className="text-muted-foreground font-mono text-[10px] truncate">
+            {entries.slice(0, 3).map(e => e.url.slice(0, 60)).join(", ")}{entries.length > 3 ? ` +${entries.length - 3} mas` : ""}
+          </span>
+        </div>
+      )}
+
+      {(loading || autoTakedownRunning) && progress.step && (
+        <div className="p-3 rounded bg-yellow-500/10 border border-yellow-500/40 text-xs font-mono text-yellow-600">
+          <div className="font-bold mb-1">Progreso:</div>
+          <div>{progress.step}</div>
+          <div className="mt-2 w-full bg-yellow-500/20 rounded-full h-1.5 overflow-hidden">
+            <div className="bg-yellow-500 h-full transition-all" style={{ width: `${progress.total > 0 ? (progress.done / progress.total) * 100 : 0}%` }} />
           </div>
-        </Panel>
+        </div>
       )}
 
       {/* ---------- Step 2: Enrich ---------- */}
@@ -1087,15 +1109,15 @@ export function TakedownUrlView() {
           title="PASO 2 — Analizar las URLs (VirusTotal, Whois, hosting, screenshot)"
           className="md:col-span-2"
           action={
-            <Button size="sm" onClick={enrichAll} disabled={loading || entries.every(e => e.status === "enriched")}>
-              {loading ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><RefreshCw className="w-3 h-3 mr-1.5" /> Analizar todas ({entries.filter(e => e.status !== "enriched").length} pendientes)</>}
+            <Button size="sm" onClick={enrichAll} disabled={loading || entries.length === 0} className="font-bold">
+              {loading || autoTakedownRunning ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><RefreshCw className="w-3 h-3 mr-1.5" /> Analizar URLs</>}
             </Button>
           }
         >
           <div className="text-xs text-muted-foreground mb-3 p-2 rounded bg-blue-500/5 border border-blue-500/20">
-            <strong>Qué hace este paso:</strong> Para cada URL, consulta VirusTotal (cuántos antivirus la marcan como maliciosa),
-            obtiene el registrar y email de abuse vía Whois, identifica el hosting provider (ASN), detecta si está detrás de Cloudflare,
-            clasifica la URL (phishing/malware/scam) y toma un screenshot visual del sitio.
+            <strong>Que hace este boton:</strong> Analiza cada URL (VirusTotal, Whois, hosting, screenshot, Cloudflare),
+            reporta a 2 APIs (VirusTotal, URLscan) automaticamente, e inicia el monitoreo para detectar si las URLs
+            estan activas o ya fueron baneadas/suspendidas.
           </div>
           {(loading || bulkSubmitting) && (
             <div className="text-xs font-mono mb-3 text-yellow-500">
@@ -1123,23 +1145,15 @@ export function TakedownUrlView() {
         </Panel>
       )}
 
-      {/* ---------- Step 3: Auto-report to APIs (solo APIs automáticas) ---------- */}
+      {/* ---------- Step 3: API Keys + Manual platforms ---------- */}
       {step2Done && (
         <Panel
-          title="PASO 3 - Reporte a 2 APIs (automatico) - Google/Microsoft son manuales"
+          title="PASO 3 - Estado de API Keys + Reporte manual"
           className="md:col-span-2"
           action={
-            <div className="flex gap-2">
-              <Button size="sm" onClick={submitAll} disabled={bulkSubmitting || stats.enriched === 0}>
-                {bulkSubmitting ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><Send className="w-3 h-3 mr-1.5" /> Reportar a las 2 APIs</>}
-              </Button>
-              <Button size="sm" variant="outline" onClick={monitorAll} disabled={loading || entries.length === 0} className="text-orange-500 border-orange-500/40">
-                {loading && progress.step?.includes("Monitore") ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><Activity className="w-3 h-3 mr-1.5" /> Monitorear todas</>}
-              </Button>
-              <Button size="sm" variant="outline" onClick={recheckOld}>
-                <Clock className="w-3 h-3 mr-1.5" /> Re-check +7 dias
-              </Button>
-            </div>
+            <Button size="sm" variant="outline" onClick={recheckOld}>
+              <Clock className="w-3 h-3 mr-1.5" /> Re-check +7 dias
+            </Button>
           }
         >
           {/* API Keys status panel — shows ✓/✗ for each key + inline config form */}
@@ -1338,7 +1352,7 @@ export function TakedownUrlView() {
                             </div>
                           ) : (
                             <Button size="sm" variant="outline" className="h-7 text-[10px] text-orange-500 border-orange-500/40" onClick={() => monitorOne(entry.url)} title="Verificar el estado HTTP de esta URL">
-                              <Activity className="w-3 h-3 mr-1" /> Monitorear
+                              <Activity className="w-3 h-3 mr-1" /> Re-check
                             </Button>
                           )}
                         </TableCell>
