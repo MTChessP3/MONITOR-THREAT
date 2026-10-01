@@ -277,6 +277,8 @@ export function TakedownUrlView() {
   const [entries, setEntries] = React.useState<UrlEntry[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [filter, setFilter] = React.useState("");
+  const [statFilter, setStatFilter] = React.useState<string | null>(null);
+  const [expandedUrls, setExpandedUrls] = React.useState<Set<string>>(new Set());
   const [bulkSubmitting, setBulkSubmitting] = React.useState(false);
   const [progress, setProgress] = React.useState({ done: 0, total: 0, step: "" });
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -699,12 +701,6 @@ export function TakedownUrlView() {
   };
 
   // ---- Filtering ----
-  const filtered = React.useMemo(() => {
-    if (!filter.trim()) return entries;
-    const f = filter.toLowerCase();
-    return entries.filter(e => e.url.toLowerCase().includes(f) || e.enrich?.hostname?.toLowerCase().includes(f));
-  }, [entries, filter]);
-
   const stats = {
     total: entries.length,
     enriched: entries.filter(e => e.status === "enriched").length,
@@ -724,6 +720,47 @@ export function TakedownUrlView() {
   const step3Done = stats.submits > 0 || stats.forms > 0;  // Reported
   const step4Done = stats.emails > 0;          // Abuse emails generated
   const step5Done = false;                     // PDF downloaded (always allow)
+
+  // ---- Helper: toggle expansion of a URL row ----
+  const toggleExpand = (url: string) => {
+    setExpandedUrls(prev => {
+      const next = new Set(prev);
+      if (next.has(url)) next.delete(url);
+      else next.add(url);
+      return next;
+    });
+  };
+
+  // ---- Helper: apply stat filter (or clear it) ----
+  const toggleStatFilter = (key: string | null) => {
+    setStatFilter(prev => prev === key ? null : key);
+  };
+
+  // ---- Compute filtered list with text + stat filter ----
+  const filteredByStat = React.useMemo(() => {
+    if (!statFilter) return entries;
+    return entries.filter(e => {
+      switch (statFilter) {
+        case "total": return true;
+        case "enriched": return e.status === "enriched";
+        case "pending": return e.status === "pending";
+        case "phishing": return e.enrich?.classification === "phishing";
+        case "malware": return e.enrich?.classification === "malware";
+        case "scam": return e.enrich?.classification === "scam";
+        case "cloudflare": return !!e.enrich?.cloudflare;
+        case "submits": return e.submits.some(s => s.status === "success");
+        case "forms": return e.prefillOpened.length > 0;
+        case "emails": return e.emailsGenerated.length > 0;
+        default: return true;
+      }
+    });
+  }, [entries, statFilter]);
+
+  const filtered = React.useMemo(() => {
+    if (!filter.trim()) return filteredByStat;
+    const f = filter.toLowerCase();
+    return filteredByStat.filter(e => e.url.toLowerCase().includes(f) || e.enrich?.hostname?.toLowerCase().includes(f));
+  }, [filteredByStat, filter]);
 
   return (
     <ModuleShell
@@ -790,17 +827,28 @@ export function TakedownUrlView() {
           )}
           {/* Stats grid */}
           <div className="grid grid-cols-2 md:grid-cols-5 lg:grid-cols-10 gap-2 mb-3">
-            <StatBox label="Total URLs" value={stats.total} color="cyan" />
-            <StatBox label="Enriquecidas ✓" value={stats.enriched} color="green" />
-            <StatBox label="Pendientes" value={stats.pending} color="yellow" />
-            <StatBox label="Phishing" value={stats.phishing} color="red" />
-            <StatBox label="Malware" value={stats.malware} color="red" />
-            <StatBox label="Scam" value={stats.scam} color="orange" />
-            <StatBox label="Cloudflare" value={stats.cf} color="purple" />
-            <StatBox label="APIs enviados ✓" value={stats.submits} color="green" />
-            <StatBox label="Forms abiertos" value={stats.forms} color="blue" />
-            <StatBox label="Emails generados" value={stats.emails} color="pink" />
+            <StatBox label="Total URLs" value={stats.total} color="cyan" filterKey="total" onClick={toggleStatFilter} active={statFilter === "total"} />
+            <StatBox label="Enriquecidas ✓" value={stats.enriched} color="green" filterKey="enriched" onClick={toggleStatFilter} active={statFilter === "enriched"} />
+            <StatBox label="Pendientes" value={stats.pending} color="yellow" filterKey="pending" onClick={toggleStatFilter} active={statFilter === "pending"} />
+            <StatBox label="Phishing" value={stats.phishing} color="red" filterKey="phishing" onClick={toggleStatFilter} active={statFilter === "phishing"} />
+            <StatBox label="Malware" value={stats.malware} color="red" filterKey="malware" onClick={toggleStatFilter} active={statFilter === "malware"} />
+            <StatBox label="Scam" value={stats.scam} color="orange" filterKey="scam" onClick={toggleStatFilter} active={statFilter === "scam"} />
+            <StatBox label="Cloudflare" value={stats.cf} color="purple" filterKey="cloudflare" onClick={toggleStatFilter} active={statFilter === "cloudflare"} />
+            <StatBox label="APIs enviados ✓" value={stats.submits} color="green" filterKey="submits" onClick={toggleStatFilter} active={statFilter === "submits"} />
+            <StatBox label="Forms abiertos" value={stats.forms} color="blue" filterKey="forms" onClick={toggleStatFilter} active={statFilter === "forms"} />
+            <StatBox label="Emails generados" value={stats.emails} color="pink" filterKey="emails" onClick={toggleStatFilter} active={statFilter === "emails"} />
           </div>
+          {statFilter && (
+            <div className="flex items-center gap-2 mt-2 p-2 rounded bg-cyan-500/10 border border-cyan-500/30 text-[11px]">
+              <Filter className="w-3 h-3 text-cyan-500" />
+              <span className="text-cyan-500 font-mono">
+                Filtro activo: <strong>{statFilter}</strong> — mostrando {filtered.length} de {entries.length} URLs
+              </span>
+              <button onClick={() => setStatFilter(null)} className="ml-auto text-cyan-500 hover:underline font-mono">
+                ✕ Quitar filtro
+              </button>
+            </div>
+          )}
         </Panel>
       )}
 
@@ -838,11 +886,16 @@ export function TakedownUrlView() {
       {/* ---------- Step 4 & 5: Per-URL table with actions ---------- */}
       {step1Done && (
         <Panel
-          title={`URLs Cargadas — ${filtered.length}/${entries.length} — Acciones por URL`}
+          title={`URLs Cargadas — ${filtered.length}/${entries.length} — click en una fila para ver detalle`}
           className="md:col-span-2"
           action={
             <div className="flex gap-2">
               <Input type="text" placeholder="Filtrar..." value={filter} onChange={e => setFilter(e.target.value)} className="h-7 text-xs w-40" />
+              {statFilter && (
+                <Button size="sm" variant="outline" className="h-7 text-[10px] text-cyan-500 border-cyan-500/40" onClick={() => setStatFilter(null)}>
+                  ✕ Filtro: {statFilter}
+                </Button>
+              )}
               <Button size="sm" variant="outline" onClick={generatePdf}>
                 <Printer className="w-3 h-3 mr-1.5" /> Imprimir PDF (PASO 5)
               </Button>
@@ -852,11 +905,14 @@ export function TakedownUrlView() {
             </div>
           }
         >
+          <div className="text-[10px] text-muted-foreground mb-2">
+            💡 Click en una fila para expandir/colapsar el detalle (screenshot, registrar, hosting, VirusTotal, redirects).
+          </div>
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[35%]">URL</TableHead>
+                  <TableHead className="w-[35%]">URL (click para expandir)</TableHead>
                   <TableHead>Class</TableHead>
                   <TableHead>VT</TableHead>
                   <TableHead>Hosting</TableHead>
@@ -866,124 +922,154 @@ export function TakedownUrlView() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.slice(0, 100).map(entry => (
-                  <React.Fragment key={entry.url}>
-                    <TableRow>
-                      <TableCell className="font-mono text-[11px]">
-                        <div className="flex items-center gap-2">
-                          {entry.status === "enriching" && <Loader2 className="w-3 h-3 animate-spin text-yellow-500 shrink-0" />}
-                          {entry.status === "enriched" && <CheckCircle2 className="w-3 h-3 text-green-500 shrink-0" />}
-                          {entry.status === "failed" && <XCircle className="w-3 h-3 text-red-500 shrink-0" />}
-                          {entry.status === "pending" && <Clock className="w-3 h-3 text-muted-foreground shrink-0" />}
-                          <span className="truncate" title={entry.url}>{entry.url}</span>
-                        </div>
-                        {entry.enrich?.finalUrl && entry.enrich.finalUrl !== entry.url && (
-                          <div className="text-[10px] text-cyan-500 mt-0.5">→ {entry.enrich.finalUrl.slice(0, 80)}</div>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={entry.enrich?.classification === "phishing" || entry.enrich?.classification === "malware" ? "destructive" : entry.enrich?.classification === "scam" ? "default" : "secondary"} className="text-[9px] font-mono">
-                          {entry.enrich?.classification || "?"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        {entry.enrich?.vt ? (
-                          <span className={`font-mono ${entry.enrich.vt.malicious > 0 ? "text-red-500 font-bold" : "text-green-500"}`}>
-                            {entry.enrich.vt.malicious}/{entry.enrich.vt.malicious + entry.enrich.vt.suspicious + entry.enrich.vt.undetected}
-                          </span>
-                        ) : "?"}
-                      </TableCell>
-                      <TableCell className="text-[10px] font-mono">
-                        {entry.enrich?.hosting?.asnOrg?.slice(0, 18) || "?"}
-                        {entry.enrich?.hosting?.asn && <div className="text-muted-foreground">{entry.enrich.hosting.asn}</div>}
-                      </TableCell>
-                      <TableCell>
-                        {entry.enrich?.cloudflare ? (
-                          <Badge variant="outline" className="text-[9px] font-mono text-orange-500 border-orange-500/40">CF</Badge>
-                        ) : <span className="text-muted-foreground text-[10px]">—</span>}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1 flex-wrap">
-                          {API_PLATFORMS.map(p => {
-                            const s = entry.submits.find(x => x.platform === p.id);
-                            return (
-                              <Badge
-                                key={p.id}
-                                variant={s?.status === "success" ? "default" : s?.status === "failed" ? "destructive" : s?.status === "skipped" ? "outline" : "secondary"}
-                                className="text-[8px] font-mono"
-                                title={s?.message || (s ? "" : "Click en Auto-submit a APIs (arriba)")}
-                              >
-                                {p.id} {s ? (s.status === "success" ? "✓" : s.status === "failed" ? "✗" : s.status === "skipped" ? "○" : "·") : "?"}
-                              </Badge>
-                            );
-                          })}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1 items-center">
-                          {entry.status === "pending" && (
-                            <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
-                              <Eye className="w-3 h-3 mr-1" /> Enriquecer
-                            </Button>
+                {filtered.slice(0, 100).map(entry => {
+                  const isExpanded = expandedUrls.has(entry.url);
+                  return (
+                    <React.Fragment key={entry.url}>
+                      <TableRow
+                        className={isExpanded ? "bg-muted/30 cursor-pointer" : "cursor-pointer hover:bg-muted/20"}
+                        onClick={() => toggleExpand(entry.url)}
+                      >
+                        <TableCell className="font-mono text-[11px]">
+                          <div className="flex items-center gap-2">
+                            {isExpanded ? (
+                              <span className="text-cyan-500 text-[10px] shrink-0">▼</span>
+                            ) : (
+                              <span className="text-muted-foreground text-[10px] shrink-0">▶</span>
+                            )}
+                            {entry.status === "enriching" && <Loader2 className="w-3 h-3 animate-spin text-yellow-500 shrink-0" />}
+                            {entry.status === "enriched" && <CheckCircle2 className="w-3 h-3 text-green-500 shrink-0" />}
+                            {entry.status === "failed" && <XCircle className="w-3 h-3 text-red-500 shrink-0" />}
+                            {entry.status === "pending" && <Clock className="w-3 h-3 text-muted-foreground shrink-0" />}
+                            <span className="truncate" title={entry.url}>{entry.url}</span>
+                          </div>
+                          {entry.enrich?.finalUrl && entry.enrich.finalUrl !== entry.url && (
+                            <div className="text-[10px] text-cyan-500 mt-0.5 ml-5">→ {entry.enrich.finalUrl.slice(0, 80)}</div>
                           )}
-                          {entry.status === "enriched" && (
-                            <>
-                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => openAllPrefills(entry)} title="Abrir formularios pre-fill en navegador (6 pestañas por vez)">
-                                <Globe className="w-3 h-3 mr-1" /> 12 forms
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={entry.enrich?.classification === "phishing" || entry.enrich?.classification === "malware" ? "destructive" : entry.enrich?.classification === "scam" ? "default" : "secondary"} className="text-[9px] font-mono">
+                            {entry.enrich?.classification || "?"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {entry.enrich?.vt ? (
+                            <span className={`font-mono ${entry.enrich.vt.malicious > 0 ? "text-red-500 font-bold" : "text-green-500"}`}>
+                              {entry.enrich.vt.malicious}/{entry.enrich.vt.malicious + entry.enrich.vt.suspicious + entry.enrich.vt.undetected}
+                            </span>
+                          ) : "?"}
+                        </TableCell>
+                        <TableCell className="text-[10px] font-mono">
+                          {entry.enrich?.hosting?.asnOrg?.slice(0, 18) || "?"}
+                          {entry.enrich?.hosting?.asn && <div className="text-muted-foreground">{entry.enrich.hosting.asn}</div>}
+                        </TableCell>
+                        <TableCell>
+                          {entry.enrich?.cloudflare ? (
+                            <Badge variant="outline" className="text-[9px] font-mono text-orange-500 border-orange-500/40">CF</Badge>
+                          ) : <span className="text-muted-foreground text-[10px]">—</span>}
+                        </TableCell>
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <div className="flex gap-1 flex-wrap">
+                            {API_PLATFORMS.map(p => {
+                              const s = entry.submits.find(x => x.platform === p.id);
+                              return (
+                                <Badge
+                                  key={p.id}
+                                  variant={s?.status === "success" ? "default" : s?.status === "failed" ? "destructive" : s?.status === "skipped" ? "outline" : "secondary"}
+                                  className="text-[8px] font-mono"
+                                  title={s?.message || (s ? "" : "Click en Auto-submit a APIs (arriba)")}
+                                >
+                                  {p.id} {s ? (s.status === "success" ? "✓" : s.status === "failed" ? "✗" : s.status === "skipped" ? "○" : "·") : "?"}
+                                </Badge>
+                              );
+                            })}
+                          </div>
+                        </TableCell>
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <div className="flex gap-1 items-center">
+                            {entry.status === "pending" && (
+                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
+                                <Eye className="w-3 h-3 mr-1" /> Enriquecer
                               </Button>
-                              <EmailButtons entry={entry} onOpen={openAbuseEmail} />
-                            </>
-                          )}
-                          {entry.status === "failed" && (
-                            <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
-                              <RefreshCw className="w-3 h-3 mr-1" /> Reintentar
-                            </Button>
-                          )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                    {entry.status === "enriched" && entry.enrich && (
-                      <TableRow className="bg-muted/20">
-                        <TableCell colSpan={7} className="p-3">
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[10px]">
-                            {/* Screenshot */}
-                            <div className="md:col-span-1">
-                              <div className="text-muted-foreground mb-1">Screenshot visual del sitio:</div>
-                              <img src={entry.enrich.screenshotUrl} alt="screenshot" className="rounded border border-border w-full max-h-32 object-cover" loading="lazy" />
-                            </div>
-                            {/* Details */}
-                            <div className="md:col-span-2 space-y-1">
-                              <FieldRow label="Registrar" value={entry.enrich.whois?.registrar || "?"} mono />
-                              <FieldRow label="Abuse email (registrar)" value={entry.enrich.whois?.abuseEmail || "?"} mono />
-                              <FieldRow label="Hosting" value={`${entry.enrich.hosting?.asnOrg || "?"} (${entry.enrich.hosting?.asn || "?"})`} mono />
-                              <FieldRow label="ISP" value={entry.enrich.hosting?.isp || "?"} mono />
-                              <FieldRow label="Detrás de Cloudflare" value={entry.enrich.cloudflare ? "SÍ — también contactar abuse@cloudflare.com" : "no"} mono />
-                              <FieldRow label="VirusTotal" value={entry.enrich.vt ? `${entry.enrich.vt.malicious} malicious, ${entry.enrich.vt.suspicious} suspicious` : "?"} mono />
-                              {entry.enrich.vt?.permalink && (
-                                <a href={entry.enrich.vt.permalink} target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline inline-flex items-center gap-1 text-[10px]">
-                                  <ExternalLink className="w-3 h-3" /> Ver reporte completo en VirusTotal
-                                </a>
-                              )}
-                              {entry.enrich.redirectChain.length > 1 && (
-                                <div>
-                                  <div className="text-muted-foreground mb-0.5">Cadena de redirecciones HTTP:</div>
-                                  <div className="font-mono text-[9px] text-yellow-500">
-                                    {entry.enrich.redirectChain.map(c => `${c.status}→${c.url.slice(0, 50)}`).join(" → ")}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
+                            )}
+                            {entry.status === "enriched" && (
+                              <>
+                                <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => openAllPrefills(entry)} title="Abrir formularios pre-fill en navegador (6 pestañas por vez)">
+                                  <Globe className="w-3 h-3 mr-1" /> 12 forms
+                                </Button>
+                                <EmailButtons entry={entry} onOpen={openAbuseEmail} />
+                              </>
+                            )}
+                            {entry.status === "failed" && (
+                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
+                                <RefreshCw className="w-3 h-3 mr-1" /> Reintentar
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
-                    )}
-                  </React.Fragment>
-                ))}
+                      {isExpanded && entry.status === "enriched" && entry.enrich && (
+                        <TableRow className="bg-muted/30 border-l-4 border-l-cyan-500">
+                          <TableCell colSpan={7} className="p-3">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[10px]">
+                              {/* Screenshot */}
+                              <div className="md:col-span-1">
+                                <div className="text-muted-foreground mb-1">Screenshot visual del sitio:</div>
+                                <img src={entry.enrich.screenshotUrl} alt="screenshot" className="rounded border border-border w-full max-h-48 object-cover" loading="lazy" />
+                              </div>
+                              {/* Details */}
+                              <div className="md:col-span-2 space-y-1">
+                                <FieldRow label="Registrar" value={entry.enrich.whois?.registrar || "?"} mono />
+                                <FieldRow label="Abuse email (registrar)" value={entry.enrich.whois?.abuseEmail || "?"} mono />
+                                <FieldRow label="Hosting" value={`${entry.enrich.hosting?.asnOrg || "?"} (${entry.enrich.hosting?.asn || "?"})`} mono />
+                                <FieldRow label="ISP" value={entry.enrich.hosting?.isp || "?"} mono />
+                                <FieldRow label="Detrás de Cloudflare" value={entry.enrich.cloudflare ? "SÍ — también contactar abuse@cloudflare.com" : "no"} mono />
+                                <FieldRow label="VirusTotal" value={entry.enrich.vt ? `${entry.enrich.vt.malicious} malicious, ${entry.enrich.vt.suspicious} suspicious` : "?"} mono />
+                                {entry.enrich.vt?.permalink && (
+                                  <a href={entry.enrich.vt.permalink} target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline inline-flex items-center gap-1 text-[10px]">
+                                    <ExternalLink className="w-3 h-3" /> Ver reporte completo en VirusTotal
+                                  </a>
+                                )}
+                                {entry.enrich.redirectChain.length > 1 && (
+                                  <div>
+                                    <div className="text-muted-foreground mb-0.5">Cadena de redirecciones HTTP:</div>
+                                    <div className="font-mono text-[9px] text-yellow-500">
+                                      {entry.enrich.redirectChain.map(c => `${c.status}→${c.url.slice(0, 50)}`).join(" → ")}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      {isExpanded && entry.status === "pending" && (
+                        <TableRow className="bg-muted/30 border-l-4 border-l-cyan-500">
+                          <TableCell colSpan={7} className="p-3 text-center text-xs text-muted-foreground">
+                            Esta URL todavía no fue enriquecida. Hacé click en "Enriquecer" o en "Enriquecer todas" (arriba) para obtener los datos.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      {isExpanded && entry.status === "failed" && (
+                        <TableRow className="bg-red-500/5 border-l-4 border-l-red-500">
+                          <TableCell colSpan={7} className="p-3 text-center text-xs text-red-500">
+                            Falló el enriquecimiento. Hacé click en "Reintentar" para volver a intentarlo.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </TableBody>
             </Table>
             {filtered.length > 100 && (
               <div className="text-[10px] text-muted-foreground text-center mt-2">
                 Mostrando las primeras 100 de {filtered.length}. Usá el filtro para acotar.
+              </div>
+            )}
+            {filtered.length === 0 && entries.length > 0 && (
+              <div className="text-center py-6 text-xs text-muted-foreground">
+                No hay URLs que coincidan con el filtro actual. <button onClick={() => { setStatFilter(null); setFilter(""); }} className="text-cyan-500 hover:underline">Quitar filtros</button>
               </div>
             )}
           </div>
@@ -1026,7 +1112,7 @@ function StepBar({ label, done, last }: { label: string; done: boolean; last?: b
   );
 }
 
-function StatBox({ label, value, color }: { label: string; value: number; color: string }) {
+function StatBox({ label, value, color, filterKey, active, onClick }: { label: string; value: number; color: string; filterKey?: string; active?: boolean; onClick?: (k: string) => void }) {
   const colorMap: Record<string, string> = {
     cyan: "border-cyan-500/40 bg-cyan-500/5 text-cyan-400",
     green: "border-green-500/40 bg-green-500/5 text-green-400",
@@ -1037,11 +1123,27 @@ function StatBox({ label, value, color }: { label: string; value: number; color:
     blue: "border-blue-500/40 bg-blue-500/5 text-blue-400",
     pink: "border-pink-500/40 bg-pink-500/5 text-pink-400",
   };
+  const isClickable = !!onClick && !!filterKey;
   return (
-    <div className={`rounded p-2 border ${colorMap[color] || "border-border bg-muted/20"}`}>
-      <div className="text-lg font-bold font-mono">{value}</div>
+    <button
+      type="button"
+      disabled={!isClickable}
+      onClick={() => isClickable && onClick!(filterKey!)}
+      className={`rounded p-2 border text-left transition-all ${colorMap[color] || "border-border bg-muted/20"} ${
+        isClickable ? "hover:scale-105 hover:shadow-md cursor-pointer" : "cursor-default"
+      } ${active ? "ring-2 ring-offset-1 ring-offset-background ring-cyan-500" : ""}`}
+      title={isClickable ? `Click para ${active ? "quitar filtro y" : ""}ver las ${value} URL(s) con esta etiqueta` : label}
+    >
+      <div className="text-lg font-bold font-mono flex items-center gap-1">
+        {value}
+        {isClickable && (
+          <span className={`text-[10px] ${active ? "text-cyan-500" : "text-muted-foreground/60"}`}>
+            {active ? "✓ filtro" : "click"}
+          </span>
+        )}
+      </div>
       <div className="text-[10px]">{label}</div>
-    </div>
+    </button>
   );
 }
 
