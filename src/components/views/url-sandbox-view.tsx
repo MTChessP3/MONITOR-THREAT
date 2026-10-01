@@ -138,6 +138,45 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
   return lines.length > 0 ? lines : [text];
 }
 
+// Fetch a real visual screenshot from our /api/sandbox/screenshot proxy
+// (which races WordPress mshots / thum.io / microlink.io). Returns a
+// data URL ready to be used as an <img src> or pushed to screenshots[].
+// Resolves to null on any failure.
+async function fetchVisualScreenshot(url: string): Promise<string | null> {
+  try {
+    const r = await fetch(`/api/sandbox/screenshot?url=${encodeURIComponent(url)}`);
+    if (!r.ok) return null;
+    const blob = await r.blob();
+    if (blob.size < 5000) return null;
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
+// Fetch the server-side redirect chain for a URL.
+// Returns { original, final, chain: [{url, status, location, ...}], ... }
+async function fetchRedirectChain(url: string): Promise<{
+  original: string;
+  final: string;
+  redirectCount: number;
+  crossDomainRedirects: number;
+  chain: Array<{ url: string; status: number; location?: string | null; contentType?: string | null; error?: string }>;
+} | null> {
+  try {
+    const r = await fetch(`/api/sandbox/redirects?url=${encodeURIComponent(url)}`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
 // ---------- Sandbox Engine ----------
 
 async function runSandbox(url: string, onProgress: (elapsed: number, step: string) => void): Promise<SandboxResult> {
@@ -168,6 +207,85 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   const externalLinks: ExternalLink[] = [];
   let lastPopupUrl = url;
   let behavior: BehaviorType = "NORMAL";
+
+  // NUEVO: Visor state — track which visual screenshot is currently
+  // displayed on the video canvas. Real screenshots (from external
+  // services) take priority over text snapshots.
+  let visualScreenshotImg: HTMLImageElement | null = null;
+  let visualScreenshotLabel = "";
+  let visualScreenshotSrc: "real" | "text" | "intro" = "intro";
+
+  // NUEVO: Start fetching the server-side redirect chain + the visual
+  // screenshot of the original URL in parallel. These run in the
+  // background; when they arrive we push the results to the timeline,
+  // queue screenshots, and draw them onto the video canvas.
+  onProgress(0, "Analizando redirecciones y capturando pantalla...");
+
+  // Promise for the server-side redirect chain. Resolves quickly
+  // (just a few HTTP HEAD-like requests with manual redirect).
+  fetchRedirectChain(url).then((redirectData) => {
+    if (!redirectData) return;
+    // Push each redirect step to the timeline + redirects[]
+    for (let i = 0; i < redirectData.chain.length - 1; i++) {
+      const step = redirectData.chain[i];
+      const next = redirectData.chain[i + 1];
+      let crossDomain = false;
+      try {
+        crossDomain = new URL(step.url).hostname !== new URL(next.url).hostname;
+      } catch {}
+      redirects.push({
+        from: step.url,
+        to: next.url,
+        timestamp: new Date().toISOString(),
+        method: `HTTP ${step.status}`,
+        crossDomain,
+      });
+      timeline.push({
+        time: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
+        timestamp: new Date().toISOString(),
+        type: "redirect",
+        description: crossDomain
+          ? `REDIRECCIÓN HTTP ${step.status} cross-domain: ${step.url.slice(0, 60)} → ${next.url.slice(0, 60)}`
+          : `Redirección HTTP ${step.status}: ${step.url.slice(0, 60)} → ${next.url.slice(0, 60)}`,
+        severity: crossDomain ? "danger" : "warning",
+      });
+      // Fetch a screenshot of the redirect target URL and display it
+      // on the video when ready.
+      fetchVisualScreenshot(next.url).then((dataUrl) => {
+        if (dataUrl) {
+          screenshots.push(dataUrl);
+          const img = new Image();
+          img.onload = () => {
+            visualScreenshotImg = img;
+            visualScreenshotLabel = `REDIRECT ${step.status} → ${next.url}`;
+            visualScreenshotSrc = "real";
+          };
+          img.src = dataUrl;
+          onProgress(Date.now() - startTime, `Screenshot de redirect ${step.status} capturado`);
+        }
+      });
+    }
+    finalUrl = redirectData.final || url;
+    onProgress(Date.now() - startTime, `Cadena de redirección: ${redirectData.redirectCount} hop(s) → ${finalUrl.slice(0, 60)}`);
+  });
+
+  // Promise for the visual screenshot of the ORIGINAL URL.
+  // This is shown as the FIRST frame of the video (after the brief
+  // "Analyzing..." intro) so the user immediately sees the real
+  // visual screenshot of the page being analyzed.
+  fetchVisualScreenshot(url).then((dataUrl) => {
+    if (dataUrl) {
+      screenshots.push(dataUrl);
+      const img = new Image();
+      img.onload = () => {
+        visualScreenshotImg = img;
+        visualScreenshotLabel = `ORIGINAL URL — ${url}`;
+        visualScreenshotSrc = "real";
+        onProgress(Date.now() - startTime, `Screenshot visual de URL original capturado`);
+      };
+      img.src = dataUrl;
+    }
+  });
 
   // NUEVO: Usar el proxy en lugar de la URL directa.
   // El proxy descarga la página server-side, le inyecta el script de
@@ -374,10 +492,15 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
               const img = new Image();
               img.onload = () => {
                 latestScreenshotImg = img;
-                if (videoCtx) {
-                  videoCtx.fillStyle = "#ffffff";
-                  videoCtx.fillRect(0, 0, 1280, 720);
-                  videoCtx.drawImage(img, 0, 0, 1280, 720);
+                // Mark as text snapshot — the drawInterval overlay will
+                // show "TEXT SNAPSHOT" instead of "REAL SCREENSHOT".
+                // Real visual screenshots (from external services) take
+                // priority over text snapshots in the bgImg choice,
+                // so a real screenshot, once loaded, will overwrite
+                // this on the next draw tick.
+                if (!visualScreenshotImg) {
+                  visualScreenshotLabel = `Snapshot ${screenshots.length} · ${url.slice(0, 100)}`;
+                  visualScreenshotSrc = "text";
                 }
               };
               img.src = dataUrl;
@@ -496,6 +619,24 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
 
           lastKnownTargetUrl = currentTarget;
           finalUrl = currentTarget;
+
+          // NUEVO: Fetch a visual screenshot of the redirect target URL.
+          // When the screenshot arrives, it'll be displayed on the video
+          // canvas with a "REDIRECT → <new-url>" label, showing the user
+          // exactly what page the redirect leads to.
+          fetchVisualScreenshot(currentTarget).then((dataUrl) => {
+            if (dataUrl) {
+              screenshots.push(dataUrl);
+              const img = new Image();
+              img.onload = () => {
+                visualScreenshotImg = img;
+                visualScreenshotLabel = `REDIRECT → ${currentTarget}`;
+                visualScreenshotSrc = "real";
+                onProgress(Date.now() - startTime, `Screenshot de redirect JS capturado`);
+              };
+              img.src = dataUrl;
+            }
+          });
         }
       }
     }
@@ -533,7 +674,9 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   let latestScreenshotTime = 0;
 
   // Draw the INITIAL frame before starting the recorder — this prevents
-  // the first 6 seconds from being black.
+  // the first frame from being black. We show "Analyzing..." while the
+  // visual screenshot of the original URL is being fetched from the
+  // external screenshot service.
   const drawInitialFrame = () => {
     videoCtx.fillStyle = "#1a1a2e";
     videoCtx.fillRect(0, 0, 1280, 720);
@@ -543,12 +686,19 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
     videoCtx.fillText("MONITOR-THREAT", 40, 60);
     videoCtx.fillStyle = "#ffffff";
     videoCtx.font = "16px monospace";
-    videoCtx.fillText("URL Sandbox — Recording in progress", 40, 90);
+    videoCtx.fillText("URL Sandbox — Capturando pantalla...", 40, 90);
     videoCtx.fillStyle = "#888";
     videoCtx.font = "14px monospace";
     videoCtx.fillText(`Target: ${url.slice(0, 100)}`, 40, 120);
     videoCtx.fillText(`Duration: 20 seconds`, 40, 145);
-    videoCtx.fillText(`Waiting for first screenshot at 2s...`, 40, 170);
+    videoCtx.fillText(`Obteniendo screenshot visual de la URL original...`, 40, 170);
+    // Spinner
+    const spinAngle = (Date.now() / 100) % (Math.PI * 2);
+    videoCtx.strokeStyle = "#e94560";
+    videoCtx.lineWidth = 3;
+    videoCtx.beginPath();
+    videoCtx.arc(640, 350, 30, spinAngle, spinAngle + Math.PI * 1.5);
+    videoCtx.stroke();
     // Progress bar background
     videoCtx.fillStyle = "#333";
     videoCtx.fillRect(40, 680, 1200, 8);
@@ -558,30 +708,79 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   drawInitialFrame();
 
   // Start recording AFTER the initial frame is drawn
-  const videoStream = videoCanvas.captureStream(10); // 10 fps — higher fps = smoother video
+  const videoStream = videoCanvas.captureStream(10); // 10 fps
   const mediaRecorder = new MediaRecorder(videoStream, { mimeType: "video/webm;codecs=vp8" });
   const videoChunks: Blob[] = [];
   mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) videoChunks.push(e.data); };
   mediaRecorder.start();
 
   // Redraw the canvas EVERY 200ms — this ensures the video always has content.
-  // Each redraw shows: latest screenshot (if available) + live stats overlay.
+  // Priority order for the background frame:
+  //   1. visualScreenshotImg  (real screenshot from external service — highest priority)
+  //   2. latestScreenshotImg  (text snapshot from popup)
+  //   3. drawInitialFrame()   (MONITOR-THREAT intro)
+  // On top of the background, we always draw:
+  //   - the redirect banner (red bar at the top) if a redirect was detected
+  //   - the URL bar overlay showing the current URL being displayed
+  //   - the stats bar at the bottom
+  //   - the progress bar
   const drawInterval = setInterval(() => {
     const elapsed = Date.now() - startTime;
     const elapsedSec = (elapsed / 1000).toFixed(1);
     const pct = elapsed / SANDBOX_DURATION;
 
-    // If we have a screenshot, draw it as the background
-    if (latestScreenshotImg) {
+    // Background frame — choose highest priority image available
+    const bgImg = visualScreenshotImg || latestScreenshotImg;
+    if (bgImg) {
       videoCtx.fillStyle = "#ffffff";
       videoCtx.fillRect(0, 0, 1280, 720);
-      videoCtx.drawImage(latestScreenshotImg, 0, 0, 1280, 720);
+      try {
+        videoCtx.drawImage(bgImg, 0, 0, 1280, 720);
+      } catch {}
     } else {
-      // No screenshot yet — draw the "waiting" frame
       drawInitialFrame();
     }
 
-    // Always draw the stats overlay at the bottom
+    // URL bar / source label — top of the video, shows what's being displayed
+    let urlBarColor = "#1e293b";
+    let urlBarText = visualScreenshotLabel || `Target: ${url.slice(0, 100)}`;
+    if (visualScreenshotSrc === "real") {
+      urlBarColor = "#0f766e"; // teal — real visual screenshot
+    } else if (visualScreenshotSrc === "text") {
+      urlBarColor = "#7c2d12"; // brown — text-only snapshot
+    }
+    videoCtx.fillStyle = urlBarColor;
+    videoCtx.fillRect(0, 0, 1280, 28);
+    videoCtx.fillStyle = "#ffffff";
+    videoCtx.font = "bold 12px monospace";
+    let labelPrefix = visualScreenshotSrc === "real" ? "REAL SCREENSHOT · " : visualScreenshotSrc === "text" ? "TEXT SNAPSHOT · " : "ANALYZING · ";
+    videoCtx.fillText(labelPrefix + urlBarText.slice(0, 145), 10, 19);
+
+    // Redirect banner — if redirects were detected, show a red banner
+    // under the URL bar listing each redirect step
+    if (redirects.length > 0) {
+      const bannerH = Math.min(80, 18 + redirects.length * 18);
+      videoCtx.fillStyle = "rgba(220, 38, 38, 0.92)";
+      videoCtx.fillRect(0, 28, 1280, bannerH);
+      videoCtx.fillStyle = "#ffffff";
+      videoCtx.font = "bold 13px monospace";
+      videoCtx.fillText(`⚠ REDIRECCIONES DETECTADAS (${redirects.length}):`, 10, 46);
+      videoCtx.font = "11px monospace";
+      for (let i = 0; i < Math.min(redirects.length, 4); i++) {
+        const r = redirects[i];
+        const cross = r.crossDomain ? " [CROSS-DOMAIN]" : "";
+        videoCtx.fillText(
+          `${r.method || "redirect"}: ${r.from.slice(0, 55)} → ${r.to.slice(0, 55)}${cross}`,
+          10, 64 + i * 16
+        );
+      }
+      if (redirects.length > 4) {
+        videoCtx.fillStyle = "#fde68a";
+        videoCtx.fillText(`... y ${redirects.length - 4} más`, 10, 64 + 4 * 16);
+      }
+    }
+
+    // Stats overlay at the bottom
     videoCtx.fillStyle = "rgba(0,0,0,0.85)";
     videoCtx.fillRect(0, 680, 1280, 40);
     videoCtx.fillStyle = "#e94560";
@@ -590,7 +789,7 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
     videoCtx.fillStyle = "#00ff88";
     videoCtx.font = "12px monospace";
     videoCtx.fillText(
-      `Net: ${network.length} | Console: ${consoleLog.length} | Errors: ${errors.length} | Popups: ${popups.length} | Eval: ${evalCalls.length} | Screenshots: ${screenshots.length}`,
+      `Net: ${network.length} | Console: ${consoleLog.length} | Errors: ${errors.length} | Popups: ${popups.length} | Eval: ${evalCalls.length} | Redirects: ${redirects.length} | Screens: ${screenshots.length}`,
       120, 702
     );
     // Progress bar
@@ -599,8 +798,9 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
     videoCtx.fillStyle = "#e94560";
     videoCtx.fillRect(0, 716, 1280 * pct, 4);
 
-    onProgress(elapsed, `Sandbox running... ${Math.round(pct * 100)}% | Screenshots: ${screenshots.length}`);
+    onProgress(elapsed, `Sandbox... ${Math.round(pct * 100)}% | Real shots: ${visualScreenshotImg ? 1 : 0} | Redirects: ${redirects.length} | Total: ${screenshots.length}`);
   }, 200);
+
 
   // Note: the parent-side text snapshots at 3s/7s/11s/15s (scheduled in
   // the sandboxReady handler above) provide continuous "page snapshot"
@@ -608,6 +808,25 @@ async function runSandbox(url: string, onProgress: (elapsed: number, step: strin
   // popup closes before any snapshot fires, the initial MONITOR-THREAT
   // frame remains visible for the rest of the recording, and the
   // timeline/console/errors panels still show the captured telemetry.
+
+  // NUEVO: At t=15s, fetch a screenshot of the FINAL URL (which may
+  // differ from the original if there were redirects). This shows the
+  // "FINAL STATE" of the page after all redirects + JS execution.
+  setTimeout(() => {
+    fetchVisualScreenshot(finalUrl).then((dataUrl) => {
+      if (dataUrl) {
+        screenshots.push(dataUrl);
+        const img = new Image();
+        img.onload = () => {
+          visualScreenshotImg = img;
+          visualScreenshotLabel = `FINAL STATE — ${finalUrl}`;
+          visualScreenshotSrc = "real";
+          onProgress(Date.now() - startTime, `Screenshot FINAL capturado: ${finalUrl.slice(0, 60)}`);
+        };
+        img.src = dataUrl;
+      }
+    });
+  }, 15000);
 
   // Wait for SANDBOX_DURATION
   await new Promise(resolve => setTimeout(resolve, SANDBOX_DURATION));
