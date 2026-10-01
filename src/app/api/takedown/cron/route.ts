@@ -1,15 +1,22 @@
 // TakeDown Cron — monthly auto-monitoring endpoint.
 // Triggered by Vercel Cron (configured in vercel.json).
-// Reads all stored URLs from Vercel KV, runs the monitor check on
-// each one, updates the monitoring state in KV.
+// Reads all stored URLs from Upstash Redis, runs the monitor check on
+// each one, updates the monitoring state in Redis.
 //
 // CRON_PROTECTION_TOKEN env var (optional): if set, this endpoint
 // requires a matching `x-cron-token` header. Prevents abuse.
 
-import { kv } from "@vercel/kv";
+import { Redis } from "@upstash/redis";
 import { NextResponse } from "next/server";
 
 const KEY = "monitor-threat:takedown:entries";
+
+function getRedis(): Redis | null {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (!url || !token) return null;
+  return new Redis({ url, token });
+}
 
 export async function GET(request: Request) {
   // Auth check if CRON_PROTECTION_TOKEN is set
@@ -21,12 +28,13 @@ export async function GET(request: Request) {
     }
   }
 
-  if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) {
-    return NextResponse.json({ ok: false, message: "Vercel KV not configured. Set up KV in Vercel dashboard." });
+  const redis = getRedis();
+  if (!redis) {
+    return NextResponse.json({ ok: false, message: "Upstash Redis not configured. Set up Redis in Vercel dashboard → Storage → Upstash." });
   }
 
   try {
-    const raw = await kv.get(KEY);
+    const raw = await redis.get(KEY);
     const entries: any[] = raw ? JSON.parse(raw as string) : [];
     if (entries.length === 0) {
       return NextResponse.json({ ok: true, monitored: 0, message: "No URLs stored to monitor." });
@@ -57,7 +65,7 @@ export async function GET(request: Request) {
       updatedEntries.push(entry);
     }
 
-    await kv.set(KEY, JSON.stringify(updatedEntries));
+    await redis.set(KEY, JSON.stringify(updatedEntries));
     return NextResponse.json({ ok: true, monitored, total: entries.length });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 200 });
