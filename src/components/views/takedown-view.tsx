@@ -1305,6 +1305,16 @@ export function TakedownUrlView() {
                             {entry.status === "failed" && <XCircle className="w-3 h-3 text-red-500 shrink-0" />}
                             {entry.status === "pending" && <Clock className="w-3 h-3 text-muted-foreground shrink-0" />}
                             <span className="truncate" title={entry.url}>{entry.url}</span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigator.clipboard.writeText(entry.url);
+                              }}
+                              className="shrink-0 ml-1 text-muted-foreground hover:text-cyan-500 text-[10px]"
+                              title="Copiar URL"
+                            >
+                              ⧉
+                            </button>
                           </div>
                           {entry.enrich?.finalUrl && entry.enrich.finalUrl !== entry.url && (
                             <div className="text-[10px] text-cyan-500 mt-0.5 ml-5">→ {entry.enrich.finalUrl.slice(0, 80)}</div>
