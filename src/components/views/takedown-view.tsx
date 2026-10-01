@@ -220,7 +220,20 @@ function loadFromStorage(): UrlEntry[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
-    return JSON.parse(raw);
+    const parsed: UrlEntry[] = JSON.parse(raw);
+    // Repair stale status: if entry.enrich exists and has no error,
+    // the URL is effectively enriched — fix the status field. Otherwise,
+    // if status is "enriching" (stuck from a previous session), reset
+    // to "pending" so the user can re-enrich.
+    return parsed.map(e => {
+      if (e.enrich && !e.enrich.error) {
+        return { ...e, status: "enriched" as const };
+      }
+      if (e.status === "enriching") {
+        return { ...e, status: "pending" as const };
+      }
+      return e;
+    });
   } catch {
     return [];
   }
@@ -277,7 +290,7 @@ export function TakedownUrlView() {
   const [entries, setEntries] = React.useState<UrlEntry[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [filter, setFilter] = React.useState("");
-  const [statFilter, setStatFilter] = React.useState<string | null>(null);
+  const [statModal, setStatModal] = React.useState<{ key: string; label: string; description: string } | null>(null);
   const [expandedUrls, setExpandedUrls] = React.useState<Set<string>>(new Set());
   const [bulkSubmitting, setBulkSubmitting] = React.useState(false);
   const [progress, setProgress] = React.useState({ done: 0, total: 0, step: "" });
@@ -351,8 +364,10 @@ export function TakedownUrlView() {
 
   const enrichAll = async () => {
     setLoading(true);
-    const toEnrich = entries.filter(e => e.status === "pending");
-    setProgress({ done: 0, total: toEnrich.length, step: "Enriqueciendo URLs..." });
+    // Enrich any URL that is NOT yet enriched (pending, failed, or stuck
+    // in "enriching" state from a previous session).
+    const toEnrich = entries.filter(e => e.status !== "enriched");
+    setProgress({ done: 0, total: toEnrich.length, step: `Enriqueciendo ${toEnrich.length} URL(s)...` });
     let done = 0;
     // Run in batches of 5 to avoid overwhelming the server
     const batchSize = 5;
@@ -731,36 +746,77 @@ export function TakedownUrlView() {
     });
   };
 
-  // ---- Helper: apply stat filter (or clear it) ----
-  const toggleStatFilter = (key: string | null) => {
-    setStatFilter(prev => prev === key ? null : key);
+  // ---- Stat metadata (label, description, predicate) for the modal ----
+  const STAT_META: Record<string, { label: string; description: string; predicate: (e: UrlEntry) => boolean; bulkAction?: string }> = {
+    total:      { label: "Total URLs",          description: "Todas las URLs cargadas en el sistema.", predicate: () => true },
+    enriched:   { label: "Enriquecidas ✓",      description: "URLs con enriquecimiento completo (VirusTotal, Whois, hosting, screenshot, clasificación, Cloudflare).", predicate: e => e.status === "enriched" },
+    pending:    { label: "Pendientes",          description: "URLs cargadas pero todavía no enriquecidas. Hacé click en 'Enriquecer todas' (arriba) o en 'Enriquecer' por cada URL.", predicate: e => e.status === "pending" || e.status === "failed", bulkAction: "enrich" },
+    phishing:   { label: "Phishing",            description: "URLs clasificadas como phishing (robo de credenciales) por patrones en la URL (login, paypal, bank, etc.).", predicate: e => e.enrich?.classification === "phishing" },
+    malware:    { label: "Malware",             description: "URLs clasificadas como distribución de malware (download, crack, keygen, exe, etc.).", predicate: e => e.enrich?.classification === "malware" },
+    scam:       { label: "Scam",                description: "URLs clasificadas como scam/fraude financiero (prize, winner, lottery, investment, etc.).", predicate: e => e.enrich?.classification === "scam" },
+    cloudflare: { label: "Cloudflare",          description: "URLs detectadas detrás de Cloudflare. Además del abuse del registrar/hosting, también contactar abuse@cloudflare.com.", predicate: e => !!e.enrich?.cloudflare },
+    submits:    { label: "APIs enviados ✓",     description: "URLs reportadas exitosamente a al menos una API (URLhaus, VirusTotal, Clean-MX, PhishTank).", predicate: e => e.submits.some(s => s.status === "success") },
+    forms:      { label: "Forms abiertos",      description: "URLs donde se abrió al menos un formulario pre-fill (Google, Microsoft, APWG, etc.).", predicate: e => e.prefillOpened.length > 0 },
+    emails:     { label: "Emails generados",    description: "URLs donde se generó al menos un correo de abuse (phishing, malware, scam, copyright).", predicate: e => e.emailsGenerated.length > 0 },
   };
 
-  // ---- Compute filtered list with text + stat filter ----
-  const filteredByStat = React.useMemo(() => {
-    if (!statFilter) return entries;
-    return entries.filter(e => {
-      switch (statFilter) {
-        case "total": return true;
-        case "enriched": return e.status === "enriched";
-        case "pending": return e.status === "pending";
-        case "phishing": return e.enrich?.classification === "phishing";
-        case "malware": return e.enrich?.classification === "malware";
-        case "scam": return e.enrich?.classification === "scam";
-        case "cloudflare": return !!e.enrich?.cloudflare;
-        case "submits": return e.submits.some(s => s.status === "success");
-        case "forms": return e.prefillOpened.length > 0;
-        case "emails": return e.emailsGenerated.length > 0;
-        default: return true;
-      }
-    });
-  }, [entries, statFilter]);
+  // ---- Helper: open stat modal ----
+  const openStatModal = (key: string) => {
+    const meta = STAT_META[key];
+    if (!meta) return;
+    setStatModal({ key, label: meta.label, description: meta.description });
+  };
 
+  // ---- Bulk action from modal: enrich all URLs in the modal ----
+  const bulkEnrichFromModal = async (urls: string[]) => {
+    setLoading(true);
+    setProgress({ done: 0, total: urls.length, step: `Enriqueciendo ${urls.length} URL(s)...` });
+    let done = 0;
+    for (const url of urls) {
+      await enrichOne(url);
+      done++;
+      setProgress({ done, total: urls.length, step: `Enriquecido ${url.slice(0, 50)}...` });
+    }
+    setLoading(false);
+    setProgress({ done: 0, total: 0, step: "" });
+  };
+
+  // ---- Bulk action from modal: submit all URLs in the modal to APIs ----
+  const bulkSubmitFromModal = async (modalEntries: UrlEntry[]) => {
+    setBulkSubmitting(true);
+    setProgress({ done: 0, total: modalEntries.length, step: `Enviando ${modalEntries.length} URL(s) a APIs...` });
+    let done = 0;
+    for (const entry of modalEntries) {
+      await submitOne(entry);
+      done++;
+      setProgress({ done, total: modalEntries.length, step: `Enviado ${entry.url.slice(0, 50)}...` });
+    }
+    setBulkSubmitting(false);
+    setProgress({ done: 0, total: 0, step: "" });
+  };
+
+  // ---- Bulk action from modal: open 12 forms for all URLs in the modal ----
+  const bulkPrefillsFromModal = (modalEntries: UrlEntry[]) => {
+    if (modalEntries.length > 3) {
+      if (!confirm(`Se abrirán hasta ${modalEntries.length * 6} pestañas (6 por URL). ¿Continuar? (el browser puede bloquear popups)`)) return;
+    }
+    modalEntries.slice(0, 5).forEach(entry => openAllPrefills(entry));
+  };
+
+  // ---- Compute filtered list (text filter only) ----
   const filtered = React.useMemo(() => {
-    if (!filter.trim()) return filteredByStat;
+    if (!filter.trim()) return entries;
     const f = filter.toLowerCase();
-    return filteredByStat.filter(e => e.url.toLowerCase().includes(f) || e.enrich?.hostname?.toLowerCase().includes(f));
-  }, [filteredByStat, filter]);
+    return entries.filter(e => e.url.toLowerCase().includes(f) || e.enrich?.hostname?.toLowerCase().includes(f));
+  }, [entries, filter]);
+
+  // ---- Compute modal entries (matching the stat key) ----
+  const modalEntries = React.useMemo(() => {
+    if (!statModal) return [];
+    const meta = STAT_META[statModal.key];
+    if (!meta) return [];
+    return entries.filter(meta.predicate);
+  }, [entries, statModal]);
 
   return (
     <ModuleShell
@@ -810,8 +866,8 @@ export function TakedownUrlView() {
           title="PASO 2 — Enriquecer las URLs (VirusTotal, Whois, hosting, screenshot)"
           className="md:col-span-2"
           action={
-            <Button size="sm" onClick={enrichAll} disabled={loading || stats.pending === 0}>
-              {loading ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><RefreshCw className="w-3 h-3 mr-1.5" /> Enriquecer todas</>}
+            <Button size="sm" onClick={enrichAll} disabled={loading || entries.every(e => e.status === "enriched")}>
+              {loading ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> {progress.done}/{progress.total}</> : <><RefreshCw className="w-3 h-3 mr-1.5" /> Enriquecer todas ({entries.filter(e => e.status !== "enriched").length} pendientes)</>}
             </Button>
           }
         >
@@ -825,30 +881,22 @@ export function TakedownUrlView() {
               {progress.step} — progreso: {progress.done}/{progress.total}
             </div>
           )}
-          {/* Stats grid */}
-          <div className="grid grid-cols-2 md:grid-cols-5 lg:grid-cols-10 gap-2 mb-3">
-            <StatBox label="Total URLs" value={stats.total} color="cyan" filterKey="total" onClick={toggleStatFilter} active={statFilter === "total"} />
-            <StatBox label="Enriquecidas ✓" value={stats.enriched} color="green" filterKey="enriched" onClick={toggleStatFilter} active={statFilter === "enriched"} />
-            <StatBox label="Pendientes" value={stats.pending} color="yellow" filterKey="pending" onClick={toggleStatFilter} active={statFilter === "pending"} />
-            <StatBox label="Phishing" value={stats.phishing} color="red" filterKey="phishing" onClick={toggleStatFilter} active={statFilter === "phishing"} />
-            <StatBox label="Malware" value={stats.malware} color="red" filterKey="malware" onClick={toggleStatFilter} active={statFilter === "malware"} />
-            <StatBox label="Scam" value={stats.scam} color="orange" filterKey="scam" onClick={toggleStatFilter} active={statFilter === "scam"} />
-            <StatBox label="Cloudflare" value={stats.cf} color="purple" filterKey="cloudflare" onClick={toggleStatFilter} active={statFilter === "cloudflare"} />
-            <StatBox label="APIs enviados ✓" value={stats.submits} color="green" filterKey="submits" onClick={toggleStatFilter} active={statFilter === "submits"} />
-            <StatBox label="Forms abiertos" value={stats.forms} color="blue" filterKey="forms" onClick={toggleStatFilter} active={statFilter === "forms"} />
-            <StatBox label="Emails generados" value={stats.emails} color="pink" filterKey="emails" onClick={toggleStatFilter} active={statFilter === "emails"} />
+          {/* Stats grid — clickeables, abren modal con info + acciones */}
+          <div className="text-xs text-muted-foreground mb-2 p-2 rounded bg-cyan-500/5 border border-cyan-500/20">
+            💡 Click en cualquier stat para ver las URLs de esa categoría y gestionarlas (enriquecer, abrir forms, generar emails).
           </div>
-          {statFilter && (
-            <div className="flex items-center gap-2 mt-2 p-2 rounded bg-cyan-500/10 border border-cyan-500/30 text-[11px]">
-              <Filter className="w-3 h-3 text-cyan-500" />
-              <span className="text-cyan-500 font-mono">
-                Filtro activo: <strong>{statFilter}</strong> — mostrando {filtered.length} de {entries.length} URLs
-              </span>
-              <button onClick={() => setStatFilter(null)} className="ml-auto text-cyan-500 hover:underline font-mono">
-                ✕ Quitar filtro
-              </button>
-            </div>
-          )}
+          <div className="grid grid-cols-2 md:grid-cols-5 lg:grid-cols-10 gap-2 mb-3">
+            <StatBox label="Total URLs" value={stats.total} color="cyan" filterKey="total" onClick={openStatModal} />
+            <StatBox label="Enriquecidas ✓" value={stats.enriched} color="green" filterKey="enriched" onClick={openStatModal} />
+            <StatBox label="Pendientes" value={stats.pending} color="yellow" filterKey="pending" onClick={openStatModal} />
+            <StatBox label="Phishing" value={stats.phishing} color="red" filterKey="phishing" onClick={openStatModal} />
+            <StatBox label="Malware" value={stats.malware} color="red" filterKey="malware" onClick={openStatModal} />
+            <StatBox label="Scam" value={stats.scam} color="orange" filterKey="scam" onClick={openStatModal} />
+            <StatBox label="Cloudflare" value={stats.cf} color="purple" filterKey="cloudflare" onClick={openStatModal} />
+            <StatBox label="APIs enviados ✓" value={stats.submits} color="green" filterKey="submits" onClick={openStatModal} />
+            <StatBox label="Forms abiertos" value={stats.forms} color="blue" filterKey="forms" onClick={openStatModal} />
+            <StatBox label="Emails generados" value={stats.emails} color="pink" filterKey="emails" onClick={openStatModal} />
+          </div>
         </Panel>
       )}
 
@@ -891,11 +939,6 @@ export function TakedownUrlView() {
           action={
             <div className="flex gap-2">
               <Input type="text" placeholder="Filtrar..." value={filter} onChange={e => setFilter(e.target.value)} className="h-7 text-xs w-40" />
-              {statFilter && (
-                <Button size="sm" variant="outline" className="h-7 text-[10px] text-cyan-500 border-cyan-500/40" onClick={() => setStatFilter(null)}>
-                  ✕ Filtro: {statFilter}
-                </Button>
-              )}
               <Button size="sm" variant="outline" onClick={generatePdf}>
                 <Printer className="w-3 h-3 mr-1.5" /> Imprimir PDF (PASO 5)
               </Button>
@@ -1069,7 +1112,7 @@ export function TakedownUrlView() {
             )}
             {filtered.length === 0 && entries.length > 0 && (
               <div className="text-center py-6 text-xs text-muted-foreground">
-                No hay URLs que coincidan con el filtro actual. <button onClick={() => { setStatFilter(null); setFilter(""); }} className="text-cyan-500 hover:underline">Quitar filtros</button>
+                No hay URLs que cargadas. Cargá URLs en el PASO 1.
               </div>
             )}
           </div>
@@ -1096,6 +1139,147 @@ export function TakedownUrlView() {
           </div>
         </Panel>
       )}
+
+      {/* ---------- Stat Modal: shows URLs matching a stat + actions ---------- */}
+      {statModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={() => setStatModal(null)}
+        >
+          <div
+            className="bg-background border border-border rounded-lg shadow-2xl max-w-4xl w-full max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal header */}
+            <div className="flex items-center justify-between p-4 border-b border-border">
+              <div>
+                <h2 className="text-lg font-bold flex items-center gap-2">
+                  <Filter className="w-4 h-4 text-cyan-500" />
+                  {statModal.label} ({modalEntries.length})
+                </h2>
+                <p className="text-xs text-muted-foreground mt-1">{statModal.description}</p>
+              </div>
+              <button onClick={() => setStatModal(null)} className="text-muted-foreground hover:text-foreground p-2 rounded hover:bg-muted">
+                ✕
+              </button>
+            </div>
+
+            {/* Modal bulk actions */}
+            {modalEntries.length > 0 && (
+              <div className="flex flex-wrap gap-2 p-3 border-b border-border bg-muted/20">
+                <Button size="sm" variant="outline" onClick={() => bulkEnrichFromModal(modalEntries.filter(e => e.status !== "enriched").map(e => e.url))} disabled={loading || modalEntries.every(e => e.status === "enriched")}>
+                  <RefreshCw className="w-3 h-3 mr-1.5" /> Enriquecer las {modalEntries.filter(e => e.status !== "enriched").length} URL(s) no enriquecidas
+                </Button>
+                {modalEntries.some(e => e.status === "enriched") && (
+                  <>
+                    <Button size="sm" onClick={() => bulkSubmitFromModal(modalEntries.filter(e => e.status === "enriched"))} disabled={bulkSubmitting}>
+                      <Send className="w-3 h-3 mr-1.5" /> Auto-submit a APIs ({modalEntries.filter(e => e.status === "enriched").length} URLs)
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => bulkPrefillsFromModal(modalEntries.filter(e => e.status === "enriched"))}>
+                      <Globe className="w-3 h-3 mr-1.5" /> Abrir 12 forms (hasta 5 URLs)
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Progress bar inside modal */}
+            {(loading || bulkSubmitting) && (
+              <div className="px-3 py-2 bg-yellow-500/10 border-b border-yellow-500/30 text-xs font-mono text-yellow-500">
+                {progress.step} — {progress.done}/{progress.total}
+              </div>
+            )}
+
+            {/* Modal body: list of URLs */}
+            <div className="overflow-y-auto p-3 flex-1">
+              {modalEntries.length === 0 ? (
+                <div className="text-center py-8 text-sm text-muted-foreground">
+                  No hay URLs en esta categoría.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {modalEntries.map(entry => {
+                    const e = entry.enrich;
+                    return (
+                      <div key={entry.url} className="rounded border border-border p-3 bg-card hover:bg-muted/20">
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <div className="font-mono text-xs break-all flex-1">
+                            <span className="text-cyan-500">{entry.url}</span>
+                            {e?.finalUrl && e.finalUrl !== entry.url && (
+                              <div className="text-[10px] text-cyan-500 mt-0.5">→ {e.finalUrl}</div>
+                            )}
+                          </div>
+                          <Badge variant={entry.status === "enriched" ? "default" : entry.status === "pending" ? "secondary" : "destructive"} className="text-[9px] font-mono shrink-0">
+                            {entry.status}
+                          </Badge>
+                        </div>
+                        {e && (
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[10px] mb-2">
+                            <div>
+                              <span className="text-muted-foreground">Class:</span>{" "}
+                              <Badge variant={e.classification === "phishing" || e.classification === "malware" ? "destructive" : "secondary"} className="text-[8px] font-mono">
+                                {e.classification}
+                              </Badge>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">VT:</span>{" "}
+                              <span className={`font-mono ${e.vt?.malicious ? "text-red-500 font-bold" : "text-green-500"}`}>
+                                {e.vt?.malicious || 0}/{(e.vt?.malicious || 0) + (e.vt?.suspicious || 0) + (e.vt?.undetected || 0)}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Hosting:</span>{" "}
+                              <span className="font-mono">{e.hosting?.asnOrg?.slice(0, 18) || "?"}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Cloudflare:</span>{" "}
+                              {e.cloudflare ? <span className="text-orange-500 font-bold">SÍ</span> : <span className="text-muted-foreground">no</span>}
+                            </div>
+                          </div>
+                        )}
+                        {e && (
+                          <div className="text-[10px] text-muted-foreground mb-2 font-mono">
+                            <div>Registrar: {e.whois?.registrar || "?"} · Abuse: {e.whois?.abuseEmail || "?"}</div>
+                          </div>
+                        )}
+                        {/* Per-URL actions */}
+                        <div className="flex flex-wrap gap-2">
+                          {entry.status === "pending" && (
+                            <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
+                              <Eye className="w-3 h-3 mr-1" /> Enriquecer
+                            </Button>
+                          )}
+                          {entry.status === "enriched" && (
+                            <>
+                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => openAllPrefills(entry)}>
+                                <Globe className="w-3 h-3 mr-1" /> 12 forms
+                              </Button>
+                              <EmailButtons entry={entry} onOpen={openAbuseEmail} />
+                              {e?.vt?.permalink && (
+                                <a href={e.vt.permalink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] text-cyan-500 hover:underline px-2 py-1">
+                                  <ExternalLink className="w-3 h-3" /> VT
+                                </a>
+                              )}
+                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => toggleExpand(entry.url)}>
+                                Ver detalle completo (en tabla)
+                              </Button>
+                            </>
+                          )}
+                          {entry.status === "failed" && (
+                            <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => enrichOne(entry.url)}>
+                              <RefreshCw className="w-3 h-3 mr-1" /> Reintentar
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </ModuleShell>
   );
 }
@@ -1112,7 +1296,7 @@ function StepBar({ label, done, last }: { label: string; done: boolean; last?: b
   );
 }
 
-function StatBox({ label, value, color, filterKey, active, onClick }: { label: string; value: number; color: string; filterKey?: string; active?: boolean; onClick?: (k: string) => void }) {
+function StatBox({ label, value, color, filterKey, onClick }: { label: string; value: number; color: string; filterKey?: string; onClick?: (k: string) => void }) {
   const colorMap: Record<string, string> = {
     cyan: "border-cyan-500/40 bg-cyan-500/5 text-cyan-400",
     green: "border-green-500/40 bg-green-500/5 text-green-400",
@@ -1123,23 +1307,21 @@ function StatBox({ label, value, color, filterKey, active, onClick }: { label: s
     blue: "border-blue-500/40 bg-blue-500/5 text-blue-400",
     pink: "border-pink-500/40 bg-pink-500/5 text-pink-400",
   };
-  const isClickable = !!onClick && !!filterKey;
+  const isClickable = !!onClick && !!filterKey && value > 0;
   return (
     <button
       type="button"
       disabled={!isClickable}
       onClick={() => isClickable && onClick!(filterKey!)}
       className={`rounded p-2 border text-left transition-all ${colorMap[color] || "border-border bg-muted/20"} ${
-        isClickable ? "hover:scale-105 hover:shadow-md cursor-pointer" : "cursor-default"
-      } ${active ? "ring-2 ring-offset-1 ring-offset-background ring-cyan-500" : ""}`}
-      title={isClickable ? `Click para ${active ? "quitar filtro y" : ""}ver las ${value} URL(s) con esta etiqueta` : label}
+        isClickable ? "hover:scale-105 hover:shadow-md hover:border-cyan-500 cursor-pointer" : "cursor-default opacity-50"
+      }`}
+      title={isClickable ? `Click para ver las ${value} URL(s) de esta categoría + gestionarlas` : "Sin URLs en esta categoría"}
     >
       <div className="text-lg font-bold font-mono flex items-center gap-1">
         {value}
         {isClickable && (
-          <span className={`text-[10px] ${active ? "text-cyan-500" : "text-muted-foreground/60"}`}>
-            {active ? "✓ filtro" : "click"}
-          </span>
+          <span className="text-[10px] text-muted-foreground/60">→</span>
         )}
       </div>
       <div className="text-[10px]">{label}</div>
