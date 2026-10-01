@@ -1267,9 +1267,6 @@ export function TakedownUrlView() {
                             )}
                             {entry.status === "enriched" && (
                               <>
-                                <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => submitOne(entry)} title="Reportar esta URL a las 3 APIs automaticamente">
-                                  <Send className="w-3 h-3 mr-1" /> Reportar APIs
-                                </Button>
                                 <Button size="sm" variant="outline" className="h-7 text-[10px] text-blue-500 border-blue-500/40" onClick={() => openPrefill(entry, "google_phish")} title="Abrir formulario de Google Safe Browsing (Phishing) para reportar manualmente">
                                   <Globe className="w-3 h-3 mr-1" /> Google
                                 </Button>
@@ -1513,8 +1510,11 @@ export function TakedownUrlView() {
                           )}
                           {entry.status === "enriched" && (
                             <>
-                              <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => submitOne(entry)}>
-                                <Send className="w-3 h-3 mr-1" /> Reportar a APIs
+                              <Button size="sm" variant="outline" className="h-7 text-[10px] text-blue-500 border-blue-500/40" onClick={() => openPrefill(entry, "google_phish")}>
+                                <Globe className="w-3 h-3 mr-1" /> Google
+                              </Button>
+                              <Button size="sm" variant="outline" className="h-7 text-[10px] text-cyan-500 border-cyan-500/40" onClick={() => openPrefill(entry, "microsoft")}>
+                                <Globe className="w-3 h-3 mr-1" /> Microsoft
                               </Button>
                               {e?.vt?.permalink && (
                                 <a href={e.vt.permalink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] text-cyan-500 hover:underline px-2 py-1">
