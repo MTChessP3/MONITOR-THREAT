@@ -1815,3 +1815,6 @@ export { UrlSandboxView } from "@/components/views/url-sandbox-view";
 
 // ---------- TakeDown URL (re-export from dedicated file) ----------
 export { TakedownUrlView } from "@/components/views/takedown-view";
+
+// ---------- Deep & Dark Web (re-export from dedicated file) ----------
+export { DeepDarkWebView } from "@/components/views/deep-dark-web-view";
