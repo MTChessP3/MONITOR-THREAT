@@ -218,30 +218,61 @@ function parseUrls(text: string): { valid: string[]; invalid: string[] } {
   return { valid, invalid };
 }
 
-async function loadFromStorage(): Promise<UrlEntry[]> {
+// Fallback: sessionStorage keeps entries alive while the browser tab
+// is open — survives navigation between modules. This is a SESSION
+// backup (not permanent). The primary storage is Upstash Redis (server).
+const SESSION_KEY = "monitor-threat:takedown:session";
+
+function saveToSession(entries: UrlEntry[]) {
+  if (typeof window === "undefined") return;
   try {
-    const r = await fetch("/api/takedown/store");
-    const j = await r.json();
-    const parsed: UrlEntry[] = j.entries || [];
-    // Repair stale status: if entry.enrich exists and has no error,
-    // the URL is effectively enriched — fix the status field. Otherwise,
-    // if status is "enriching" (stuck from a previous session), reset
-    // to "pending" so the user can re-enrich.
-    return parsed.map(e => {
-      if (e.enrich && !e.enrich.error) {
-        return { ...e, status: "enriched" as const };
-      }
-      if (e.status === "enriching") {
-        return { ...e, status: "pending" as const };
-      }
-      return e;
-    });
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(entries));
+  } catch {}
+}
+
+function loadFromSession(): UrlEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
   } catch {
     return [];
   }
 }
 
+async function loadFromStorage(): Promise<UrlEntry[]> {
+  // 1. Try server (Upstash Redis) — persists across sessions
+  try {
+    const r = await fetch("/api/takedown/store");
+    const j = await r.json();
+    if (j.entries && j.entries.length > 0) {
+      const parsed: UrlEntry[] = j.entries;
+      return parsed.map(e => {
+        if (e.enrich && !e.enrich.error) return { ...e, status: "enriched" as const };
+        if (e.status === "enriching") return { ...e, status: "pending" as const };
+        return e;
+      });
+    }
+  } catch {}
+
+  // 2. Fallback: sessionStorage — survives navigation between modules
+  const sessionEntries = loadFromSession();
+  if (sessionEntries.length > 0) {
+    return sessionEntries.map(e => {
+      if (e.enrich && !e.enrich.error) return { ...e, status: "enriched" as const };
+      if (e.status === "enriching") return { ...e, status: "pending" as const };
+      return e;
+    });
+  }
+
+  return [];
+}
+
 async function saveToStorage(entries: UrlEntry[]) {
+  // Always save to sessionStorage (survives navigation between modules)
+  saveToSession(entries);
+  // Also try server (Upstash Redis — survives full page reloads)
   try {
     await fetch("/api/takedown/store", {
       method: "POST",
@@ -406,6 +437,7 @@ export function TakedownUrlView() {
     if (entries.length === 0) return;
     if (confirm(`¿Vaciar el contenedor? Se van a eliminar las ${entries.length} URLs y todos sus datos.\n\nSi queres guardar los datos, primero exporta en .txt o .zip o PDF.\n\n¿Continuar?`)) {
       setEntries([]);
+      saveToSession([]);
       saveToStorage([]);
     }
   };
@@ -778,7 +810,7 @@ export function TakedownUrlView() {
   };
 
   // ---- PDF ----
-  const generatePdf = () => {
+  const generatePdf = async () => {
     const doc = new jsPDF({ unit: "pt", format: "a4" });
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
@@ -864,6 +896,56 @@ export function TakedownUrlView() {
     doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(15, 23, 42);
     doc.text(`Total: ${totalOk} reportes OK, ${totalFail} fallos, ${totalSkip} salteados (sin API key)`, margin, y);
     y += 18;
+
+    // ---------- Section 1.5: Screenshots iniciales de cada URL ----------
+    sectionHeading("Captura Inicial del Sitio Analizado");
+
+    for (const entry of entries.slice(0, 10)) {
+      if (y > pageHeight - margin - 200) { doc.addPage(); y = margin + 6; }
+      doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(15, 23, 42);
+      doc.text(`URL: ${entry.url.slice(0, 80)}`, margin, y);
+      y += 6;
+      doc.setFont("helvetica", "italic"); doc.setFontSize(8); doc.setTextColor(100, 116, 139);
+      doc.text(`Captura visual de: ${entry.url.slice(0, 90)}`, margin, y);
+      y += 8;
+
+      // Try to add the screenshot image
+      if (entry.enrich?.screenshotUrl) {
+        try {
+          // Fetch the screenshot as a data URL and embed it
+          const imgRes = await fetch(entry.enrich.screenshotUrl);
+          if (imgRes.ok) {
+            const blob = await imgRes.blob();
+            if (blob.size > 5000) {
+              const reader = new FileReader();
+              const dataUrl: string = await new Promise((resolve, reject) => {
+                reader.onload = () => resolve(reader.result as string);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+              });
+              const imgWidth = contentWidth;
+              const imgHeight = imgWidth * (720 / 1280);
+              if (y + imgHeight > pageHeight - margin) { doc.addPage(); y = margin + 6; }
+              doc.addImage(dataUrl, "JPEG", margin, y, imgWidth, Math.min(imgHeight, 250));
+              y += Math.min(imgHeight, 250) + 10;
+            } else {
+              doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(150, 150, 150);
+              doc.text("Screenshot no disponible (placeholder del servicio)", margin, y);
+              y += 14;
+            }
+          }
+        } catch {
+          doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(150, 150, 150);
+          doc.text("Screenshot no disponible", margin, y);
+          y += 14;
+        }
+      } else {
+        doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(150, 150, 150);
+        doc.text("Sin screenshot (URL no analizada)", margin, y);
+        y += 14;
+      }
+      y += 6;
+    }
 
     // ---------- Section 2: Detalle por URL ----------
     sectionHeading("Detalle por URL - Estado de Reporte");
