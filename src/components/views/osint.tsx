@@ -27,52 +27,8 @@ import {
 } from "@/components/ui/table";
 import { TELEGRAM_RESULT } from "@/lib/mock-data";
 
-// ---------- Deep & Dark Web ----------
-export function DeepDarkWebView() {
-  const mentions = [
-    { source: "EmpireMarket (onion)", type: "marketplace", count: 14, lastSeen: "2026-09-23" },
-    { source: "BreachForums", type: "forum", count: 3, lastSeen: "2026-09-22" },
-    { source: "Pastebin", type: "paste", count: 27, lastSeen: "2026-09-23" },
-    { source: "Telegram channel @leaks", type: "telegram", count: 8, lastSeen: "2026-09-21" },
-    { source: "Discord server 'dark'", type: "discord", count: 2, lastSeen: "2026-09-19" },
-  ];
-  return (
-    <ModuleShell
-      name="Deep & Dark Web"
-      description="Monitor marketplaces, forums, paste sites and Telegram/Discord channels on the dark web."
-      icon={Skull}
-      category="OSINT"
-    >
-      <SearchBar label="Search term" placeholder="e.g. leaked email, brand, IOCs" />
-      <Panel title="Recent Mentions" className="mt-4">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Source</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Mentions</TableHead>
-              <TableHead>Last seen</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {mentions.map((m) => (
-              <TableRow key={m.source}>
-                <TableCell className="font-mono text-sm">{m.source}</TableCell>
-                <TableCell>
-                  <Badge variant="outline" className="font-mono text-[10px]">
-                    {m.type}
-                  </Badge>
-                </TableCell>
-                <TableCell className="font-mono">{m.count}</TableCell>
-                <TableCell className="font-mono text-xs">{m.lastSeen}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Panel>
-    </ModuleShell>
-  );
-}
+// ---------- Deep & Dark Web (re-export from dedicated file) ----------
+export { DeepDarkWebView } from "@/components/views/deep-dark-web-view";
 
 // ---------- Telegram & Discord Monitor ----------
 export function TelegramDiscordView() {
