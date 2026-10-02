@@ -912,11 +912,17 @@ export function TakedownUrlView() {
       // Try to add the screenshot image
       if (entry.enrich?.screenshotUrl) {
         try {
-          // Fetch the screenshot as a data URL and embed it
-          const imgRes = await fetch(entry.enrich.screenshotUrl);
+          // Build absolute URL for the fetch (screenshotUrl is relative)
+          const shotUrl = entry.enrich.screenshotUrl.startsWith("http")
+            ? entry.enrich.screenshotUrl
+            : `${window.location.origin}${entry.enrich.screenshotUrl}`;
+          const imgRes = await fetch(shotUrl);
           if (imgRes.ok) {
             const blob = await imgRes.blob();
             if (blob.size > 5000) {
+              // Determine image type from content-type
+              const ct = imgRes.headers.get("content-type") || "image/jpeg";
+              const format = ct.includes("png") ? "PNG" : "JPEG";
               const reader = new FileReader();
               const dataUrl: string = await new Promise((resolve, reject) => {
                 reader.onload = () => resolve(reader.result as string);
@@ -926,17 +932,21 @@ export function TakedownUrlView() {
               const imgWidth = contentWidth;
               const imgHeight = imgWidth * (720 / 1280);
               if (y + imgHeight > pageHeight - margin) { doc.addPage(); y = margin + 6; }
-              doc.addImage(dataUrl, "JPEG", margin, y, imgWidth, Math.min(imgHeight, 250));
+              doc.addImage(dataUrl, format, margin, y, imgWidth, Math.min(imgHeight, 250));
               y += Math.min(imgHeight, 250) + 10;
             } else {
               doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(150, 150, 150);
-              doc.text("Screenshot no disponible (placeholder del servicio)", margin, y);
+              doc.text("Screenshot no disponible (placeholder)", margin, y);
               y += 14;
             }
+          } else {
+            doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(150, 150, 150);
+            doc.text(`Screenshot no disponible (HTTP ${imgRes.status})`, margin, y);
+            y += 14;
           }
-        } catch {
+        } catch (e: any) {
           doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(150, 150, 150);
-          doc.text("Screenshot no disponible", margin, y);
+          doc.text(`Screenshot no disponible (error: ${String(e?.message || e).slice(0, 60)})`, margin, y);
           y += 14;
         }
       } else {
