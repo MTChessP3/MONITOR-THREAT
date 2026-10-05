@@ -54,7 +54,7 @@ interface DarkWebResponse {
 
 export function DeepDarkWebView() {
   const [query, setQuery] = React.useState("");
-  const [queryType, setQueryType] = React.useState<"email" | "domain" | "keyword" | "ip">("keyword");
+  const [queryType, setQueryType] = React.useState<"keyword" | "domain" | "email" | "ip" | "username" | "phone" | "org" | "apikey">("keyword");
   const [loading, setLoading] = React.useState(false);
   const [data, setData] = React.useState<DarkWebResponse | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -197,11 +197,15 @@ export function DeepDarkWebView() {
         <div className="flex gap-2 mb-3">
           <select value={queryType} onChange={e => setQueryType(e.target.value as any)} className="h-9 text-xs rounded border border-border bg-background px-2">
             <option value="keyword">Keyword</option>
-            <option value="email">Email</option>
             <option value="domain">Dominio</option>
+            <option value="email">Email</option>
             <option value="ip">IP</option>
+            <option value="username">Username</option>
+            <option value="phone">Telefono</option>
+            <option value="org">Organizacion</option>
+            <option value="apikey">API Key / Token</option>
           </select>
-          <Input type="text" placeholder="ej: target@empresa.com | empresa.com | keyword | 8.8.8.8" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && search()} className="flex-1 font-mono text-sm" autoFocus />
+          <Input type="text" placeholder="ej: target@empresa.com | empresa.com | keyword | 8.8.8.8 | @username | +57 3001234567 | MiEmpresa | AKIA..." value={query} onChange={e => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && search()} className="flex-1 font-mono text-sm" autoFocus />
         </div>
         <div className="text-[10px] text-muted-foreground">
           El sistema genera dorks automaticamente segun el tipo de target y busca en DuckDuckGo, GitHub, crt.sh, Wayback Machine, URLscan.io, Ahmia (.onion) y Pastebin.
