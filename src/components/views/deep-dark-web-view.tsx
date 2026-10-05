@@ -182,7 +182,7 @@ export function DeepDarkWebView() {
   return (
     <ModuleShell
       name="Deep & Dark Web"
-      description="Busca menciones del target en dark web, deep web, pastes, leaks y GitHub. Usa DuckDuckGo + dorks + GitHub + crt.sh + Wayback Machine + URLscan + Ahmia."
+      description="Busca menciones del target en dark web, deep web, pastes, leaks y GitHub. Usa 9 fuentes: GitHub, Shodan, VirusTotal, AlienVault OTX, AbuseIPDB, URLscan, GitHub Gists + 80 dorks."
       icon={Skull}
       category="OSINT"
     >
@@ -208,7 +208,7 @@ export function DeepDarkWebView() {
           <Input type="text" placeholder="ej: target@empresa.com | empresa.com | keyword | 8.8.8.8 | @username | +57 3001234567 | MiEmpresa | AKIA..." value={query} onChange={e => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && search()} className="flex-1 font-mono text-sm" autoFocus />
         </div>
         <div className="text-[10px] text-muted-foreground">
-          El sistema genera dorks automaticamente segun el tipo de target y busca en DuckDuckGo, GitHub, crt.sh, Wayback Machine, URLscan.io, Ahmia (.onion) y Pastebin.
+          El sistema genera 80+ dorks automaticamente segun el tipo de target y busca en 9 fuentes en paralelo: GitHub Code, GitHub Gists, Shodan, VirusTotal, AlienVault OTX, AbuseIPDB, URLscan, Leak-Lookup y GitHub User Search.
         </div>
       </Panel>
 
