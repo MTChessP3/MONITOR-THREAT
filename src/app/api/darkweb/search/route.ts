@@ -87,12 +87,13 @@ function generateDorks(query: string, type: QueryType): string[] {
 // GitHub Code Search — FUNCIONA con PAT
 async function searchGitHubCode(query: string, type: QueryType): Promise<SearchResult[]> {
   try {
-    const token = process.env.GITHUB_TOKEN || process.env.GH_PAT || "";
+    const token = process.env.GITHUB_TOKEN || process.env.GH_PAT || process.env.GH_TOKEN || "";
     const headers: Record<string, string> = {
       Accept: "application/vnd.github.v3+json",
       "User-Agent": "MONITOR-THREAT",
-      Authorization: `token ${token}`,
     };
+    if (token) headers["Authorization"] = `token ${token}`;
+    // If no token, GitHub allows 10 req/min unauthenticated — still try
     // Build type-specific queries
     const queries: string[] = [];
     if (type === "email") {
@@ -143,12 +144,9 @@ async function searchGitHubCode(query: string, type: QueryType): Promise<SearchR
 // GitHub Gist Search — busca pastes públicos en GitHub Gists
 async function searchGitHubGists(query: string): Promise<SearchResult[]> {
   try {
-    const token = process.env.GITHUB_TOKEN || process.env.GH_PAT || "";
-    const headers: Record<string, string> = {
-      Accept: "application/vnd.github.v3+json",
-      "User-Agent": "MONITOR-THREAT",
-      Authorization: `token ${token}`,
-    };
+    const token = process.env.GITHUB_TOKEN || process.env.GH_PAT || process.env.GH_TOKEN || "";
+    const headers: Record<string, string> = { Accept: "application/vnd.github.v3+json", "User-Agent": "MONITOR-THREAT" };
+    if (token) headers["Authorization"] = `token ${token}`;
     // Search gists for the query
     const r = await fetch(`https://api.github.com/gists/public?per_page=100`, { headers, signal: AbortSignal.timeout(10000) });
     if (!r.ok) return [];
@@ -243,8 +241,9 @@ async function searchGitHubUser(username: string): Promise<SearchResult[]> {
   if (!username.startsWith("@")) return [];
   const user = username.replace("@", "");
   try {
-    const token = process.env.GITHUB_TOKEN || process.env.GH_PAT || "";
-    const headers: Record<string, string> = { Accept: "application/vnd.github.v3+json", "User-Agent": "MONITOR-THREAT", Authorization: `token ${token}` };
+    const token = process.env.GITHUB_TOKEN || process.env.GH_PAT || process.env.GH_TOKEN || "";
+    const headers: Record<string, string> = { Accept: "application/vnd.github.v3+json", "User-Agent": "MONITOR-THREAT" };
+    if (token) headers["Authorization"] = `token ${token}`;
     const r = await fetch(`https://api.github.com/users/${user}`, { headers, signal: AbortSignal.timeout(8000) });
     if (!r.ok) return [];
     const data: any = await r.json();
@@ -283,6 +282,72 @@ async function searchLeakLookup(query: string, type: QueryType): Promise<SearchR
   } catch { return []; }
 }
 
+// AlienVault OTX — threat intel for domain/IP (FUNCIONA sin key)
+async function searchOtx(query: string, type: QueryType): Promise<SearchResult[]> {
+  try {
+    const indicatorType = type === "ip" ? "ip" : "domain";
+    const r = await fetch(`https://otx.alienvault.com/api/v1/indicators/${indicatorType}/${encodeURIComponent(query)}/general`, {
+      headers: { "User-Agent": "MONITOR-THREAT" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return [];
+    const data: any = await r.json();
+    const results: SearchResult[] = [];
+    // Pulse info
+    const pulseInfo = data?.pulse_info;
+    if (pulseInfo && pulseInfo.count > 0) {
+      for (const pulse of (pulseInfo.pulses || []).slice(0, 10)) {
+        results.push({
+          source: "AlienVault OTX",
+          type: "threat pulse",
+          title: pulse.name || "OTX Pulse",
+          url: `https://otx.alienvault.com/pulse/${pulse.id || ""}`,
+          snippet: `Pulse: ${pulse.name || "?"} | Tags: ${(pulse.tags || []).join(", ") || "none"} | TLP: ${pulse.TLP || "?"} | Modified: ${pulse.modified || "?"}`,
+          severity: "high" as const,
+          timestamp: pulse.modified || null,
+        });
+      }
+    }
+    // General info
+    if (results.length === 0 && data?.general) {
+      results.push({
+        source: "AlienVault OTX",
+        type: "indicator info",
+        title: `${query} - OTX indicator`,
+        url: `https://otx.alienvault.com/indicator/${indicatorType}/${encodeURIComponent(query)}`,
+        snippet: `Pulses: ${pulseInfo?.count || 0} | Sections: ${Object.keys(data).join(", ").slice(0, 100)}`,
+        severity: "info" as const,
+        timestamp: null,
+      });
+    }
+    return results;
+  } catch { return []; }
+}
+
+// AbuseIPDB — IP abuse reputation (FUNCIONA con key ya configurada)
+async function searchAbuseIPDB(ip: string): Promise<SearchResult[]> {
+  try {
+    const key = process.env.ABUSEIPDB_API_KEY || "";
+    if (!key) return [];
+    const r = await fetch(`https://api.abuseipdb.com/api/v2/check?ipAddress=${encodeURIComponent(ip)}&maxAgeInDays=90`, {
+      headers: { Key: key, Accept: "application/json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return [];
+    const data: any = await r.json();
+    const d = data.data || {};
+    return [{
+      source: "AbuseIPDB",
+      type: "IP abuse reputation",
+      title: `${ip} - ${d.abuseConfidenceScore || 0}% abuse score`,
+      url: `https://www.abuseipdb.com/check/${ip}`,
+      snippet: `Abuse Score: ${d.abuseConfidenceScore || 0}% | Country: ${d.countryCode || "?"} | ISP: ${d.isp || "?"} | Domain: ${d.domain || "?"} | Reports: ${d.totalReports || 0} | Usage: ${d.usageType || "?"}`,
+      severity: (d.abuseConfidenceScore || 0) > 50 ? "high" : (d.abuseConfidenceScore || 0) > 0 ? "medium" : "info" as const,
+      timestamp: null,
+    }];
+  } catch { return []; }
+}
+
 // ---------- Main endpoint ----------
 
 export async function GET(request: Request) {
@@ -295,9 +360,10 @@ export async function GET(request: Request) {
   const isDomainLike = type === "domain" || type === "org";
   const isIp = type === "ip";
   const isUsername = type === "username";
+  const isDomainOrIp = isDomainLike || isIp;
 
   // Run all searches in parallel
-  const [githubCode, githubGists, urlscan, shodan, vt, githubUser, leakLookup] = await Promise.all([
+  const [githubCode, githubGists, urlscan, shodan, vt, githubUser, leakLookup, otx, abuseipdb] = await Promise.all([
     searchGitHubCode(query, type),
     searchGitHubGists(query),
     isDomainLike ? searchUrlscan(query) : Promise.resolve([]),
@@ -305,9 +371,11 @@ export async function GET(request: Request) {
     (isIp || type === "domain") ? searchVirusTotal(query, type) : Promise.resolve([]),
     isUsername ? searchGitHubUser(query) : Promise.resolve([]),
     searchLeakLookup(query, type),
+    isDomainOrIp ? searchOtx(query, type) : Promise.resolve([]),
+    isIp ? searchAbuseIPDB(query) : Promise.resolve([]),
   ]);
 
-  const all = [...githubCode, ...githubGists, ...urlscan, ...shodan, ...vt, ...githubUser, ...leakLookup];
+  const all = [...githubCode, ...githubGists, ...urlscan, ...shodan, ...vt, ...githubUser, ...leakLookup, ...otx, ...abuseipdb];
   const seen = new Set<string>();
   const deduped = all.filter(r => { if (seen.has(r.url)) return false; seen.add(r.url); return true; });
 
