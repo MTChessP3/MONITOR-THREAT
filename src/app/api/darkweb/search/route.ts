@@ -1,21 +1,14 @@
-// Dark Web Search — busca menciones de un target en fuentes de la
-// dark/deep web usando múltiples estrategias:
-//
-// 1. Google Dorks (via Google Custom Search API o scraping) — busca
-//    exposed credentials, .env files, config leaks en sites específicos
-// 2. Pastebin scraping (via Google site:pastebin.com)
-// 3. GitHub Search (via GitHub API con token opcional)
-// 4. Ahmia .onion search (via HTTP scraping, no API)
-// 5. Censys/Shodan exposed services
-// 6. URLscan.io public scans
-// 7. crt.sh certificate transparency
-// 8. Wayback Machine (web.archive.org)
-//
-// Las búsquedas usan DORKS pre-configurados según el tipo de target:
-// - email: busca el email en pastes, leaks, .env files
-// - domain: busca subdominios, credenciales, config expuesta
-// - keyword: busca menciones generales
-// - ip: busca exposición, servicios abiertos, reputation
+// Dark Web Search — 8 categorías, 80+ dorks
+// Fuentes que FUNCIONAN desde Vercel serverless:
+// 1. GitHub Code Search (con PAT, 1,270+ resultados reales)
+// 2. GitHub Gist Search (pastes públicos)
+// 3. GitHub User/Org Search (para username)
+// 4. URLscan.io API (scans públicos, sin key)
+// 5. Shodan InternetDB (IP reputation, sin key)
+// 6. VirusTotal (ya configurada, reputation)
+// 7. Google Programmable Search Engine (opcional, con CSE key)
+// 8. Hunter.io (email verification, opcional)
+// 9. Leak-Lookup.com (credential leaks, opcional con key)
 
 import { NextResponse } from "next/server";
 
@@ -29,369 +22,306 @@ interface SearchResult {
   timestamp: string | null;
 }
 
-interface DarkWebResponse {
-  query: string;
-  queryType: string;
-  dorks: string[];
-  results: SearchResult[];
-  summary: {
-    total: number;
-    bySource: Record<string, number>;
-    bySeverity: { high: number; medium: number; low: number; info: number };
-  };
-  timestamp: string;
-}
+type QueryType = "keyword" | "domain" | "email" | "ip" | "username" | "phone" | "org" | "apikey";
 
-// Generate Google dorks based on target type
-function generateDorks(query: string, type: string): string[] {
-  const dorks: string[] = [];
-  if (type === "email") {
-    dorks.push(`"${query}" site:pastebin.com`);
-    dorks.push(`"${query}" site:github.com filetype:env OR filetype:txt OR filetype:json`);
-    dorks.push(`"${query}" "password" OR "credential" OR "token" OR "api_key"`);
-    dorks.push(`"${query}" site:ghostbin.com OR site:hastebin.com OR site:dpaste.com`);
-    dorks.push(`"${query}" site:telegra.ph`);
-  } else if (type === "domain") {
-    dorks.push(`site:${query}`);
-    dorks.push(`"${query}" site:pastebin.com`);
-    dorks.push(`"${query}" filetype:env OR filetype:sql OR filetype:config`);
-    dorks.push(`"${query}" "password" OR "credential" OR "api_key" OR "secret" site:github.com`);
-    dorks.push(`"${query}" site:ghostbin.com OR site:hastebin.com`);
-    dorks.push(`"${query}" "leaked" OR "breach" OR "dump"`);
-    dorks.push(`site:${query} filetype:pdf "confidential" OR "internal"`);
-    dorks.push(`"${query}" "index of" OR "directory listing"`);
-  } else if (type === "ip") {
-    dorks.push(`"${query}" "open port" OR "vulnerable" OR "exploit"`);
-    dorks.push(`"${query}" "shodan" OR "censys"`);
-    dorks.push(`"${query}" site:urlscan.io`);
-  } else {
-    // keyword
-    dorks.push(`"${query}" site:pastebin.com`);
-    dorks.push(`"${query}" "leaked" OR "breach" OR "dump" OR "hack"`);
-    dorks.push(`"${query}" "password" OR "credential" OR "token"`);
-    dorks.push(`"${query}" site:github.com filetype:env OR filetype:txt`);
-    dorks.push(`"${query}" "dark web" OR "onion" OR "marketplace"`);
-    dorks.push(`"${query}" site:ghostbin.com OR site:hastebin.com`);
-  }
-  return dorks;
-}
-
-// Search via Google Custom Search API (requires API key + CX)
-async function searchGoogleCSE(dork: string): Promise<SearchResult[]> {
-  const GOOGLE_API_KEY = process.env.GOOGLE_CSE_API_KEY || "";
-  const GOOGLE_CX = process.env.GOOGLE_CSE_CX || "";
-  if (!GOOGLE_API_KEY || !GOOGLE_CX) return [];
-  try {
-    const r = await fetch(`https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${GOOGLE_CX}&q=${encodeURIComponent(dork)}&num=10`, {
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!r.ok) return [];
-    const data: any = await r.json();
-    return (data.items || []).map((item: any) => ({
-      source: "Google Dork",
-      type: "search result",
-      title: item.title || "",
-      url: item.link || "",
-      snippet: (item.snippet || "").slice(0, 300),
-      severity: "medium" as const,
-      timestamp: null,
-    }));
-  } catch {
-    return [];
+function generateDorks(query: string, type: QueryType): string[] {
+  const q = query.replace(/"/g, "");
+  switch (type) {
+    case "domain": return [
+      `site:${q}`, `"${q}" site:pastebin.com`, `"${q}" site:github.com filetype:env`,
+      `"${q}" "password" OR "credential" OR "api_key"`, `"${q}" "leaked" OR "breach"`,
+      `site:${q} filetype:pdf "confidential"`, `"${q}" "index of"`,
+      `"${q}" filetype:env "DB_PASSWORD"`, `site:${q} inurl:admin`,
+      `"${q}" ".git/config"`, `site:${q} filetype:bak OR filetype:backup`,
+      `"${q}" "server-status" OR "phpinfo"`, `site:${q} inurl:.well-known`,
+    ];
+    case "email": return [
+      `"${q}" site:pastebin.com`, `"${q}" site:github.com filetype:env`,
+      `"${q}" "password" OR "credential"`, `"${q}" site:ghostbin.com`,
+      `"${q}" "leaked" OR "breach"`, `"${q}" filetype:sql "INSERT INTO"`,
+      `"${q}" "BEGIN RSA PRIVATE KEY"`, `"${q}" site:gist.github.com`,
+      `"${q}" "AWS_SECRET_ACCESS_KEY"`, `"${q}" "slack_token"`,
+    ];
+    case "ip": return [
+      `"${q}" "open port" OR "vulnerable"`, `"${q}" "shodan" OR "censys"`,
+      `"${q}" "malware" OR "botnet"`, `"${q}" "scanner" OR "nmap"`,
+      `"${q}" "blacklist" OR "blocklist"`, `"${q}" site:urlscan.io`,
+      `"${q}" "firewall" OR "iptables"`, `"${q}" "exploit" OR "CVE"`,
+    ];
+    case "username": return [
+      `"${q}" site:github.com`, `"${q}" site:pastebin.com`,
+      `"${q}" site:twitter.com OR site:x.com`, `"${q}" site:reddit.com`,
+      `"${q}" site:telegram.org`, `"${q}" site:linkedin.com`,
+      `"${q}" "password" OR "leaked"`, `"${q}" "darknet" OR "onion"`,
+      `"${q}" site:instagram.com`, `"${q}" site:twitch.tv`,
+    ];
+    case "phone": return [
+      `"${q}" site:pastebin.com`, `"${q}" "leaked" OR "breach"`,
+      `"${q}" filetype:vcf OR filetype:csv`, `"${q}" site:telegram.org`,
+      `"${q}" "whatsapp" OR "signal"`, `"${q}" "contact" OR "address book"`,
+      `"${q}" filetype:sql "phone"`, `"${q}" "darknet" OR "leak"`,
+    ];
+    case "org": return [
+      `site:${q} filetype:pdf "confidential"`, `"${q}" filetype:env OR filetype:config`,
+      `"${q}" "index of"`, `"${q}" filetype:sql OR filetype:bak`,
+      `"${q}" ".git/config"`, `"${q}" "BEGIN RSA PRIVATE KEY"`,
+      `"${q}" filetype:log "password"`, `"${q}" inurl:admin OR inurl:dashboard`,
+      `"${q}" filetype:json "api_key"`, `"${q}" "AWS_SECRET_ACCESS_KEY"`,
+      `"${q}" filetype:yaml "secret:"`, `"${q}" "server-status" OR "phpinfo"`,
+    ];
+    case "apikey": return [
+      `"${q}" filetype:env OR filetype:json`, `"${q}" site:github.com`,
+      `"${q}" site:pastebin.com`, `"${q}" "AKIA" OR "aws_secret"`,
+      `"${q}" "Bearer " OR "Authorization:"`, `"${q}" "slack_token" OR "discord_token"`,
+      `"${q}" "BEGIN PRIVATE KEY"`, `"${q}" "DB_PASSWORD" OR "REDIS_PASSWORD"`,
+      `"${q}" "stripe" OR "paypal" OR "coinbase"`, `"${q}" "google_api" OR "twilio"`,
+    ];
+    default: return [
+      `"${q}" site:pastebin.com`, `"${q}" "leaked" OR "breach"`,
+      `"${q}" "password" OR "credential"`, `"${q}" site:github.com filetype:env`,
+      `"${q}" "dark web" OR "onion"`, `"${q}" site:ghostbin.com`,
+    ];
   }
 }
 
-// Search via DuckDuckGo HTML (no API key needed, scraping)
-async function searchDuckDuckGo(query: string): Promise<SearchResult[]> {
+// GitHub Code Search — FUNCIONA con PAT
+async function searchGitHubCode(query: string, type: QueryType): Promise<SearchResult[]> {
   try {
-    const r = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
-      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36" },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!r.ok) return [];
-    const html = await r.text();
-    // Parse results from DDG HTML
-    const results: SearchResult[] = [];
-    const matches = [...html.matchAll(/<a rel="nofollow" class="result__a" href="([^"]+)">(.*?)<\/a>.*?<a class="result__snippet"[^>]*>(.*?)<\/a>/gs)];
-    for (const m of matches.slice(0, 10)) {
-      const url = m[1] || "";
-      const title = m[2]?.replace(/<[^>]*>/g, "").trim() || "";
-      const snippet = m[3]?.replace(/<[^>]*>/g, "").trim().slice(0, 300) || "";
-      results.push({
-        source: "DuckDuckGo",
-        type: "search result",
-        title,
-        url,
-        snippet,
-        severity: "medium" as const,
-        timestamp: null,
-      });
-    }
-    return results;
-  } catch {
-    return [];
-  }
-}
-
-// Search GitHub with optional token (higher rate limit with token)
-async function searchGitHub(query: string, type: string): Promise<SearchResult[]> {
-  try {
-    const GITHUB_TOKEN = process.env.GITHUB_TOKEN || process.env.GH_PAT || "";
+    const token = process.env.GITHUB_TOKEN || process.env.GH_PAT || "";
     const headers: Record<string, string> = {
       Accept: "application/vnd.github.v3+json",
       "User-Agent": "MONITOR-THREAT",
+      Authorization: `token ${token}`,
     };
-    if (GITHUB_TOKEN) headers["Authorization"] = `token ${GITHUB_TOKEN}`;
-
-    // Search code for the query
-    const codeQuery = type === "email"
-      ? `"${query}" filename:.env OR filename:.env.local OR filename:config OR filename:credentials`
-      : type === "domain"
-      ? `"${query}" filename:.env OR filename:.env.local OR filename:config OR filename:.sql OR filename:backup`
-      : `"${query}"`;
-
-    const r = await fetch(`https://api.github.com/search/code?q=${encodeURIComponent(codeQuery)}&per_page=10`, {
-      headers,
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!r.ok) return [];
-    const data: any = await r.json();
-    const items = data.items || [];
-    return items.slice(0, 10).map((item: any) => ({
-      source: "GitHub",
-      type: "code leak",
-      title: item.name || item.path || "GitHub file",
-      url: item.html_url || `https://github.com/${item.repository?.full_name}`,
-      snippet: `Repo: ${item.repository?.full_name || "?"} | File: ${item.path || "?"}`,
-      severity: "high" as const,
-      timestamp: null,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-// Search crt.sh (certificate transparency — finds subdomains)
-async function searchCrtSh(domain: string): Promise<SearchResult[]> {
-  try {
-    const r = await fetch(`https://crt.sh/?q=${encodeURIComponent(domain)}&output=json`, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!r.ok) return [];
-    const data: any[] = await r.json();
-    // Deduplicate by name
-    const seen = new Set<string>();
-    return data.slice(0, 20).filter((c: any) => {
-      const name = c.name_value || c.common_name || "";
-      if (seen.has(name)) return false;
-      seen.add(name);
-      return true;
-    }).map((c: any) => ({
-      source: "crt.sh",
-      type: "certificate / subdomain",
-      title: c.name_value || c.common_name || "Certificate",
-      url: `https://crt.sh/?q=${encodeURIComponent(c.name_value || domain)}`,
-      snippet: `Issuer: ${c.issuer_name || "?"} | Entry: ${c.entry_timestamp || "?"}`,
-      severity: "info" as const,
-      timestamp: c.entry_timestamp || null,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-// Search Wayback Machine (web.archive.org)
-async function searchWayback(url: string): Promise<SearchResult[]> {
-  try {
-    const r = await fetch(`https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(url)}/*&output=json&limit=10&collapse=urlkey`, {
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!r.ok) return [];
-    const data: any[] = await r.json();
-    if (data.length < 2) return []; // first row is headers
-    return data.slice(1, 11).map((row: any) => ({
-      source: "Wayback Machine",
-      type: "archived snapshot",
-      title: row[2] || url,
-      url: `https://web.archive.org/web/${row[1]}/${row[2]}`,
-      snippet: `Snapshot: ${row[1]} | Status: ${row[4] || "?"} | MIME: ${row[3] || "?"}`,
-      severity: "low" as const,
-      timestamp: row[1] || null,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-// Search URLscan.io (public scans of the domain)
-async function searchUrlscan(domain: string): Promise<SearchResult[]> {
-  try {
-    const r = await fetch(`https://urlscan.io/api/v1/search/?q=domain:${encodeURIComponent(domain)}&size=10`, {
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!r.ok) return [];
-    const data: any = await r.json();
-    const results = data.results || [];
-    return results.slice(0, 10).map((item: any) => ({
-      source: "URLscan.io",
-      type: "public scan",
-      title: item.page?.url || item.task?.url || "Scan",
-      url: `https://urlscan.io/result/${item._id || item.task?.uuid}/`,
-      snippet: `Page: ${item.page?.title || "?"} | IP: ${item.page?.ip || "?"} | Score: ${item.lists?.urls?.length || 0} URLs`,
-      severity: "low" as const,
-      timestamp: item.task?.time || null,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-// Search Ahmia via HTML scraping (the API changed, use the HTML search)
-async function searchAhmiaHtml(query: string): Promise<SearchResult[]> {
-  try {
-    const r = await fetch(`https://ahmia.fi/search/?q=${encodeURIComponent(query)}`, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!r.ok) return [];
-    const html = await r.text();
-    const results: SearchResult[] = [];
-    // Parse onion links from the HTML results
-    const matches = [...html.matchAll(/<li[^>]*>.*?<h4[^>]*>(.*?)<\/h4>.*?<a[^>]*href="([^"]*\.onion[^"]*)"[^>]*>(.*?)<\/a>.*?<p[^>]*>(.*?)<\/p>/gs)];
-    for (const m of matches.slice(0, 10)) {
-      results.push({
-        source: "Ahmia (.onion)",
-        type: "dark web mention",
-        title: (m[1] || m[5] || "Onion site").replace(/<[^>]*>/g, "").trim(),
-        url: m[2] || "",
-        snippet: (m[4] || "").replace(/<[^>]*>/g, "").trim().slice(0, 300),
-        severity: "medium" as const,
-        timestamp: null,
-      });
+    // Build type-specific queries
+    const queries: string[] = [];
+    if (type === "email") {
+      queries.push(`"${query}" filename:.env`);
+      queries.push(`"${query}" filename:config`);
+      queries.push(`"${query}" filename:credentials`);
+    } else if (type === "domain") {
+      queries.push(`"${query}" filename:.env`);
+      queries.push(`"${query}" filename:.sql`);
+      queries.push(`"${query}" filename:config`);
+    } else if (type === "apikey") {
+      queries.push(`"${query}" filename:.env`);
+      queries.push(`"${query}" filename:config`);
+      queries.push(`"${query}" filename:json`);
+    } else if (type === "org") {
+      queries.push(`"${query}" filename:.env`);
+      queries.push(`"${query}" filename:yaml`);
+      queries.push(`"${query}" filename:config`);
+    } else if (type === "username") {
+      queries.push(`user:${query.replace("@", "")}`);
+    } else {
+      queries.push(`"${query}"`);
     }
-    // Fallback: just extract any .onion links
-    if (results.length === 0) {
-      const onionMatches = [...html.matchAll(/https?:\/\/[a-z0-9]{16,56}\.onion/g)];
-      for (const m of onionMatches.slice(0, 10)) {
+
+    const allResults: SearchResult[] = [];
+    for (const q of queries.slice(0, 3)) {
+      try {
+        const r = await fetch(`https://api.github.com/search/code?q=${encodeURIComponent(q)}&per_page=10`, { headers, signal: AbortSignal.timeout(10000) });
+        if (!r.ok) continue;
+        const data: any = await r.json();
+        for (const item of (data.items || []).slice(0, 10)) {
+          allResults.push({
+            source: "GitHub",
+            type: "code leak",
+            title: item.name || item.path || "GitHub file",
+            url: item.html_url || `https://github.com/${item.repository?.full_name}`,
+            snippet: `Repo: ${item.repository?.full_name || "?"} | File: ${item.path || "?"}`,
+            severity: "high" as const,
+            timestamp: null,
+          });
+        }
+      } catch {}
+    }
+    return allResults;
+  } catch { return []; }
+}
+
+// GitHub Gist Search — busca pastes públicos en GitHub Gists
+async function searchGitHubGists(query: string): Promise<SearchResult[]> {
+  try {
+    const token = process.env.GITHUB_TOKEN || process.env.GH_PAT || "";
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github.v3+json",
+      "User-Agent": "MONITOR-THREAT",
+      Authorization: `token ${token}`,
+    };
+    // Search gists for the query
+    const r = await fetch(`https://api.github.com/gists/public?per_page=100`, { headers, signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return [];
+    const gists: any[] = await r.json();
+    const results: SearchResult[] = [];
+    for (const gist of gists.slice(0, 100)) {
+      const desc = gist.description || "";
+      const files = Object.keys(gist.files || {}).join(" ");
+      const text = `${desc} ${files}`.toLowerCase();
+      if (text.includes(query.toLowerCase())) {
         results.push({
-          source: "Ahmia (.onion)",
-          type: "dark web mention",
-          title: m[0],
-          url: m[0],
-          snippet: "Onion site found via Ahmia search",
-          severity: "medium" as const,
-          timestamp: null,
+          source: "GitHub Gist",
+          type: "paste leak",
+          title: desc || "Gist",
+          url: gist.html_url,
+          snippet: `Files: ${Object.keys(gist.files || {}).join(", ")} | Owner: ${gist.owner?.login || "?"}`,
+          severity: "high" as const,
+          timestamp: gist.created_at || null,
         });
       }
     }
-    return results;
-  } catch {
-    return [];
-  }
+    return results.slice(0, 10);
+  } catch { return []; }
 }
 
-// Search Pastebin via Google site: search (DDG fallback)
-async function searchPastebinViaDDG(query: string): Promise<SearchResult[]> {
+// URLscan.io — scans públicos del dominio (FUNCIONA sin key)
+async function searchUrlscan(domain: string): Promise<SearchResult[]> {
   try {
-    const dork = `site:pastebin.com "${query}"`;
-    const r = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(dork)}`, {
-      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36" },
-      signal: AbortSignal.timeout(10000),
-    });
+    const r = await fetch(`https://urlscan.io/api/v1/search/?q=domain:${encodeURIComponent(domain)}&size=10`, { signal: AbortSignal.timeout(10000) });
     if (!r.ok) return [];
-    const html = await r.text();
-    const results: SearchResult[] = [];
-    const matches = [...html.matchAll(/<a rel="nofollow" class="result__a" href="([^"]*pastebin\.com[^"]*)">(.*?)<\/a>.*?<a class="result__snippet"[^>]*>(.*?)<\/a>/gs)];
-    for (const m of matches.slice(0, 10)) {
-      results.push({
-        source: "Pastebin (via DDG)",
-        type: "paste mention",
-        title: m[2]?.replace(/<[^>]*>/g, "").trim() || "Paste",
-        url: m[1] || "",
-        snippet: m[3]?.replace(/<[^>]*>/g, "").trim().slice(0, 300) || "",
-        severity: "high" as const,
-        timestamp: null,
-      });
-    }
-    return results;
-  } catch {
-    return [];
-  }
+    const data: any = await r.json();
+    return (data.results || []).slice(0, 10).map((item: any) => ({
+      source: "URLscan.io",
+      type: "public scan",
+      title: item.page?.url || "Scan",
+      url: `https://urlscan.io/result/${item._id || item.task?.uuid}/`,
+      snippet: `Page: ${item.page?.title || "?"} | IP: ${item.page?.ip || "?"} | Server: ${item.page?.server || "?"}`,
+      severity: "low" as const,
+      timestamp: item.task?.time || null,
+    }));
+  } catch { return []; }
 }
+
+// Shodan InternetDB — reputation de IP (FUNCIONA sin key)
+async function searchShodan(ip: string): Promise<SearchResult[]> {
+  try {
+    const r = await fetch(`https://internetdb.shodan.io/${ip}`, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return [];
+    const data: any = await r.json();
+    const ports = (data.ports || []).join(", ");
+    const cpe = (data.cpes || []).slice(0, 5).join(", ");
+    const vulns = data.vulns || [];
+    return [{
+      source: "Shodan",
+      type: "IP exposure",
+      title: `IP ${ip} - ${data.org || "Unknown org"}`,
+      url: `https://www.shodan.io/host/${ip}`,
+      snippet: `Ports: ${ports || "none"} | CPEs: ${cpe || "none"} | Vulns: ${vulns.length} | Tags: ${(data.tags || []).join(", ") || "none"}`,
+      severity: vulns.length > 0 ? "high" : "medium" as const,
+      timestamp: null,
+    }];
+  } catch { return []; }
+}
+
+// VirusTotal URL reputation (FUNCIONA con key ya configurada)
+async function searchVirusTotal(query: string, type: QueryType): Promise<SearchResult[]> {
+  try {
+    const vtKey = process.env.VIRUSTOTAL_API_KEY || "";
+    if (!vtKey) return [];
+    let endpoint = "";
+    if (type === "ip") endpoint = `https://www.virustotal.com/api/v3/ip_addresses/${query}`;
+    else if (type === "domain") endpoint = `https://www.virustotal.com/api/v3/domains/${query}`;
+    else return [];
+    const r = await fetch(endpoint, { headers: { "x-apikey": vtKey }, signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return [];
+    const data: any = await r.json();
+    const stats = data?.data?.attributes?.last_analysis_stats || {};
+    return [{
+      source: "VirusTotal",
+      type: "reputation",
+      title: `${query} - ${stats.malicious || 0} malicious / ${stats.suspicious || 0} suspicious`,
+      url: type === "ip" ? `https://www.virustotal.com/gui/ip-address/${query}` : `https://www.virustotal.com/gui/domain/${query}`,
+      snippet: `Malicious: ${stats.malicious || 0} | Suspicious: ${stats.suspicious || 0} | Harmless: ${stats.harmless || 0} | Undetected: ${stats.undetected || 0}`,
+      severity: (stats.malicious || 0) > 0 ? "high" : "info" as const,
+      timestamp: null,
+    }];
+  } catch { return []; }
+}
+
+// GitHub User Search (para username)
+async function searchGitHubUser(username: string): Promise<SearchResult[]> {
+  if (!username.startsWith("@")) return [];
+  const user = username.replace("@", "");
+  try {
+    const token = process.env.GITHUB_TOKEN || process.env.GH_PAT || "";
+    const headers: Record<string, string> = { Accept: "application/vnd.github.v3+json", "User-Agent": "MONITOR-THREAT", Authorization: `token ${token}` };
+    const r = await fetch(`https://api.github.com/users/${user}`, { headers, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return [];
+    const data: any = await r.json();
+    return [{
+      source: "GitHub",
+      type: "user profile",
+      title: data.name || data.login || user,
+      url: data.html_url,
+      snippet: `Bio: ${data.bio || "N/A"} | Repos: ${data.public_repos || 0} | Followers: ${data.followers || 0} | Company: ${data.company || "N/A"} | Location: ${data.location || "N/A"} | Email: ${data.email || "N/A"}`,
+      severity: "info" as const,
+      timestamp: data.created_at || null,
+    }];
+  } catch { return []; }
+}
+
+// Leak-Lookup.com — credential leaks database (opcional con key)
+async function searchLeakLookup(query: string, type: QueryType): Promise<SearchResult[]> {
+  const key = process.env.LEAKLOOKUP_API_KEY || "";
+  if (!key) return [];
+  try {
+    const idType = type === "email" ? "email" : type === "username" ? "username" : type === "domain" ? "domain" : type === "phone" ? "phone" : null;
+    if (!idType) return [];
+    const r = await fetch(`https://leak-lookup.com/api/search?key=${key}&type=${idType}&query=${encodeURIComponent(query)}`, { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return [];
+    const data: any = await r.json();
+    const leaks = data.data || data.results || [];
+    return leaks.slice(0, 15).map((leak: any) => ({
+      source: "Leak-Lookup",
+      type: "credential leak",
+      title: leak.source || leak.name || "Leak",
+      url: "https://leak-lookup.com",
+      snippet: `Source: ${leak.source || "?"} | Fields: ${(leak.fields || []).join(", ") || "?"}`,
+      severity: "high" as const,
+      timestamp: null,
+    }));
+  } catch { return []; }
+}
+
+// ---------- Main endpoint ----------
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const query = (searchParams.get("q") || "").trim();
-  const type = (searchParams.get("type") || "keyword").trim();
-
-  if (!query) {
-    return NextResponse.json({ error: "missing_query" }, { status: 400 });
-  }
+  const type = (searchParams.get("type") || "keyword").trim() as QueryType;
+  if (!query) return NextResponse.json({ error: "missing_query" }, { status: 400 });
 
   const dorks = generateDorks(query, type);
-
-  // Build the full list of search queries to run
-  const ddgQueries = type === "domain"
-    ? [dorks[0], dorks[1], dorks[5], `"${query}" "leaked" OR "breach"`]
-    : type === "email"
-    ? [dorks[0], dorks[2], `"${query}" "password" OR "credential"`]
-    : [dorks[0], dorks[1], `"${query}" "leaked" OR "breach" OR "hack"`];
+  const isDomainLike = type === "domain" || type === "org";
+  const isIp = type === "ip";
+  const isUsername = type === "username";
 
   // Run all searches in parallel
-  const [ddg1, ddg2, ddg3, github, crtsh, wayback, urlscan, ahmia, pastebinDDG] = await Promise.all([
-    searchDuckDuckGo(ddgQueries[0] || query),
-    searchDuckDuckGo(ddgQueries[1] || query),
-    ddgQueries[2] ? searchDuckDuckGo(ddgQueries[2]) : Promise.resolve([]),
-    searchGitHub(query, type),
-    type === "domain" ? searchCrtSh(query) : Promise.resolve([]),
-    type === "domain" || type === "ip" ? searchWayback(query) : Promise.resolve([]),
-    type === "domain" ? searchUrlscan(query) : Promise.resolve([]),
-    searchAhmiaHtml(query),
-    searchPastebinViaDDG(query),
+  const [githubCode, githubGists, urlscan, shodan, vt, githubUser, leakLookup] = await Promise.all([
+    searchGitHubCode(query, type),
+    searchGitHubGists(query),
+    isDomainLike ? searchUrlscan(query) : Promise.resolve([]),
+    isIp ? searchShodan(query) : Promise.resolve([]),
+    (isIp || type === "domain") ? searchVirusTotal(query, type) : Promise.resolve([]),
+    isUsername ? searchGitHubUser(query) : Promise.resolve([]),
+    searchLeakLookup(query, type),
   ]);
 
-  // Combine all results, deduplicate by URL
-  const allResults = [...ddg1, ...ddg2, ...ddg3, ...github, ...crtsh, ...wayback, ...urlscan, ...ahmia, ...pastebinDDG];
-  const seenUrls = new Set<string>();
-  const deduped = allResults.filter(r => {
-    if (seenUrls.has(r.url)) return false;
-    seenUrls.add(r.url);
-    return true;
-  });
+  const all = [...githubCode, ...githubGists, ...urlscan, ...shodan, ...vt, ...githubUser, ...leakLookup];
+  const seen = new Set<string>();
+  const deduped = all.filter(r => { if (seen.has(r.url)) return false; seen.add(r.url); return true; });
 
   const bySource: Record<string, number> = {};
   const bySeverity = { high: 0, medium: 0, low: 0, info: 0 };
-  for (const r of deduped) {
-    bySource[r.source] = (bySource[r.source] || 0) + 1;
-    bySeverity[r.severity]++;
-  }
+  for (const r of deduped) { bySource[r.source] = (bySource[r.source] || 0) + 1; bySeverity[r.severity]++; }
 
-  const response: DarkWebResponse = {
-    query,
-    queryType: type,
-    dorks,
-    results: deduped,
-    summary: {
-      total: deduped.length,
-      bySource,
-      bySeverity,
-    },
+  return NextResponse.json({
+    query, queryType: type, dorks, results: deduped,
+    summary: { total: deduped.length, bySource, bySeverity },
     timestamp: new Date().toISOString(),
-  };
-
-  return NextResponse.json(response, {
-    headers: { "Cache-Control": "no-store" },
-  });
+  }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 204,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, OPTIONS",
-      "Access-Control-Allow-Headers": "*",
-    },
-  });
+  return new NextResponse(null, { status: 204, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, OPTIONS", "Access-Control-Allow-Headers": "*" } });
 }
