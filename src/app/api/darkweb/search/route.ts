@@ -261,8 +261,10 @@ export async function GET(request: Request) {
     searchGitHubGists(query),
     isUsername ? searchGitHubUser(query) : Promise.resolve([]),
     isUsername ? searchGitHubUsersByKeyword(query) : Promise.resolve([]),
-    (type === "keyword" || type === "org") ? searchGitHubRepos(query) : Promise.resolve([]),
-    (isEmail || type === "keyword") ? searchHibpBreaches() : Promise.resolve([]),
+    // GitHub repos: search for keyword, org, email domain, phone, apikey
+    (type === "keyword" || type === "org" || type === "email" || type === "phone" || type === "apikey") ? searchGitHubRepos(query) : Promise.resolve([]),
+    // HIBP: ONLY for email (breach list is static, not useful for other types)
+    isEmail ? searchHibpBreaches() : Promise.resolve([]),
     isEmail ? searchGravatar(query) : Promise.resolve([]),
     isIp ? searchShodan(query) : Promise.resolve([]),
     (isIp || type === "domain") ? searchVirusTotal(query, type) : Promise.resolve([]),
