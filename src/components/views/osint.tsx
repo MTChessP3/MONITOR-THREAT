@@ -33,49 +33,8 @@ export { DeepDarkWebView } from "@/components/views/deep-dark-web-view";
 // ---------- Telegram & Discord Monitor (re-export from dedicated file) ----------
 export { TelegramDiscordView } from "@/components/views/telegram-discord-view";
 
-// ---------- Executive OSINT ----------
-export function ExecutiveOsintView() {
-  return (
-    <ModuleShell
-      name="Executive OSINT"
-      description="Profiling of executives and VIPs; digital exposure and public footprint."
-      icon={UserSearch}
-      category="OSINT"
-    >
-      <SearchBar label="Full name or email" placeholder="John Doe / john@company.com" />
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-        <Panel title="Public Footprint">
-          <EmptyModuleState
-            icon={UserSearch}
-            name="No profile yet"
-            description="Enter a name to enumerate LinkedIn, X, GitHub and corporate mentions."
-          />
-        </Panel>
-        <Panel title="Data Breaches">
-          <EmptyModuleState
-            icon={UserSearch}
-            name="No hits"
-            description="Check HIBP, DeHashed and IntelX for credential leaks tied to the subject."
-          />
-        </Panel>
-        <Panel title="Affiliations">
-          <EmptyModuleState
-            icon={UserSearch}
-            name="No data"
-            description="Discover companies, boards and partnerships publicly linked to the subject."
-          />
-        </Panel>
-        <Panel title="Risk Assessment">
-          <EmptyModuleState
-            icon={UserSearch}
-            name="No risk score"
-            description="Combine exposure, breach history and behavior into a risk profile."
-          />
-        </Panel>
-      </div>
-    </ModuleShell>
-  );
-}
+// ---------- Executive OSINT (re-export from dedicated file) ----------
+export { ExecutiveOsintView } from "@/components/views/executive-osint-view";
 
 // ---------- Brand Protection ----------
 export function BrandProtectionView() {
