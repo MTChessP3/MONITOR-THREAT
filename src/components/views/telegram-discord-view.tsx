@@ -47,6 +47,7 @@ export function TelegramDiscordView() {
   const [error, setError] = React.useState<string | null>(null);
   const [searched, setSearched] = React.useState(false);
   const [hasTelegramBot, setHasTelegramBot] = React.useState(false);
+  const [hasDiscordBot, setHasDiscordBot] = React.useState(false);
   const [allKeywordResults, setAllKeywordResults] = React.useState<Record<string, SearchResult[]>>({});
 
   const search = async (q?: string) => {
@@ -68,6 +69,7 @@ export function TelegramDiscordView() {
       setDorks(j.dorks || []);
       setSummary(j.summary || null);
       setHasTelegramBot(j.hasTelegramBot || false);
+      setHasDiscordBot(j.hasDiscordBot || false);
     } catch (e: any) {
       setError(String(e?.message || e));
     }
@@ -181,9 +183,14 @@ export function TelegramDiscordView() {
             <Bot className="w-3 h-3" /> Bot de Telegram conectado — buscando en canales en tiempo real
           </div>
         )}
-        {!hasTelegramBot && (
+        {hasDiscordBot && (
+          <div className="mt-1 text-[10px] text-indigo-500 flex items-center gap-1">
+            <Bot className="w-3 h-3" /> Bot de Discord conectado — buscando en servidores en tiempo real
+          </div>
+        )}
+        {!hasTelegramBot && !hasDiscordBot && (
           <div className="mt-2 text-[10px] text-yellow-500">
-            Sin bot de Telegram: usa dorks + GitHub + OTX + URLscan. Para monitoreo en tiempo real, configura TELEGRAM_BOT_TOKEN en Vercel.
+            Sin bots: usa scraping de Telegram (t.me/s/) + TGStat + GitHub + OTX + URLscan. Para monitoreo en tiempo real, configura TELEGRAM_BOT_TOKEN y/o DISCORD_BOT_TOKEN en Vercel.
           </div>
         )}
       </Panel>

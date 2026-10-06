@@ -1,12 +1,13 @@
 // Telegram & Discord Monitor Search
 // Busca menciones de keywords (marcas financieras) en:
-// 1. GitHub Code Search (bots/tools que mencionan las marcas)
-// 2. GitHub Repo Search (repos sobre phishing de esas marcas)
-// 3. AlienVault OTX (IOCs relacionados)
-// 4. URLscan.io (scans de paginas de phishing que imitan las marcas)
-// 5. VirusTotal (reputation del dominio de la marca)
-// 6. Google Dorks site:t.me + site:discord.com (generados para uso manual)
-// 7. Optional: Telegram Bot API (si hay TELEGRAM_BOT_TOKEN configurado)
+// 1. Telegram scraping (t.me/s/<keyword>) — lee mensajes de canales publicos
+// 2. TGStat scraping (tgstat.com/en/search) — busca canales indexados
+// 3. GitHub Code + Repo Search (phishing tools, leaked configs)
+// 4. AlienVault OTX (IOCs relacionados)
+// 5. URLscan.io (scans de paginas de phishing)
+// 6. VirusTotal (domain reputation)
+// 7. Optional: Telegram Bot API (TELEGRAM_BOT_TOKEN)
+// 8. Optional: Discord Bot API (DISCORD_BOT_TOKEN)
 
 import { NextResponse } from "next/server";
 
@@ -20,7 +21,6 @@ interface SearchResult {
   timestamp: string | null;
 }
 
-// Palabras clave pre-cargadas (marcas financieras LATAM)
 export const DEFAULT_KEYWORDS = [
   "Bancolombia", "Nequi", "Wenia", "Banco Agricola", "Banco Agro Mercantil",
   "Cibest", "SUFI", "WOMPI", "Zaswin",
@@ -33,119 +33,97 @@ function ghHeaders(): Record<string, string> {
   return h;
 }
 
-// GitHub Code Search — busca codigo que menciona la marca
-async function searchGitHubCode(query: string): Promise<SearchResult[]> {
+// ---- TELEGRAM: scraping de canales publicos ----
+async function searchTelegramChannel(keyword: string): Promise<SearchResult[]> {
   try {
-    const r = await fetch(`https://api.github.com/search/code?q=${encodeURIComponent(`"${query}"`)}&per_page=20`, { headers: ghHeaders(), signal: AbortSignal.timeout(10000) });
-    if (!r.ok) return [];
-    const d: any = await r.json();
-    return (d.items || []).slice(0, 20).map((item: any) => ({
-      source: "GitHub Code", type: "code mention", title: item.name || item.path || "File",
-      url: item.html_url, snippet: `Repo: ${item.repository?.full_name || "?"} | File: ${item.path || "?"}`,
-      severity: "medium" as const, timestamp: null,
-    }));
-  } catch { return []; }
-}
-
-// GitHub Repo Search — repos sobre phishing/scam de la marca
-async function searchGitHubRepos(query: string): Promise<SearchResult[]> {
-  try {
-    const r = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(`${query} phishing OR scam OR clone OR fake`)}&per_page=20&sort=updated`, { headers: ghHeaders(), signal: AbortSignal.timeout(10000) });
-    if (!r.ok) return [];
-    const d: any = await r.json();
-    return (d.items || []).slice(0, 20).map((repo: any) => ({
-      source: "GitHub Repo", type: "phishing tool/repo", title: repo.full_name,
-      url: repo.html_url, snippet: `Stars: ${repo.stargazers_count || 0} | Forks: ${repo.forks_count || 0} | Lang: ${repo.language || "?"} | Desc: ${(repo.description || "").slice(0, 100)}`,
-      severity: "high" as const, timestamp: repo.updated_at || null,
-    }));
-  } catch { return []; }
-}
-
-// AlienVault OTX — IOCs relacionados con la marca
-async function searchOtx(query: string): Promise<SearchResult[]> {
-  try {
-    // Search OTX for pulses mentioning the brand
-    const r = await fetch(`https://otx.alienvault.com/api/v1/search/pulses?q=${encodeURIComponent(query)}&limit=20`, {
-      headers: { "User-Agent": "MONITOR-THREAT" }, signal: AbortSignal.timeout(10000),
+    // t.me/s/<channel> muestra los mensajes publicos del canal
+    const channelName = keyword.toLowerCase().replace(/\s+/g, "");
+    const r = await fetch(`https://t.me/s/${channelName}`, {
+      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36" },
+      signal: AbortSignal.timeout(10000),
     });
     if (!r.ok) return [];
-    const d: any = await r.json();
-    const pulses = d?.results || [];
-    return pulses.slice(0, 20).map((p: any) => ({
-      source: "AlienVault OTX", type: "threat pulse",
-      title: p.name || "Pulse",
-      url: `https://otx.alienvault.com/pulse/${p.id}`,
-      snippet: `Tags: ${(p.tags || []).join(", ") || "none"} | TLP: ${p.TLP || "?"} | Modified: ${p.modified || "?"} | IOCs: ${p.indicator_count || 0}`,
-      severity: "high" as const, timestamp: p.modified || null,
-    }));
+    const html = await r.text();
+    const results: SearchResult[] = [];
+
+    // Extract channel name/title
+    const titleMatch = html.match(/<meta property="og:title" content="([^"]*)"/);
+    const channelTitle = titleMatch ? titleMatch[1] : `@${channelName}`;
+
+    // Extract messages
+    const messageMatches = [...html.matchAll(/tgme_widget_message_text[^>]*>(.*?)<\/div>/gs)];
+    for (const m of messageMatches.slice(0, 20)) {
+      const text = m[1].replace(/<[^>]*>/g, "").trim().slice(0, 300);
+      if (!text || text === "Channel created") continue;
+      // Check if message mentions phishing/scam/clone keywords
+      const lowerText = text.toLowerCase();
+      const isPhishing = /phishing|scam|clone|fake|fraud|estafa|phishing|clon|falso|robo|credential|password|login|verificar/.test(lowerText);
+      results.push({
+        source: "Telegram (scraping)",
+        type: isPhishing ? "phishing message" : "channel message",
+        title: channelTitle,
+        url: `https://t.me/s/${channelName}`,
+        snippet: text,
+        severity: isPhishing ? "high" : "medium" as const,
+        timestamp: null,
+      });
+    }
+    return results;
   } catch { return []; }
 }
 
-// URLscan.io — scans de paginas que imitan la marca
-async function searchUrlscan(query: string): Promise<SearchResult[]> {
+// ---- TELEGRAM: TGStat search (busca canales indexados) ----
+async function searchTGStat(keyword: string): Promise<SearchResult[]> {
   try {
-    const r = await fetch(`https://urlscan.io/api/v1/search/?q=page.title:"${encodeURIComponent(query)}"&size=20`, { signal: AbortSignal.timeout(10000) });
+    const r = await fetch(`https://tgstat.com/en/search?q=${encodeURIComponent(keyword)}`, {
+      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36" },
+      signal: AbortSignal.timeout(10000),
+    });
     if (!r.ok) return [];
-    const d: any = await r.json();
-    return (d.results || []).slice(0, 20).map((item: any) => ({
-      source: "URLscan.io", type: "phishing page scan",
-      title: item.page?.title || item.page?.url || "Scan",
-      url: `https://urlscan.io/result/${item._id}`,
-      snippet: `URL: ${item.page?.url || "?"} | IP: ${item.page?.ip || "?"} | Domain: ${item.page?.domain || "?"} | Server: ${item.page?.server || "?"}`,
-      severity: "high" as const, timestamp: item.task?.time || null,
-    }));
+    const html = await r.text();
+    const results: SearchResult[] = [];
+
+    // Extract channel links from TGStat results
+    const channelMatches = [...html.matchAll(/<a[^>]*href="https:\/\/t\.me\/([^"\/]+)"[^>]*>(?:<img[^>]*>)?([^<]*)<\/a>/g)];
+    for (const m of channelMatches.slice(0, 20)) {
+      const username = m[1];
+      const name = (m[2] || "").replace(/<[^>]*>/g, "").trim() || `@${username}`;
+      results.push({
+        source: "TGStat (Telegram)",
+        type: "telegram channel",
+        title: name,
+        url: `https://t.me/${username}`,
+        snippet: `Canal de Telegram encontrado en TGStat: @${username}`,
+        severity: "medium" as const,
+        timestamp: null,
+      });
+    }
+    return results;
   } catch { return []; }
 }
 
-// VirusTotal — reputation del dominio de la marca
-async function searchVirusTotal(query: string): Promise<SearchResult[]> {
-  try {
-    const key = process.env.VIRUSTOTAL_API_KEY || "";
-    if (!key) return [];
-    // Try to look up as domain (strip spaces, lowercase)
-    const domain = query.toLowerCase().replace(/\s+/g, "").replace(/^www\./, "");
-    if (!domain.includes(".")) return []; // not a domain
-    const r = await fetch(`https://www.virustotal.com/api/v3/domains/${domain}`, { headers: { "x-apikey": key }, signal: AbortSignal.timeout(10000) });
-    if (!r.ok) return [];
-    const d: any = await r.json();
-    const s = d?.data?.attributes?.last_analysis_stats || {};
-    return [{
-      source: "VirusTotal", type: "domain reputation",
-      title: `${domain} - ${s.malicious || 0} malicious`,
-      url: `https://www.virustotal.com/gui/domain/${domain}`,
-      snippet: `Malicious: ${s.malicious || 0} | Suspicious: ${s.suspicious || 0} | Harmless: ${s.harmless || 0} | Undetected: ${s.undetected || 0}`,
-      severity: (s.malicious || 0) > 0 ? "high" : "info" as const,
-      timestamp: null,
-    }];
-  } catch { return []; }
-}
-
-// Telegram Bot API — busca en canales donde el bot es miembro (opcional)
+// ---- TELEGRAM: Bot API (opcional, necesita token) ----
 async function searchTelegramBot(query: string): Promise<SearchResult[]> {
   try {
     const token = process.env.TELEGRAM_BOT_TOKEN || "";
     if (!token) return [];
-    // Get bot updates (messages from channels)
     const r = await fetch(`https://api.telegram.org/bot${token}/getUpdates?limit=100`, { signal: AbortSignal.timeout(10000) });
     if (!r.ok) return [];
     const d: any = await r.json();
     if (!d.ok) return [];
-    const updates = d.result || [];
     const results: SearchResult[] = [];
-    for (const update of updates) {
+    for (const update of (d.result || [])) {
       const msg = update.channel_post || update.message;
       if (!msg) continue;
       const text = (msg.text || msg.caption || "").toLowerCase();
       if (text.includes(query.toLowerCase())) {
-        const chatTitle = msg.chat?.title || msg.chat?.username || "Unknown channel";
-        const chatId = msg.chat?.id;
-        const msgId = msg.message_id;
-        const link = chatId && msgId
-          ? `https://t.me/${msg.chat?.username || 'c/' + String(chatId).slice(4)}/${msgId}`
+        const chatTitle = msg.chat?.title || msg.chat?.username || "?";
+        const link = msg.chat?.username && msg.message_id
+          ? `https://t.me/${msg.chat.username}/${msg.message_id}`
           : "#";
         results.push({
           source: "Telegram (Bot)",
-          type: "channel message",
+          type: "real-time message",
           title: chatTitle,
           url: link,
           snippet: (msg.text || msg.caption || "").slice(0, 300),
@@ -158,7 +136,117 @@ async function searchTelegramBot(query: string): Promise<SearchResult[]> {
   } catch { return []; }
 }
 
-// Generate dorks for manual use
+// ---- DISCORD: Bot API (opcional, necesita token) ----
+async function searchDiscordBot(query: string): Promise<SearchResult[]> {
+  try {
+    const token = process.env.DISCORD_BOT_TOKEN || "";
+    if (!token) return [];
+    // Get bot's guilds
+    const guildsRes = await fetch("https://discord.com/api/v10/users/@me/guilds", {
+      headers: { Authorization: `Bot ${token}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!guildsRes.ok) return [];
+    const guilds: any[] = await guildsRes.json();
+    const results: SearchResult[] = [];
+    for (const guild of guilds.slice(0, 5)) {
+      try {
+        // Search messages in each guild
+        const searchRes = await fetch(`https://discord.com/api/v10/guilds/${guild.id}/messages/search?content=${encodeURIComponent(query)}&limit=20`, {
+          headers: { Authorization: `Bot ${token}` },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!searchRes.ok) continue;
+        const searchData: any = await searchRes.json();
+        for (const msg of (searchData.messages || []).flat().slice(0, 20)) {
+          results.push({
+            source: "Discord (Bot)",
+            type: "server message",
+            title: `${guild.name} → #${msg.channel_id}`,
+            url: `https://discord.com/channels/${guild.id}/${msg.channel_id}/${msg.id}`,
+            snippet: (msg.content || "").slice(0, 300),
+            severity: "high" as const,
+            timestamp: msg.timestamp || null,
+          });
+        }
+      } catch {}
+    }
+    return results.slice(0, 20);
+  } catch { return []; }
+}
+
+// ---- GitHub Code Search ----
+async function searchGitHubCode(query: string): Promise<SearchResult[]> {
+  try {
+    const r = await fetch(`https://api.github.com/search/code?q=${encodeURIComponent(`"${query}"`)}&per_page=20`, { headers: ghHeaders(), signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return [];
+    const d: any = await r.json();
+    return (d.items || []).slice(0, 20).map((item: any) => ({
+      source: "GitHub Code", type: "code mention", title: item.name || "File", url: item.html_url,
+      snippet: `Repo: ${item.repository?.full_name || "?"} | File: ${item.path || "?"}`,
+      severity: "medium" as const, timestamp: null,
+    }));
+  } catch { return []; }
+}
+
+// ---- GitHub Repo Search ----
+async function searchGitHubRepos(query: string): Promise<SearchResult[]> {
+  try {
+    const r = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(`${query} phishing OR scam OR clone OR fake`)}&per_page=20&sort=updated`, { headers: ghHeaders(), signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return [];
+    const d: any = await r.json();
+    return (d.items || []).slice(0, 20).map((repo: any) => ({
+      source: "GitHub Repo", type: "phishing tool", title: repo.full_name, url: repo.html_url,
+      snippet: `Stars: ${repo.stargazers_count || 0} | Forks: ${repo.forks_count || 0} | Lang: ${repo.language || "?"} | ${(repo.description || "").slice(0, 80)}`,
+      severity: "high" as const, timestamp: repo.updated_at || null,
+    }));
+  } catch { return []; }
+}
+
+// ---- AlienVault OTX ----
+async function searchOtx(query: string): Promise<SearchResult[]> {
+  try {
+    const r = await fetch(`https://otx.alienvault.com/api/v1/search/pulses?q=${encodeURIComponent(query)}&limit=20`, { headers: { "User-Agent": "MONITOR-THREAT" }, signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return [];
+    const d: any = await r.json();
+    return (d?.results || []).slice(0, 20).map((p: any) => ({
+      source: "AlienVault OTX", type: "threat pulse", title: p.name || "Pulse", url: `https://otx.alienvault.com/pulse/${p.id}`,
+      snippet: `Tags: ${(p.tags || []).join(", ") || "none"} | IOCs: ${p.indicator_count || 0} | Modified: ${p.modified || "?"}`,
+      severity: "high" as const, timestamp: p.modified || null,
+    }));
+  } catch { return []; }
+}
+
+// ---- URLscan.io ----
+async function searchUrlscan(query: string): Promise<SearchResult[]> {
+  try {
+    const r = await fetch(`https://urlscan.io/api/v1/search/?q=page.title:"${encodeURIComponent(query)}"&size=20`, { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return [];
+    const d: any = await r.json();
+    return (d.results || []).slice(0, 20).map((item: any) => ({
+      source: "URLscan.io", type: "phishing page", title: item.page?.title || "Scan", url: `https://urlscan.io/result/${item._id}`,
+      snippet: `URL: ${item.page?.url || "?"} | IP: ${item.page?.ip || "?"} | Domain: ${item.page?.domain || "?"}`,
+      severity: "high" as const, timestamp: item.task?.time || null,
+    }));
+  } catch { return []; }
+}
+
+// ---- VirusTotal ----
+async function searchVirusTotal(query: string): Promise<SearchResult[]> {
+  try {
+    const key = process.env.VIRUSTOTAL_API_KEY || "";
+    if (!key) return [];
+    const domain = query.toLowerCase().replace(/\s+/g, "");
+    if (!domain.includes(".")) return [];
+    const r = await fetch(`https://www.virustotal.com/api/v3/domains/${domain}`, { headers: { "x-apikey": key }, signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return [];
+    const d: any = await r.json();
+    const s = d?.data?.attributes?.last_analysis_stats || {};
+    return [{ source: "VirusTotal", type: "domain reputation", title: `${domain} - ${s.malicious || 0} malicious`, url: `https://www.virustotal.com/gui/domain/${domain}`, snippet: `Malicious: ${s.malicious || 0} | Suspicious: ${s.suspicious || 0} | Harmless: ${s.harmless || 0}`, severity: (s.malicious || 0) > 0 ? "high" : "info" as const, timestamp: null }];
+  } catch { return []; }
+}
+
+// ---- Dorks ----
 function generateDorks(query: string): string[] {
   return [
     `site:t.me "${query}"`,
@@ -166,31 +254,34 @@ function generateDorks(query: string): string[] {
     `site:t.me/s/ "${query}"`,
     `site:discord.com "${query}"`,
     `site:discord.com "${query}" phishing OR scam`,
-    `site:discord.com/channels/ "${query}"`,
-    `"${query}" site:t.me OR site:telegram.me`,
     `"${query}" "telegram" "canal" OR "grupo"`,
     `"${query}" "discord" "server" OR "invite"`,
     `"${query}" phishing telegram OR discord`,
   ];
 }
 
+// ---- Main endpoint ----
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const query = (searchParams.get("q") || "").trim();
   if (!query) return NextResponse.json({ error: "missing_query" }, { status: 400 });
 
   const dorks = generateDorks(query);
+  const channelName = query.toLowerCase().replace(/\s+/g, "");
 
-  const [ghCode, ghRepos, otx, urlscan, vt, tgBot] = await Promise.all([
+  const [tgChannel, tgStat, tgBot, dcBot, ghCode, ghRepos, otx, urlscan, vt] = await Promise.all([
+    searchTelegramChannel(channelName),
+    searchTGStat(query),
+    searchTelegramBot(query),
+    searchDiscordBot(query),
     searchGitHubCode(query),
     searchGitHubRepos(query),
     searchOtx(query),
     searchUrlscan(query),
     searchVirusTotal(query),
-    searchTelegramBot(query),
   ]);
 
-  const all = [...ghCode, ...ghRepos, ...otx, ...urlscan, ...vt, ...tgBot];
+  const all = [...tgChannel, ...tgStat, ...tgBot, ...dcBot, ...ghCode, ...ghRepos, ...otx, ...urlscan, ...vt];
   const seen = new Set<string>();
   const deduped = all.filter(r => { if (seen.has(r.url)) return false; seen.add(r.url); return true; });
 
@@ -202,6 +293,7 @@ export async function GET(request: Request) {
     query, dorks, results: deduped,
     summary: { total: deduped.length, bySource, bySeverity },
     hasTelegramBot: !!(process.env.TELEGRAM_BOT_TOKEN || ""),
+    hasDiscordBot: !!(process.env.DISCORD_BOT_TOKEN || ""),
     timestamp: new Date().toISOString(),
   }, { headers: { "Cache-Control": "no-store" } });
 }
