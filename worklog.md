@@ -57,3 +57,29 @@ Stage Summary:
 - The video now shows: 0-3s = MONITOR-THREAT initial frame (with target URL), 3-7s = page snapshot #1, 7-11s = page snapshot #2, 11-15s = page snapshot #3, 15-20s = page snapshot #4. Each snapshot shows the actual page content (title + body text) with the target URL in the fake URL bar.
 - This is NOT a real visual screenshot (no images, no CSS layout), but it reliably shows the target page's TEXT CONTENT throughout the 20s video — which is what the user needs for threat intelligence analysis (phishing pages are usually identifiable by their text).
 - Build passes — ready to commit and push, Vercel will auto-deploy
+
+---
+Task ID: executive-osint-multisource
+Agent: main
+Task: Executive OSINT solo buscaba en GitHub — ampliar a multiples fuentes y motores
+
+Work Log:
+- Diagnosticado el problema: el endpoint /api/executive-osint/search solo usaba GitHub (4 sub-fuentes: Users, Profile, Code, Gists) + Gravatar (solo email) + HIBP (lista generica, no busqueda real por email) + VirusTotal (solo email + API key). Los 55 dorks se generaban pero NUNCA se ejecutaban contra ningun motor de busqueda.
+- Anadido DuckDuckGo engine: runDorkOnDDG() hace fetch a https://html.duckduckgo.com/html/?q=... y parsea los resultados con regex (result__a + result__snippet, decodificando el redirect uddg=).
+- Anadido Bing engine: runDorkOnBing() hace fetch a https://www.bing.com/search?q=... y parsea los bloques <li class="b_algo">.
+- runSearchEngines() ejecuta los primeros 4 dorks en paralelo contra DDG + Bing (8 requests en total), dedupe por URL, limite 60 resultados.
+- Anadido Sherlock con 27 sitios: GitHub, GitLab, Bitbucket, Twitter/X, Instagram, Facebook, Reddit, TikTok, YouTube, Twitch, Telegram, Pinterest, Tumblr, Medium, Dev.to, Hashnode, HackerNews, Steam, Keybase, Replit, Vimeo, SoundCloud, Spotify, Patreon, Mastodon (mstdn), Stack Overflow, Kaggle. Para cada uno, checkUrl() hace GET con browser headers y redirect:follow; si status 200 se reporta como "username found".
+- Anadido Wikipedia OpenSearch (action=opensearch) para queries de tipo name — devuelve hasta 15 matches biograficos.
+- Anadido Hunter.io email-verifier (cuando HIBP_API_KEY o HUNTER_API_KEY estan en env).
+- Corregido HIBP: ahora usa /api/v3/breachedaccount/{email} cuando hay HIBP_API_KEY (devuelve las breaches REALES del email, no la lista generica). Fallback a lista generica si no hay key.
+- Response JSON ahora incluye sourcesUsed[] y enginesUsed[] para que el frontend pueda mostrar las fuentes activas.
+- Frontend executive-osint-view.tsx actualizado: nuevas tarjetas moradas para DuckDuckGo/Bing/Sherlock en el summary, badges de fuentes activas bajo el input, descripcion actualizada, panel de dorks indica que los primeros 4 se ejecutan automaticamente.
+- Verificado npx next build pasa sin errores.
+- Commit be5556c..4089776 push a main.
+
+Stage Summary:
+- Files modified: src/app/api/executive-osint/search/route.ts (+277 lineas), src/components/views/executive-osint-view.tsx (+24 netas)
+- Fuentes ahora activas: GitHub (4 sub-fuentes), Gravatar, HIBP (real), VirusTotal, Wikipedia, Hunter.io, DuckDuckGo, Bing, Sherlock (27 redes)
+- Motores: DuckDuckGo + Bing ejecutan 4 dorks cada uno (8 requests en paralelo) y devuelven hasta 60 hits reales combinados
+- Para queries tipo username: Sherlock hace 27 checks en paralelo (en chunks de 12) y reporta en que redes sociales existe el alias
+- Build OK, deploy automatico en Vercel
