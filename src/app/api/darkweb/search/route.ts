@@ -54,10 +54,10 @@ async function searchGitHubCode(query: string, type: QueryType): Promise<SearchR
     const all: SearchResult[] = [];
     for (const q of queries.slice(0, 3)) {
       try {
-        const r = await fetch(`https://api.github.com/search/code?q=${encodeURIComponent(q)}&per_page=10`, { headers: ghHeaders(), signal: AbortSignal.timeout(10000) });
+        const r = await fetch(`https://api.github.com/search/code?q=${encodeURIComponent(q)}&per_page=20`, { headers: ghHeaders(), signal: AbortSignal.timeout(10000) });
         if (!r.ok) continue;
         const d: any = await r.json();
-        for (const item of (d.items || []).slice(0, 10)) {
+        for (const item of (d.items || []).slice(0, 20)) {
           all.push({ source: "GitHub Code", type: "code leak", title: item.name || item.path || "File", url: item.html_url || "", snippet: `Repo: ${item.repository?.full_name || "?"} | File: ${item.path || "?"}`, severity: "high", timestamp: null });
         }
       } catch {}
@@ -75,7 +75,7 @@ async function searchGitHubGists(query: string): Promise<SearchResult[]> {
     return gists.filter(g => {
       const text = `${g.description || ""} ${Object.keys(g.files || {}).join(" ")}`.toLowerCase();
       return text.includes(query.toLowerCase());
-    }).slice(0, 10).map(g => ({
+    }).slice(0, 20).map(g => ({
       source: "GitHub Gist", type: "paste leak", title: g.description || "Gist",
       url: g.html_url, snippet: `Files: ${Object.keys(g.files || {}).join(", ")} | Owner: ${g.owner?.login || "?"}`,
       severity: "high" as const, timestamp: g.created_at || null,
@@ -99,10 +99,10 @@ async function searchGitHubUser(username: string): Promise<SearchResult[]> {
       });
     }
     // User repos
-    const r2 = await fetch(`https://api.github.com/users/${user}/repos?per_page=10&sort=updated`, { headers: ghHeaders(), signal: AbortSignal.timeout(8000) });
+    const r2 = await fetch(`https://api.github.com/users/${user}/repos?per_page=20&sort=updated`, { headers: ghHeaders(), signal: AbortSignal.timeout(8000) });
     if (r2.ok) {
       const repos: any[] = await r2.json();
-      for (const repo of repos.slice(0, 10)) {
+      for (const repo of repos.slice(0, 20)) {
         results.push({
           source: "GitHub Repos", type: "user repo", title: repo.full_name,
           url: repo.html_url, snippet: `Stars: ${repo.stargazers_count || 0} | Forks: ${repo.forks_count || 0} | Lang: ${repo.language || "?"} | Desc: ${(repo.description || "").slice(0, 80)}`,
@@ -117,10 +117,10 @@ async function searchGitHubUser(username: string): Promise<SearchResult[]> {
 // GitHub User Search by keyword (busca usuarios que coinciden)
 async function searchGitHubUsersByKeyword(query: string): Promise<SearchResult[]> {
   try {
-    const r = await fetch(`https://api.github.com/search/users?q=${encodeURIComponent(query)}&per_page=10`, { headers: ghHeaders(), signal: AbortSignal.timeout(8000) });
+    const r = await fetch(`https://api.github.com/search/users?q=${encodeURIComponent(query)}&per_page=20`, { headers: ghHeaders(), signal: AbortSignal.timeout(8000) });
     if (!r.ok) return [];
     const d: any = await r.json();
-    return (d.items || []).slice(0, 10).map((u: any) => ({
+    return (d.items || []).slice(0, 20).map((u: any) => ({
       source: "GitHub Users", type: "user match", title: u.login,
       url: u.html_url, snippet: `Type: ${u.type || "?"} | Score: ${u.score || 0}`,
       severity: "info" as const, timestamp: null,
@@ -131,10 +131,10 @@ async function searchGitHubUsersByKeyword(query: string): Promise<SearchResult[]
 // GitHub Repo Search — repos que contienen el target
 async function searchGitHubRepos(query: string): Promise<SearchResult[]> {
   try {
-    const r = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=10&sort=stars`, { headers: ghHeaders(), signal: AbortSignal.timeout(8000) });
+    const r = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=20&sort=stars`, { headers: ghHeaders(), signal: AbortSignal.timeout(8000) });
     if (!r.ok) return [];
     const d: any = await r.json();
-    return (d.items || []).slice(0, 10).map((repo: any) => ({
+    return (d.items || []).slice(0, 20).map((repo: any) => ({
       source: "GitHub Repo", type: "repository", title: repo.full_name,
       url: repo.html_url, snippet: `Stars: ${repo.stargazers_count || 0} | Forks: ${repo.forks_count || 0} | Lang: ${repo.language || "?"} | Desc: ${(repo.description || "").slice(0, 80)}`,
       severity: "low" as const, timestamp: repo.updated_at || null,
@@ -148,7 +148,7 @@ async function searchHibpBreaches(): Promise<SearchResult[]> {
     const r = await fetch("https://haveibeenpwned.com/api/v3/breaches", { headers: { "User-Agent": "MONITOR-THREAT" }, signal: AbortSignal.timeout(10000) });
     if (!r.ok) return [];
     const breaches: any[] = await r.json();
-    return breaches.slice(0, 5).map(b => ({
+    return breaches.slice(0, 20).map(b => ({
       source: "HIBP Breaches", type: "known breach",
       title: b.Name || "Breach", url: `https://haveibeenpwned.com/breach/${b.Name}`,
       snippet: `PwnCount: ${b.PwnCount || "?"} | Date: ${b.BreachDate || "?"} | Data: ${(b.DataClasses || []).join(", ")}`,
@@ -211,7 +211,7 @@ async function searchOtx(query: string, type: QueryType): Promise<SearchResult[]
     const results: SearchResult[] = [];
     const pi = d?.pulse_info;
     if (pi && pi.count > 0) {
-      for (const p of (pi.pulses || []).slice(0, 10)) {
+      for (const p of (pi.pulses || []).slice(0, 20)) {
         results.push({ source: "AlienVault OTX", type: "threat pulse", title: p.name || "Pulse", url: `https://otx.alienvault.com/pulse/${p.id}`, snippet: `Tags: ${(p.tags || []).join(", ")} | TLP: ${p.TLP || "?"} | Modified: ${p.modified || "?"}`, severity: "high" as const, timestamp: p.modified || null });
       }
     }
@@ -236,10 +236,10 @@ async function searchAbuseIPDB(ip: string): Promise<SearchResult[]> {
 // URLscan.io — domain scans
 async function searchUrlscan(domain: string): Promise<SearchResult[]> {
   try {
-    const r = await fetch(`https://urlscan.io/api/v1/search/?q=domain:${encodeURIComponent(domain)}&size=10`, { signal: AbortSignal.timeout(10000) });
+    const r = await fetch(`https://urlscan.io/api/v1/search/?q=domain:${encodeURIComponent(domain)}&size=20`, { signal: AbortSignal.timeout(10000) });
     if (!r.ok) return [];
     const d: any = await r.json();
-    return (d.results || []).slice(0, 10).map((i: any) => ({ source: "URLscan.io", type: "public scan", title: i.page?.url || "Scan", url: `https://urlscan.io/result/${i._id}`, snippet: `Page: ${i.page?.title || "?"} | IP: ${i.page?.ip || "?"}`, severity: "low" as const, timestamp: i.task?.time || null }));
+    return (d.results || []).slice(0, 20).map((i: any) => ({ source: "URLscan.io", type: "public scan", title: i.page?.url || "Scan", url: `https://urlscan.io/result/${i._id}`, snippet: `Page: ${i.page?.title || "?"} | IP: ${i.page?.ip || "?"}`, severity: "low" as const, timestamp: i.task?.time || null }));
   } catch { return []; }
 }
 
