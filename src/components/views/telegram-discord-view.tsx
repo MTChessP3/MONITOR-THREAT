@@ -148,7 +148,7 @@ export function TelegramDiscordView() {
   return (
     <ModuleShell
       name="Telegram & Discord Monitor"
-      description="Monitorea menciones de marcas financieras en Telegram, Discord y fuentes OSINT. Busca phishing, scam y exposicion de credenciales."
+      description="Busca menciones de marcas financieras en Telegram e Instagram. Scraping de canales publicos, perfiles, hashtags y deteccion de phishing."
       icon={MessageSquare}
       category="OSINT"
     >
@@ -176,7 +176,7 @@ export function TelegramDiscordView() {
           ))}
         </div>
         <div className="text-[10px] text-muted-foreground mt-2">
-          Click en "Buscar todas" para escanear las {DEFAULT_KEYWORDS.length} marcas en paralelo, o click en una marca individual.
+          Click en "Buscar todas" para escanear las {DEFAULT_KEYWORDS.length} marcas en Telegram e Instagram.
         </div>
         {hasTelegramBot && (
           <div className="mt-2 text-[10px] text-cyan-500 flex items-center gap-1">
@@ -319,18 +319,14 @@ export function TelegramDiscordView() {
             <p className="text-xs text-muted-foreground max-w-2xl">
               Busca menciones de marcas financieras en Telegram, Discord y fuentes OSINT.
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-w-2xl">
-              <div className="rounded border border-red-500/30 bg-red-500/5 p-2 text-left text-[11px]">
-                <div className="font-semibold text-red-500 mb-1">Phishing pages</div>
-                <div className="text-muted-foreground">URLscan.io + VirusTotal: detecta paginas que imitan las marcas</div>
-              </div>
-              <div className="rounded border border-purple-500/30 bg-purple-500/5 p-2 text-left text-[11px]">
-                <div className="font-semibold text-purple-500 mb-1">Telegram dorks</div>
-                <div className="text-muted-foreground">site:t.me + site:discord.com dorks para canales publicos</div>
-              </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl">
               <div className="rounded border border-cyan-500/30 bg-cyan-500/5 p-2 text-left text-[11px]">
-                <div className="font-semibold text-cyan-500 mb-1">Threat intel</div>
-                <div className="text-muted-foreground">AlienVault OTX + GitHub: tools, IOCs, repos de phishing</div>
+                <div className="font-semibold text-cyan-500 mb-1">Telegram</div>
+                <div className="text-muted-foreground">Scraping de canales publicos (t.me/s/) + TGStat + Bot API opcional</div>
+              </div>
+              <div className="rounded border border-pink-500/30 bg-pink-500/5 p-2 text-left text-[11px]">
+                <div className="font-semibold text-pink-500 mb-1">Instagram</div>
+                <div className="text-muted-foreground">Scraping de perfiles + hashtags + deteccion de cuentas falsas</div>
               </div>
             </div>
             <p className="text-[10px] text-cyan-500 mt-2">Prueba: click en "Buscar todas" para escanear 9 marcas de una vez</p>
