@@ -115,3 +115,29 @@ Stage Summary:
 - Bing ahora devuelve entre 10-30 hits reales por query con URLs verdaderas decodificadas
 - Ya no aparecen pantallas negras — cada busqueda trae resultados concretos de GitHub + Bing + (si username) 17 redes sociales
 - Build OK, deploy automatico en Vercel
+
+---
+Task ID: executive-osint-exact-match
+Agent: main
+Task: Busquedas muy abiertas por primer nombre — debe ser por nombre completo
+
+Work Log:
+- Diagnostico: GitHub Users API hacia busqueda fuzzy que traia cualquier 'Juan' o cualquier 'Perez' suelto, no el nombre completo exacto. Bing engine igualmente devolvia matches parciales. Los dorks con comillas no garantizan coincidencia de frase exacta en Bing (a veces las ignora).
+- Implementado searchGitHubUsers con 4 queries paralelas por nombre (fullname: + in:name + variantes con/sin acentos) + post-filtro que hace fetch del perfil real de cada candidato (limit 12) y verifica que name+login+bio contenga TODOS los tokens del query.
+- Verificado localmente con scripts/test-github-name.js:
+  - Query 'Juan Perez' -> 48 candidatos -> 5 con fullname real coincidente
+  - Query 'Linus Torvalds' -> 13 candidatos -> 2 con fullname coincidente
+- Bing engine: anadido post-filtro en parseBingHtml que descarta resultados cuyo title+snippet NO contiene TODOS los tokens del query obligatoriamente.
+- Wikipedia migrado de opensearch a REST v1 /search/page (devuelve excerpt con highlighting). Anadida Wikipedia en espanol (es.wikipedia.org) ademas de ingles. Post-filtro por tokens completos.
+- DuckDuckGo Instant Answer API (api.duckduckgo.com): nueva fuente precisa para nombres. Devuelve AbstractText + RelatedTopics con filtro AND obligatorio de todos los tokens.
+- nameTokens(): ignora preposiciones tipicas (de, del, la, los, y, van, von, di, da, dos, san, santa, etc.) para no exigir match en palabras vacias.
+- accentVariants(): genera variantes con/sin acentos (Juan Perez / Juan Perez) y las prueba en paralelo en GitHub y Wikipedia.
+- Response JSON incluye summary.preciseMatch = { wikipedia, ddg } para mostrar en UI cuantos hits precisos se obtuvieron.
+- Frontend: nueva tarjeta cyan 'Wikipedia + DDG IA' en el summary, distinta de la morada Bing.
+- npx next build pasa. Commit 7791ab9..7ddcf93 push a main.
+
+Stage Summary:
+- Files modified: src/app/api/executive-osint/search/route.ts (+321/-86), src/components/views/executive-osint-view.tsx, scripts/test-github-name.js (new)
+- Coincidencia ahora EXACTA: GitHub filtra por fullname, Bing descarta cualquier hit sin todos los tokens, Wikipedia + DDG IA solo devuelven matches que contienen el nombre completo
+- Para 'Juan Perez' solo aparecen resultados que efectivamente contienen ambos tokens, no cualquier 'Juan' o 'Perez' suelto
+- Build OK, deploy automatico en Vercel
