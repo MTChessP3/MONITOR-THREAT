@@ -141,3 +141,55 @@ Stage Summary:
 - Coincidencia ahora EXACTA: GitHub filtra por fullname, Bing descarta cualquier hit sin todos los tokens, Wikipedia + DDG IA solo devuelven matches que contienen el nombre completo
 - Para 'Juan Perez' solo aparecen resultados que efectivamente contienen ambos tokens, no cualquier 'Juan' o 'Perez' suelto
 - Build OK, deploy automatico en Vercel
+
+---
+Task ID: executive-osint-500-and-more-sources
+Agent: main
+Task: HTTP 500 en busquedas por correo + nombre trae minimos resultados
+
+Work Log:
+- Reproducido HTTP 500 localmente con `next dev`. Log de error:
+  ReferenceError: searchHunter is not defined at GET (route.ts:667:5)
+- Causa: el MultiEdit anterior que anadio searchDdgInstantAnswer
+  accidentalmente reemplazo la definicion de searchHunter, dejando
+  la llamada `searchHunter(query)` en GET sin su funcion. Resultado:
+  cualquier query tipo email lanzaba ReferenceError y retornaba 500.
+- Solucion: re-anadida searchHunter (verificacion de email con API key
+  opcional) justo antes de la seccion del Bing engine.
+
+- Para ampliar resultados por nombre:
+  - Bing engine: sube de 5 a 12 dorks ejecutados, en lotes de 4 (para
+    evitar rate-limit). Max de resultados combinados subido de 60 a 100.
+  - Nueva fuente: Wikidata (wbsearchentities, EN+ES) - base de datos
+    estructurada de entidades de Wikipedia. Filtra por tokens AND.
+  - Nueva fuente: OpenCorporates (officers search) - registro publico
+    de directores de empresas. Degrada gracefully si no hay API token
+    (retorna [] silenciosamente).
+  - Ambas aplican el mismo filtro de tokens completos (con variante
+    sin acentos) que Wikipedia y DDG IA.
+
+- Wrap del GET handler en try/catch: cualquier error no capturado
+  internamente ahora retorna JSON estructurado {error: 'internal_error',
+  message: ..., results: [], dorks: [], summary: {...}} con status 500
+  en vez de colgar el frontend. Esto evita las 'pantallas negras' si
+  alguna fuente individual falla con un error no previsto.
+
+- Frontend actualizado:
+  - Panel de dorks: '12 ejecutados en Bing' (era '5 ejecutados').
+  - Tarjeta cyan precisaMatch renombrada 'Enciclopedia + DDG + Wikidata
+    + OpenCorp' y suma los 4 sources.
+
+- Verificado localmente:
+  - Email query 'juan.perez@empresa.com' -> HTTP 200 con HIBP breaches
+    + GitHub Code (vacio, rate-limit) + Gravatar + VirusTotal
+  - Name query 'Juan Perez' -> HTTP 200 con 3 GitHub User (fullname
+    match) + Bing/Wikipedia/Wikidata vacios en sandbox (OpenCorporates
+    requiere token)
+  - Build pasa. Commit 7ddcf93..51e3d61 push a main.
+
+Stage Summary:
+- Files modified: src/app/api/executive-osint/search/route.ts (+172/-74), src/components/views/executive-osint-view.tsx
+- Bug HTTP 500 email: Fixed (searchHunter re-anadida)
+- Mas resultados para nombre: Bing 12 dorks + Wikidata + OpenCorporates
+- Try/catch en GET garantiza respuesta estructurada ante cualquier error
+- Build OK, deploy automatico en Vercel
