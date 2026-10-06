@@ -482,6 +482,88 @@ async function searchDdgInstantAnswer(query: string, type: QueryType): Promise<S
 }
 
 // ============================================================
+//  Hunter.io — verificacion de email (con API key opcional)
+// ============================================================
+async function searchHunter(email: string): Promise<SearchResult[]> {
+  try {
+    const key = process.env.HUNTER_API_KEY || "";
+    if (!key) return [];
+    const r = await fetch(`https://api.hunter.io/v2/email-verifier?email=${encodeURIComponent(email)}&api_key=${key}`, { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return [];
+    const d: any = await r.json();
+    const data = d?.data || {};
+    return [{
+      source: "Hunter.io", type: "email verification",
+      title: `${email} — ${data.status || "?"}`,
+      url: `https://hunter.io/email-verifier/${encodeURIComponent(email)}`,
+      snippet: `Status: ${data.status || "?"} | Result: ${data.result || "?"} | Score: ${data.score || "?"} | Domain: ${data.domain || "?"}`,
+      severity: data.status === "valid" ? "info" : "low" as const, timestamp: null,
+    }];
+  } catch { return []; }
+}
+
+// ============================================================
+//  Wikidata — busqueda de entidades por nombre completo
+// ============================================================
+async function searchWikidata(query: string, type: QueryType): Promise<SearchResult[]> {
+  if (type !== "name") return [];
+  try {
+    const r = await fetch(
+      `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(query)}&language=es&language=en&limit=20&format=json&origin=*`,
+      { headers: { "User-Agent": "MONITOR-THREAT" }, signal: AbortSignal.timeout(8000) }
+    );
+    if (!r.ok) return [];
+    const d: any = await r.json();
+    const required = nameTokens(query);
+    const accentless = required.map(t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+    return (d.search || []).filter((e: any) => {
+      const combined = `${e.label || ""} ${e.description || ""}`.toLowerCase();
+      const normalized = combined.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (required.length === 0) return true;
+      return required.every(t => combined.includes(t)) || accentless.every(t => normalized.includes(t));
+    }).slice(0, 15).map((e: any) => ({
+      source: "Wikidata",
+      type: "entity match",
+      title: e.label || query,
+      url: `https://www.wikidata.org/wiki/${e.id}`,
+      snippet: `${e.description || "(no description)"} [QID: ${e.id || "?"}]`,
+      severity: "info" as const,
+      timestamp: null,
+    }));
+  } catch { return []; }
+}
+
+// ============================================================
+//  OpenCorporates — busqueda de directivos en registros mercantiles
+// ============================================================
+async function searchOpenCorporates(query: string, type: QueryType): Promise<SearchResult[]> {
+  if (type !== "name") return [];
+  try {
+    const token = process.env.OPENCORPORATES_TOKEN || "";
+    const url = `https://api.opencorporates.com/v0.4/officers/search?q=${encodeURIComponent(query)}&per_page=20${token ? `&api_token=${token}` : ""}`;
+    const r = await fetch(url, { headers: { "User-Agent": "MONITOR-THREAT" }, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return [];
+    const d: any = await r.json();
+    const required = nameTokens(query);
+    const accentless = required.map(t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+    return (d.results?.officers || []).filter((o: any) => {
+      const combined = `${o.officer?.name || ""}`.toLowerCase();
+      const normalized = combined.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (required.length === 0) return true;
+      return required.every(t => combined.includes(t)) || accentless.every(t => normalized.includes(t));
+    }).slice(0, 20).map((o: any) => ({
+      source: "OpenCorporates",
+      type: "company officer",
+      title: o.officer?.name || "Officer",
+      url: `https://opencorporates.com/officers/${o.officer?.id || ""}`,
+      snippet: `Company: ${o.officer?.company?.name || "?"} | Position: ${o.officer?.position || "?"} | Jurisdiction: ${o.officer?.company?.jurisdiction_code || "?"} | Start: ${o.officer?.start_date || "?"}`,
+      severity: "medium" as const,
+      timestamp: o.officer?.start_date || null,
+    }));
+  } catch { return []; }
+}
+
+// ============================================================
 //  BING ENGINE — parser decodifica ck/a?u=a1<base64>
 // ============================================================
 function decodeBingUrl(ckAurl: string): string | null {
@@ -556,19 +638,23 @@ async function runDorkOnBing(dork: string, query: string, type: QueryType): Prom
 }
 
 async function runSearchEngines(dorks: string[], query: string, type: QueryType): Promise<SearchResult[]> {
-  // Ejecuta los primeros 5 dorks en Bing (en paralelo con rate-limit)
-  const selected = dorks.slice(0, 5);
-  const all = await Promise.all(selected.map(d => runDorkOnBing(d, query, type)));
-  const seen = new Set<string>();
+  // Ejecuta los primeros 12 dorks en Bing (en paralelo, en lotes de 4 para no rate-limit)
+  const selected = dorks.slice(0, 12);
   const out: SearchResult[] = [];
-  for (const arr of all) {
-    for (const r of arr) {
-      if (seen.has(r.url)) continue;
-      seen.add(r.url);
-      out.push(r);
+  const seen = new Set<string>();
+  // Lotes de 4 dorks en paralelo
+  for (let i = 0; i < selected.length; i += 4) {
+    const batch = selected.slice(i, i + 4);
+    const arrs = await Promise.all(batch.map(d => runDorkOnBing(d, query, type)));
+    for (const arr of arrs) {
+      for (const r of arr) {
+        if (seen.has(r.url)) continue;
+        seen.add(r.url);
+        out.push(r);
+      }
     }
   }
-  return out.slice(0, 60);
+  return out.slice(0, 100);
 }
 
 // ============================================================
@@ -641,67 +727,79 @@ async function sherlockEnumerate(username: string): Promise<SearchResult[]> {
 //  Main
 // ============================================================
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const query = (searchParams.get("q") || "").trim();
-  const type = (searchParams.get("type") || "name").trim() as QueryType;
-  if (!query) return NextResponse.json({ error: "missing_query" }, { status: 400 });
+  try {
+    const { searchParams } = new URL(request.url);
+    const query = (searchParams.get("q") || "").trim();
+    const type = (searchParams.get("type") || "name").trim() as QueryType;
+    if (!query) return NextResponse.json({ error: "missing_query" }, { status: 400 });
 
-  const dorks = generateDorks(query, type);
+    const dorks = generateDorks(query, type);
 
-  const isUsername = type === "username";
-  const isEmail = type === "email";
-  const isPhone = type === "phone";
-  const isName = type === "name";
+    const isUsername = type === "username";
+    const isEmail = type === "email";
+    const isPhone = type === "phone";
+    const isName = type === "name";
 
-  // Lote 1 — fuentes API directas (rápidas)
-  const [ghUsers, ghProfile, ghCode, ghGists, gravatar, hibp, vt, wiki, ddgIa, hunter] = await Promise.all([
-    (isName || isUsername) ? searchGitHubUsers(query, type) : Promise.resolve([]),
-    isUsername ? searchGitHubProfile(query) : Promise.resolve([]),
-    (isEmail || isPhone || isName) ? searchGitHubCode(query, type) : Promise.resolve([]),
-    (isEmail || isPhone || isUsername || isName) ? searchGitHubGists(query) : Promise.resolve([]),
-    isEmail ? searchGravatar(query) : Promise.resolve([]),
-    isEmail ? searchHibpBreaches(query) : Promise.resolve([]),
-    searchVirusTotal(query, type),
-    isName ? searchWikipedia(query, type) : Promise.resolve([]),
-    isName ? searchDdgInstantAnswer(query, type) : Promise.resolve([]),
-    isEmail ? searchHunter(query) : Promise.resolve([]),
-  ]);
+    // Lote 1 — fuentes API directas (rápidas)
+    const [ghUsers, ghProfile, ghCode, ghGists, gravatar, hibp, vt, wiki, ddgIa, hunter, wikidata, opencorp] = await Promise.all([
+      (isName || isUsername) ? searchGitHubUsers(query, type) : Promise.resolve([]),
+      isUsername ? searchGitHubProfile(query) : Promise.resolve([]),
+      (isEmail || isPhone || isName) ? searchGitHubCode(query, type) : Promise.resolve([]),
+      (isEmail || isPhone || isUsername || isName) ? searchGitHubGists(query) : Promise.resolve([]),
+      isEmail ? searchGravatar(query) : Promise.resolve([]),
+      isEmail ? searchHibpBreaches(query) : Promise.resolve([]),
+      searchVirusTotal(query, type),
+      isName ? searchWikipedia(query, type) : Promise.resolve([]),
+      isName ? searchDdgInstantAnswer(query, type) : Promise.resolve([]),
+      isEmail ? searchHunter(query) : Promise.resolve([]),
+      isName ? searchWikidata(query, type) : Promise.resolve([]),
+      isName ? searchOpenCorporates(query, type) : Promise.resolve([]),
+    ]);
 
-  // Lote 2 — motor Bing ejecutando 5 dorks (con post-filtro de coincidencia exacta)
-  const engineResults = await runSearchEngines(dorks, query, type);
+    // Lote 2 — motor Bing ejecutando 12 dorks (con post-filtro de coincidencia exacta)
+    const engineResults = await runSearchEngines(dorks, query, type);
 
-  // Lote 3 — enumeración Sherlock (solo para username)
-  const sherlockResults = isUsername ? await sherlockEnumerate(query) : [];
+    // Lote 3 — enumeración Sherlock (solo para username)
+    const sherlockResults = isUsername ? await sherlockEnumerate(query) : [];
 
-  const all = [
-    ...ghUsers, ...ghProfile, ...ghCode, ...ghGists,
-    ...gravatar, ...hibp, ...vt,
-    ...wiki, ...ddgIa, ...hunter,
-    ...engineResults,
-    ...sherlockResults,
-  ];
-  const seen = new Set<string>();
-  const deduped = all.filter(r => { if (seen.has(r.url)) return false; seen.add(r.url); return true; });
+    const all = [
+      ...ghUsers, ...ghProfile, ...ghCode, ...ghGists,
+      ...gravatar, ...hibp, ...vt,
+      ...wiki, ...ddgIa, ...hunter,
+      ...wikidata, ...opencorp,
+      ...engineResults,
+      ...sherlockResults,
+    ];
+    const seen = new Set<string>();
+    const deduped = all.filter(r => { if (seen.has(r.url)) return false; seen.add(r.url); return true; });
 
-  const bySource: Record<string, number> = {};
-  const bySeverity = { high: 0, medium: 0, low: 0, info: 0 };
-  for (const r of deduped) { bySource[r.source] = (bySource[r.source] || 0) + 1; bySeverity[r.severity]++; }
+    const bySource: Record<string, number> = {};
+    const bySeverity = { high: 0, medium: 0, low: 0, info: 0 };
+    for (const r of deduped) { bySource[r.source] = (bySource[r.source] || 0) + 1; bySeverity[r.severity]++; }
 
-  return NextResponse.json({
-    query, queryType: type, dorks,
-    sourcesUsed: Object.keys(bySource),
-    enginesUsed: ["Bing"],
-    results: deduped,
-    summary: {
-      total: deduped.length,
-      bySource,
-      bySeverity,
-      engines: { bing: engineResults.length },
-      sherlock: sherlockResults.length,
-      preciseMatch: { wikipedia: wiki.length, ddg: ddgIa.length },
-    },
-    timestamp: new Date().toISOString(),
-  }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({
+      query, queryType: type, dorks,
+      sourcesUsed: Object.keys(bySource),
+      enginesUsed: ["Bing"],
+      results: deduped,
+      summary: {
+        total: deduped.length,
+        bySource,
+        bySeverity,
+        engines: { bing: engineResults.length },
+        sherlock: sherlockResults.length,
+        preciseMatch: { wikipedia: wiki.length, ddg: ddgIa.length, wikidata: wikidata.length, opencorporates: opencorp.length },
+      },
+      timestamp: new Date().toISOString(),
+    }, { headers: { "Cache-Control": "no-store" } });
+  } catch (err: any) {
+    // Log para diagnostico
+    console.error("[executive-osint] ERROR:", err?.message || err, err?.stack || "");
+    return NextResponse.json(
+      { error: "internal_error", message: String(err?.message || err), dorks: [], results: [], summary: { total: 0, bySource: {}, bySeverity: { high: 0, medium: 0, low: 0, info: 0 } } },
+      { status: 500 }
+    );
+  }
 }
 
 export async function OPTIONS() {

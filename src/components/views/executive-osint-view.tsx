@@ -152,13 +152,13 @@ export function ExecutiveOsintView() {
       {summary && summary.engines && (
         <div className="flex gap-2 mb-3">
           {summary.engines.bing !== undefined && <div className="rounded p-2 border border-purple-500/40 bg-purple-500/5 flex-1"><div className="text-lg font-bold font-mono text-purple-400">{summary.engines.bing}</div><div className="text-[10px]">Bing</div></div>}
-          {summary.preciseMatch && <div className="rounded p-2 border border-cyan-500/40 bg-cyan-500/5 flex-1"><div className="text-lg font-bold font-mono text-cyan-400">{summary.preciseMatch.wikipedia + summary.preciseMatch.ddg}</div><div className="text-[10px]">Wikipedia + DDG IA</div></div>}
+          {summary.preciseMatch && <div className="rounded p-2 border border-cyan-500/40 bg-cyan-500/5 flex-1"><div className="text-lg font-bold font-mono text-cyan-400">{summary.preciseMatch.wikipedia + summary.preciseMatch.ddg + (summary.preciseMatch.wikidata || 0) + (summary.preciseMatch.opencorporates || 0)}</div><div className="text-[10px]">Enciclopedia + DDG + Wikidata + OpenCorp</div></div>}
           {summary.sherlock !== undefined && <div className="rounded p-2 border border-amber-500/40 bg-amber-500/5 flex-1"><div className="text-lg font-bold font-mono text-amber-400">{summary.sherlock}</div><div className="text-[10px]">Sherlock (17)</div></div>}
         </div>
       )}
       {dorks.length > 0 && (
-        <Panel title={`Dorks generados (${dorks.length}) — 5 ejecutados en Bing`} className="md:col-span-2">
-          <div className="text-[10px] text-muted-foreground mb-2">Los primeros 5 dorks se ejecutan automaticamente contra Bing. El resto puedes copiarlos y pegarlos en Google/Yandex manualmente:</div>
+        <Panel title={`Dorks generados (${dorks.length}) — 12 ejecutados en Bing`} className="md:col-span-2">
+          <div className="text-[10px] text-muted-foreground mb-2">Los primeros 12 dorks se ejecutan automaticamente contra Bing (en lotes de 4). El resto puedes copiarlos y pegarlos en Google/Yandex manualmente:</div>
           <div className="max-h-48 overflow-y-auto space-y-1">
             {dorks.map((d, i) => (
               <div key={i} className="text-[10px] font-mono text-muted-foreground flex items-center gap-1">
