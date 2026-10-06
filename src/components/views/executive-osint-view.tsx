@@ -39,8 +39,9 @@ export function ExecutiveOsintView() {
   const [summary, setSummary] = React.useState<{
     total: number; bySource: Record<string, number>;
     bySeverity: { high: number; medium: number; low: number; info: number };
-    engines?: { duckduckgo: number; bing: number };
+    engines?: { bing: number };
     sherlock?: number;
+    preciseMatch?: { wikipedia: number; ddg: number };
   } | null>(null);
   const [sourcesUsed, setSourcesUsed] = React.useState<string[]>([]);
   const [enginesUsed, setEnginesUsed] = React.useState<string[]>([]);
@@ -97,7 +98,7 @@ export function ExecutiveOsintView() {
   return (
     <ModuleShell
       name="Executive OSINT"
-      description="Busca informacion de ejecutivos en multiples fuentes y motores: nombre, email, telefono, alias. GitHub + Gravatar + HIBP + VirusTotal + Wikipedia + Hunter + Bing engine + Sherlock (17 sitios verificados)."
+      description="Busca informacion de ejecutivos en multiples fuentes con coincidencia EXACTA del nombre completo: GitHub (fullname filter), Gravatar, HIBP, VirusTotal, Wikipedia (EN+ES), DuckDuckGo IA, Hunter, Bing + Sherlock (17 sitios)."
       icon={UserSearch}
       category="OSINT"
     >
@@ -116,7 +117,7 @@ export function ExecutiveOsintView() {
           <Input type="text" placeholder={queryType === "name" ? "ej: Juan Perez" : queryType === "email" ? "ej: juan@empresa.com" : queryType === "phone" ? "ej: +57 3001234567" : "ej: @jperez"} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === "Enter" && search()} className="flex-1 font-mono text-sm" autoFocus />
         </div>
         <div className="text-[10px] text-muted-foreground">
-          Fuentes API: GitHub (Users/Profile/Code/Gists), Gravatar, HIBP, VirusTotal, Wikipedia, Hunter.io · Motor: Bing (auto-ejecuta los dorks y decodifica los URLs) · Sherlock: 17 redes sociales.
+          Fuentes con coincidencia EXACTA del query: GitHub (filter por fullname), Wikipedia EN+ES, DuckDuckGo IA · Bing (post-filtro AND obligatorio) · Sherlock: 17 redes · APIs: Gravatar, HIBP, VirusTotal, Hunter.
         </div>
         {(sourcesUsed.length > 0 || enginesUsed.length > 0) && (
           <div className="flex gap-1 flex-wrap mt-2">
@@ -151,7 +152,8 @@ export function ExecutiveOsintView() {
       {summary && summary.engines && (
         <div className="flex gap-2 mb-3">
           {summary.engines.bing !== undefined && <div className="rounded p-2 border border-purple-500/40 bg-purple-500/5 flex-1"><div className="text-lg font-bold font-mono text-purple-400">{summary.engines.bing}</div><div className="text-[10px]">Bing</div></div>}
-          {summary.sherlock !== undefined && <div className="rounded p-2 border border-amber-500/40 bg-amber-500/5 flex-1"><div className="text-lg font-bold font-mono text-amber-400">{summary.sherlock}</div><div className="text-[10px]">Sherlock (17 sitios)</div></div>}
+          {summary.preciseMatch && <div className="rounded p-2 border border-cyan-500/40 bg-cyan-500/5 flex-1"><div className="text-lg font-bold font-mono text-cyan-400">{summary.preciseMatch.wikipedia + summary.preciseMatch.ddg}</div><div className="text-[10px]">Wikipedia + DDG IA</div></div>}
+          {summary.sherlock !== undefined && <div className="rounded p-2 border border-amber-500/40 bg-amber-500/5 flex-1"><div className="text-lg font-bold font-mono text-amber-400">{summary.sherlock}</div><div className="text-[10px]">Sherlock (17)</div></div>}
         </div>
       )}
       {dorks.length > 0 && (

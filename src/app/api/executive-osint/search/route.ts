@@ -39,32 +39,65 @@ function htmlFetchHeaders(): Record<string, string> {
   };
 }
 
+// ---- Helpers de normalizacion ----
+
+// Convierte un nombre a variantes con/sin acentos (ej: "Juan Pérez" -> ["Juan Pérez", "Juan Perez"])
+function accentVariants(name: string): string[] {
+  const noAccent = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const variants = new Set<string>([name]);
+  if (noAccent !== name) variants.add(noAccent);
+  return Array.from(variants);
+}
+
+// Tokeniza un nombre en palabras significativas (ignora preposiciones tipo "de", "del", "la", "los", "y")
+function nameTokens(name: string): string[] {
+  return name.toLowerCase().split(/\s+/).filter(t => t.length > 1 && !/^(de|del|la|las|los|el|y|van|von|di|da|do|dos|san|sant|santa)$/.test(t));
+}
+
+// Para Bing: añade "+" delante de cada palabra obligatoria (fuerza coincidencia exacta)
+function bingExact(query: string, type: QueryType): string {
+  const clean = query.replace(/"/g, "").trim();
+  if (type === "email" || type === "phone" || type === "username") {
+    return `+${clean}`;
+  }
+  // Para nombres: +Palabra1 +Palabra2 (cada token obligatorio)
+  const tokens = clean.split(/\s+/).filter(t => t.length > 1);
+  return tokens.map(t => `+${t}`).join(" ");
+}
+
 // ---- DORKS ----
 function generateDorks(query: string, type: QueryType): string[] {
   const q = query.replace(/"/g, "");
   switch (type) {
-    case "name":
-      return [
-        `"${q}" site:linkedin.com/in`,
-        `"${q}" site:twitter.com OR site:x.com`,
-        `"${q}" site:facebook.com`,
-        `"${q}" site:instagram.com`,
-        `"${q}" site:reddit.com`,
-        `"${q}" site:youtube.com`,
-        `"${q}" site:tiktok.com`,
-        `"${q}" filetype:pdf`,
-        `"${q}" "curriculum" OR "cv" OR "resume"`,
-        `"${q}" "director" OR "gerente" OR "CEO" OR "CTO" OR "CFO"`,
-        `"${q}" "empresa" OR "company"`,
-        `"${q}" site:bloomberg.com OR site:reuters.com`,
-        `"${q}" "entrevista" OR "conference" OR "presentation"`,
-        `"${q}" filetype:doc OR filetype:docx`,
-        `"${q}" "contact" OR "email" OR "phone" OR "telefono"`,
-      ];
+    case "name": {
+      // Variantes con/sin acentos
+      const variants = accentVariants(q);
+      const dorks: string[] = [];
+      for (const v of variants) {
+        dorks.push(
+          `"${v}" site:linkedin.com/in`,
+          `"${v}" site:twitter.com OR site:x.com`,
+          `"${v}" site:facebook.com`,
+          `"${v}" site:instagram.com`,
+          `"${v}" site:reddit.com`,
+          `"${v}" site:youtube.com`,
+          `"${v}" site:tiktok.com`,
+          `"${v}" filetype:pdf`,
+          `"${v}" "curriculum" OR "cv" OR "resume"`,
+          `"${v}" "director" OR "gerente" OR "CEO" OR "CTO" OR "CFO"`,
+          `"${v}" "empresa" OR "company"`,
+          `"${v}" site:bloomberg.com OR site:reuters.com`,
+          `"${v}" "entrevista" OR "conference" OR "presentation"`,
+          `"${v}" filetype:doc OR filetype:docx`,
+          `"${v}" "contact" OR "email" OR "phone" OR "telefono"`,
+        );
+      }
+      return dorks;
+    }
     case "email":
       return [
         `"${q}" site:pastebin.com`,
-        `"${q}" site:github.com filetype:env OR filetype:txt`,
+        `"${q}" site:github.com`,
         `"${q}" "password" OR "credential" OR "token"`,
         `"${q}" filetype:sql "INSERT INTO"`,
         `"${q}" site:ghostbin.com OR site:hastebin.com`,
@@ -92,36 +125,93 @@ function generateDorks(query: string, type: QueryType): string[] {
         `"${q}" "darknet" OR "leak" OR "sell"`,
         `"${q}" "registro" OR "database" OR "base de datos"`,
       ];
-    case "username":
+    case "username": {
+      const clean = q.replace(/^@/, "");
       return [
-        `"${q}" site:github.com OR site:gitlab.com`,
-        `"${q}" site:twitter.com OR site:x.com`,
-        `"${q}" site:instagram.com`,
-        `"${q}" site:facebook.com`,
-        `"${q}" site:reddit.com OR site:medium.com`,
-        `"${q}" site:linkedin.com`,
-        `"${q}" site:tiktok.com`,
-        `"${q}" site:youtube.com`,
-        `"${q}" site:twitch.tv OR site:steamcommunity.com`,
-        `"${q}" site:telegram.org OR site:t.me`,
-        `"${q}" site:pinterest.com OR site:tumblr.com`,
-        `"${q}" "password" OR "credential" OR "leaked"`,
-        `"${q}" site:medium.com OR site:dev.to OR site:hashnode.com`,
-        `"${q}" "profile" OR "about" OR "bio"`,
-        `"${q}" "darknet" OR "onion" OR "marketplace"`,
+        `"${clean}" site:github.com OR site:gitlab.com`,
+        `"${clean}" site:twitter.com OR site:x.com`,
+        `"${clean}" site:instagram.com`,
+        `"${clean}" site:facebook.com`,
+        `"${clean}" site:reddit.com OR site:medium.com`,
+        `"${clean}" site:linkedin.com`,
+        `"${clean}" site:tiktok.com`,
+        `"${clean}" site:youtube.com`,
+        `"${clean}" site:twitch.tv OR site:steamcommunity.com`,
+        `"${clean}" site:telegram.org OR site:t.me`,
+        `"${clean}" site:pinterest.com OR site:tumblr.com`,
+        `"${clean}" "password" OR "credential" OR "leaked"`,
+        `"${clean}" site:medium.com OR site:dev.to OR site:hashnode.com`,
+        `"${clean}" "profile" OR "about" OR "bio"`,
+        `"${clean}" "darknet" OR "onion" OR "marketplace"`,
       ];
+    }
   }
 }
 
 // ============================================================
 //  GitHub (4 sub-fuentes)
 // ============================================================
-async function searchGitHubUsers(query: string): Promise<SearchResult[]> {
+async function searchGitHubUsers(query: string, type: QueryType): Promise<SearchResult[]> {
   try {
-    const r = await fetch(`https://api.github.com/search/users?q=${encodeURIComponent(query)}&per_page=20`, { headers: ghHeaders(), signal: AbortSignal.timeout(10000) });
-    if (!r.ok) return [];
-    const d: any = await r.json();
-    return (d.items || []).slice(0, 20).map((u: any) => ({
+    let ghQueries: string[] = [];
+    if (type === "name") {
+      const tokens = nameTokens(query);
+      // Probar tanto el nombre literal como la variante sin acentos
+      const variants = accentVariants(query);
+      for (const v of variants) {
+        if (tokens.length >= 2) {
+          ghQueries.push(`fullname:"${v}" in:name`);
+          ghQueries.push(`"${v}" in:name`);
+        } else {
+          ghQueries.push(`${v} in:name`);
+        }
+      }
+    } else if (type === "username") {
+      const user = query.replace(/^@/, "");
+      ghQueries.push(`user:${user}`);
+      ghQueries.push(`${user} in:login`);
+    } else if (type === "email") {
+      ghQueries.push(`${query} in:email`);
+      ghQueries.push(`${query}`);
+    } else {
+      ghQueries.push(query);
+    }
+    const seen = new Set<string>();
+    const allItems: any[] = [];
+    await Promise.all(ghQueries.slice(0, 4).map(async q => {
+      try {
+        const r = await fetch(`https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=20`, { headers: ghHeaders(), signal: AbortSignal.timeout(10000) });
+        if (!r.ok) return;
+        const d: any = await r.json();
+        for (const u of (d.items || [])) {
+          if (seen.has(u.html_url)) continue;
+          seen.add(u.html_url);
+          allItems.push(u);
+        }
+      } catch {}
+    }));
+    // Filtro post-hoc para nombres: para cada candidato, hacer fetch del perfil real
+    // y verificar que el campo "name" contiene TODOS los tokens del query
+    let filtered = allItems;
+    if (type === "name") {
+      const required = nameTokens(query);
+      const accentless = required.map(t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+      // Limitamos a 12 verificaciones para no agotar rate limit
+      const checks = await Promise.all(allItems.slice(0, 12).map(async (u: any) => {
+        try {
+          const pr = await fetch(`https://api.github.com/users/${u.login}`, { headers: ghHeaders(), signal: AbortSignal.timeout(6000) });
+          if (!pr.ok) return { u, name: u.login || "" };
+          const pd: any = await pr.json();
+          return { u, name: `${pd.name || ""} ${pd.login || ""} ${pd.bio || ""}` };
+        } catch { return { u, name: u.login || "" }; }
+      }));
+      filtered = checks.filter(c => {
+        const candidate = (c.name || "").toLowerCase();
+        const normalized = candidate.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        return required.every(t => candidate.includes(t)) || accentless.every(t => normalized.includes(t));
+      }).map(c => c.u);
+    }
+    return filtered.slice(0, 20).map((u: any) => ({
       source: "GitHub User", type: "user match", title: u.login,
       url: u.html_url, snippet: `Type: ${u.type || "?"} | Avatar: ${u.avatar_url || "?"}`,
       severity: "info" as const, timestamp: null,
@@ -280,40 +370,114 @@ async function searchVirusTotal(query: string, type: QueryType): Promise<SearchR
 // ============================================================
 //  Wikipedia — búsqueda biográfica
 // ============================================================
-async function searchWikipedia(query: string): Promise<SearchResult[]> {
+async function searchWikipedia(query: string, type: QueryType): Promise<SearchResult[]> {
+  if (type !== "name") return [];
   try {
-    const r = await fetch(`https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=15&format=json&origin=*`, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return [];
-    const d: any = await r.json();
-    const titles: string[] = d[1] || [];
-    const urls: string[] = d[3] || [];
-    return titles.slice(0, 15).map((t, i) => ({
-      source: "Wikipedia", type: "biography match",
-      title: t, url: urls[i] || `https://en.wikipedia.org/wiki/${encodeURIComponent(t.replace(/ /g, "_"))}`,
-      snippet: `Encyclopedia entry — possible identity match`,
-      severity: "info" as const, timestamp: null,
-    }));
+    const results: SearchResult[] = [];
+    // 1. Wikipedia REST search: devuelve matches con ambos terminos (busqueda AND)
+    const r = await fetch(`https://en.wikipedia.org/w/rest.php/v1/search/page?q=${encodeURIComponent(query)}&limit=15`, {
+      headers: { "User-Agent": "MONITOR-THREAT" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (r.ok) {
+      const d: any = await r.json();
+      const required = nameTokens(query);
+      const accentless = required.map(t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+      for (const p of (d.pages || [])) {
+        const title = p.title || "";
+        const excerpt = (p.excerpt || "").replace(/<[^>]+>/g, "");
+        const combined = `${title} ${excerpt}`.toLowerCase();
+        const normalized = combined.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        // Verificar que TODOS los tokens esten presentes
+        if (required.length > 0 && !required.every(t => combined.includes(t)) && !accentless.every(t => normalized.includes(t))) continue;
+        results.push({
+          source: "Wikipedia",
+          type: "biography match",
+          title,
+          url: `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}`,
+          snippet: excerpt.slice(0, 200),
+          severity: "info" as const,
+          timestamp: null,
+        });
+      }
+    }
+    // 2. Spanish Wikipedia
+    const rEs = await fetch(`https://es.wikipedia.org/w/rest.php/v1/search/page?q=${encodeURIComponent(query)}&limit=10`, {
+      headers: { "User-Agent": "MONITOR-THREAT" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (rEs.ok) {
+      const d: any = await rEs.json();
+      const required = nameTokens(query);
+      const accentless = required.map(t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+      for (const p of (d.pages || [])) {
+        const title = p.title || "";
+        const excerpt = (p.excerpt || "").replace(/<[^>]+>/g, "");
+        const combined = `${title} ${excerpt}`.toLowerCase();
+        const normalized = combined.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        if (required.length > 0 && !required.every(t => combined.includes(t)) && !accentless.every(t => normalized.includes(t))) continue;
+        results.push({
+          source: "Wikipedia (ES)",
+          type: "biography match",
+          title,
+          url: `https://es.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}`,
+          snippet: excerpt.slice(0, 200),
+          severity: "info" as const,
+          timestamp: null,
+        });
+      }
+    }
+    // Dedup by URL
+    const seen = new Set<string>();
+    return results.filter(r => { if (seen.has(r.url)) return false; seen.add(r.url); return true; }).slice(0, 20);
   } catch { return []; }
 }
 
 // ============================================================
-//  Hunter.io
+//  DuckDuckGo Instant Answer API — biografias exactas
 // ============================================================
-async function searchHunter(email: string): Promise<SearchResult[]> {
+async function searchDdgInstantAnswer(query: string, type: QueryType): Promise<SearchResult[]> {
+  if (type !== "name") return [];
   try {
-    const key = process.env.HUNTER_API_KEY || "";
-    if (!key) return [];
-    const r = await fetch(`https://api.hunter.io/v2/email-verifier?email=${encodeURIComponent(email)}&api_key=${key}`, { signal: AbortSignal.timeout(10000) });
+    const r = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&no_redirect=1&skip_disambig=0`, {
+      headers: { "User-Agent": "MONITOR-THREAT" },
+      signal: AbortSignal.timeout(8000),
+    });
     if (!r.ok) return [];
     const d: any = await r.json();
-    const data = d?.data || {};
-    return [{
-      source: "Hunter.io", type: "email verification",
-      title: `${email} — ${data.status || "?"}`,
-      url: `https://hunter.io/email-verifier/${encodeURIComponent(email)}`,
-      snippet: `Status: ${data.status || "?"} | Result: ${data.result || "?"} | Score: ${data.score || "?"} | Domain: ${data.domain || "?"}`,
-      severity: data.status === "valid" ? "info" : "low" as const, timestamp: null,
-    }];
+    const results: SearchResult[] = [];
+    // AbstractText (resumen de Wikipedia/Infozubiri)
+    if (d.AbstractText) {
+      results.push({
+        source: "DuckDuckGo IA",
+        type: "biography abstract",
+        title: d.Heading || query,
+        url: d.AbstractURL || `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
+        snippet: d.AbstractText.slice(0, 250),
+        severity: "info" as const,
+        timestamp: null,
+      });
+    }
+    // RelatedTopics (resultados relacionados)
+    const required = nameTokens(query);
+    const accentless = required.map(t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+    for (const t of (d.RelatedTopics || [])) {
+      if (typeof t !== "object" || !t.Text) continue;
+      const text = (t.Text || "").toLowerCase();
+      const normalized = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      // Solo incluir si contiene TODOS los tokens del nombre
+      if (required.length > 0 && !required.every(tok => text.includes(tok)) && !accentless.every(tok => normalized.includes(tok))) continue;
+      results.push({
+        source: "DuckDuckGo IA",
+        type: "related topic",
+        title: (t.Text || "").slice(0, 100),
+        url: t.FirstURL || `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
+        snippet: (t.Text || "").slice(0, 200),
+        severity: "low" as const,
+        timestamp: null,
+      });
+    }
+    return results.slice(0, 20);
   } catch { return []; }
 }
 
@@ -340,11 +504,10 @@ function decodeBingUrl(ckAurl: string): string | null {
   } catch { return null; }
 }
 
-function parseBingHtml(html: string): SearchResult[] {
+function parseBingHtml(html: string, query: string, type: QueryType): SearchResult[] {
   const results: SearchResult[] = [];
-  // Modern Bing: <h2 ...><a href="https://www.bing.com/ck/a?...&u=a1<base64>...">Title</a></h2>
-  // Then nearby <p> contains snippet
-  // Match each result block: from <h2 to the next </h2>
+  // Tokens obligatorios para post-filtro (solo para nombres)
+  const requiredTokens = type === "name" ? nameTokens(query) : [];
   const blockRe = /<h2[^>]*>\s*<a[^>]*href="(https:\/\/www\.bing\.com\/ck\/a\?[^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>([\s\S]*?)(?=<h2|<div class="b_pag|<\/div>\s*<div class="b_footer|$)/g;
   let m: RegExpExecArray | null;
   let count = 0;
@@ -354,14 +517,17 @@ function parseBingHtml(html: string): SearchResult[] {
     const tail = m[3];
     const url = decodeBingUrl(ckAurl);
     if (!url) continue;
-    // Skip Bing-internal nav links (/images, /videos, /maps, /news, /shop)
-    if (url.includes("bing.com/") && !url.includes("://www.bing.com/search?q=") === false) continue;
     if (/bing\.com\/(images|videos|maps|news|shop|search)/.test(url)) continue;
     const title = titleHtml.replace(/<[^>]+>/g, "").trim();
     if (!title) continue;
-    // Snippet: first <p> after the h2
     const pMatch = tail.match(/<p[^>]*>([\s\S]*?)<\/p>/);
     const snippet = (pMatch ? pMatch[1] : "").replace(/<[^>]+>/g, "").trim();
+    // Post-filtro para nombres: el title o snippet DEBE contener TODOS los tokens
+    if (requiredTokens.length > 0) {
+      const combined = `${title} ${snippet}`.toLowerCase();
+      const allPresent = requiredTokens.every(t => combined.includes(t));
+      if (!allPresent) continue;
+    }
     results.push({
       source: "Bing",
       type: "search hit",
@@ -376,7 +542,7 @@ function parseBingHtml(html: string): SearchResult[] {
   return results;
 }
 
-async function runDorkOnBing(dork: string): Promise<SearchResult[]> {
+async function runDorkOnBing(dork: string, query: string, type: QueryType): Promise<SearchResult[]> {
   try {
     const r = await fetch(
       `https://www.bing.com/search?q=${encodeURIComponent(dork)}&count=30&setlang=en-US&cc=US&FORM=QBLH&nfpr=1`,
@@ -384,15 +550,15 @@ async function runDorkOnBing(dork: string): Promise<SearchResult[]> {
     );
     if (!r.ok) return [];
     const html = await r.text();
-    const parsed = parseBingHtml(html);
+    const parsed = parseBingHtml(html, query, type);
     return parsed;
   } catch { return []; }
 }
 
-async function runSearchEngines(dorks: string[]): Promise<SearchResult[]> {
+async function runSearchEngines(dorks: string[], query: string, type: QueryType): Promise<SearchResult[]> {
   // Ejecuta los primeros 5 dorks en Bing (en paralelo con rate-limit)
   const selected = dorks.slice(0, 5);
-  const all = await Promise.all(selected.map(d => runDorkOnBing(d)));
+  const all = await Promise.all(selected.map(d => runDorkOnBing(d, query, type)));
   const seen = new Set<string>();
   const out: SearchResult[] = [];
   for (const arr of all) {
@@ -488,20 +654,21 @@ export async function GET(request: Request) {
   const isName = type === "name";
 
   // Lote 1 — fuentes API directas (rápidas)
-  const [ghUsers, ghProfile, ghCode, ghGists, gravatar, hibp, vt, wiki, hunter] = await Promise.all([
-    (isName || isUsername) ? searchGitHubUsers(query) : Promise.resolve([]),
+  const [ghUsers, ghProfile, ghCode, ghGists, gravatar, hibp, vt, wiki, ddgIa, hunter] = await Promise.all([
+    (isName || isUsername) ? searchGitHubUsers(query, type) : Promise.resolve([]),
     isUsername ? searchGitHubProfile(query) : Promise.resolve([]),
     (isEmail || isPhone || isName) ? searchGitHubCode(query, type) : Promise.resolve([]),
     (isEmail || isPhone || isUsername || isName) ? searchGitHubGists(query) : Promise.resolve([]),
     isEmail ? searchGravatar(query) : Promise.resolve([]),
     isEmail ? searchHibpBreaches(query) : Promise.resolve([]),
     searchVirusTotal(query, type),
-    isName ? searchWikipedia(query) : Promise.resolve([]),
+    isName ? searchWikipedia(query, type) : Promise.resolve([]),
+    isName ? searchDdgInstantAnswer(query, type) : Promise.resolve([]),
     isEmail ? searchHunter(query) : Promise.resolve([]),
   ]);
 
-  // Lote 2 — motor Bing ejecutando 5 dorks
-  const engineResults = await runSearchEngines(dorks);
+  // Lote 2 — motor Bing ejecutando 5 dorks (con post-filtro de coincidencia exacta)
+  const engineResults = await runSearchEngines(dorks, query, type);
 
   // Lote 3 — enumeración Sherlock (solo para username)
   const sherlockResults = isUsername ? await sherlockEnumerate(query) : [];
@@ -509,7 +676,7 @@ export async function GET(request: Request) {
   const all = [
     ...ghUsers, ...ghProfile, ...ghCode, ...ghGists,
     ...gravatar, ...hibp, ...vt,
-    ...wiki, ...hunter,
+    ...wiki, ...ddgIa, ...hunter,
     ...engineResults,
     ...sherlockResults,
   ];
@@ -531,6 +698,7 @@ export async function GET(request: Request) {
       bySeverity,
       engines: { bing: engineResults.length },
       sherlock: sherlockResults.length,
+      preciseMatch: { wikipedia: wiki.length, ddg: ddgIa.length },
     },
     timestamp: new Date().toISOString(),
   }, { headers: { "Cache-Control": "no-store" } });
