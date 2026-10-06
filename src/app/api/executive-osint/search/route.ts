@@ -1,5 +1,6 @@
-// Executive OSINT Search — 4 tipos: nombre, email, telefono, alias
-// 8 fuentes verificadas + 55 dorks generados
+// Executive OSINT Search — 4 tipos: name, email, phone, username
+// Multi-source / multi-engine: GitHub (4 sub-fuentes), Gravatar, HIBP (real),
+// VirusTotal, Wikipedia, DuckDuckGo engine, Bing engine, Hunter.io, Sherlock (25+ sitios)
 
 import { NextResponse } from "next/server";
 
@@ -20,6 +21,14 @@ function ghHeaders(): Record<string, string> {
   const h: Record<string, string> = { Accept: "application/vnd.github.v3+json", "User-Agent": "MONITOR-THREAT" };
   if (token) h["Authorization"] = `token ${token}`;
   return h;
+}
+
+function htmlFetchHeaders(): Record<string, string> {
+  return {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,es;q=0.8",
+  };
 }
 
 // ---- DORKS: 55 dorks en 4 categorias ----
@@ -96,9 +105,10 @@ function generateDorks(query: string, type: QueryType): string[] {
   }
 }
 
-// ---- Fuentes ----
+// ============================================================
+//  GitHub (4 sub-fuentes)
+// ============================================================
 
-// GitHub User Search (para name y username)
 async function searchGitHubUsers(query: string): Promise<SearchResult[]> {
   try {
     const r = await fetch(`https://api.github.com/search/users?q=${encodeURIComponent(query)}&per_page=20`, { headers: ghHeaders(), signal: AbortSignal.timeout(10000) });
@@ -112,7 +122,6 @@ async function searchGitHubUsers(query: string): Promise<SearchResult[]> {
   } catch { return []; }
 }
 
-// GitHub User Profile (para @username)
 async function searchGitHubProfile(username: string): Promise<SearchResult[]> {
   const user = username.startsWith("@") ? username.slice(1) : username;
   try {
@@ -126,7 +135,6 @@ async function searchGitHubProfile(username: string): Promise<SearchResult[]> {
         severity: "info" as const, timestamp: d.created_at || null,
       });
     }
-    // User repos
     const r2 = await fetch(`https://api.github.com/users/${user}/repos?per_page=20&sort=updated`, { headers: ghHeaders(), signal: AbortSignal.timeout(8000) });
     if (r2.ok) {
       const repos: any[] = await r2.json();
@@ -142,7 +150,6 @@ async function searchGitHubProfile(username: string): Promise<SearchResult[]> {
   } catch { return []; }
 }
 
-// GitHub Code Search (para email, phone — busca en .env, config, etc.)
 async function searchGitHubCode(query: string, type: QueryType): Promise<SearchResult[]> {
   try {
     const queries: string[] = [];
@@ -170,7 +177,6 @@ async function searchGitHubCode(query: string, type: QueryType): Promise<SearchR
   } catch { return []; }
 }
 
-// GitHub Gist Search
 async function searchGitHubGists(query: string): Promise<SearchResult[]> {
   try {
     const r = await fetch(`https://api.github.com/gists/public?per_page=100`, { headers: ghHeaders(), signal: AbortSignal.timeout(10000) });
@@ -187,7 +193,9 @@ async function searchGitHubGists(query: string): Promise<SearchResult[]> {
   } catch { return []; }
 }
 
-// Gravatar (email → profile)
+// ============================================================
+//  Gravatar (email → profile)
+// ============================================================
 async function searchGravatar(email: string): Promise<SearchResult[]> {
   try {
     const crypto = await import("crypto");
@@ -207,8 +215,33 @@ async function searchGravatar(email: string): Promise<SearchResult[]> {
   } catch { return []; }
 }
 
-// HIBP Breaches (contexto)
-async function searchHibpBreaches(): Promise<SearchResult[]> {
+// ============================================================
+//  HIBP — búsqueda REAL por email (con API key) + fallback genérico
+// ============================================================
+async function searchHibpBreaches(email?: string): Promise<SearchResult[]> {
+  const key = process.env.HIBP_API_KEY || "";
+  // Real breach lookup si hay API key
+  if (key && email) {
+    try {
+      const r = await fetch(`https://haveibeenpwned.com/api/v3/breachedaccount/${encodeURIComponent(email)}?truncateResponse=false`, {
+        headers: { "hibp-api-key": key, "User-Agent": "MONITOR-THREAT" },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (r.ok) {
+        const breaches: any[] = await r.json();
+        return breaches.slice(0, 25).map(b => ({
+          source: "HIBP Breach", type: "confirmed breach",
+          title: `${b.Name} — ${email}`, url: `https://haveibeenpwned.com/breach/${b.Name}`,
+          snippet: `PwnCount: ${b.PwnCount || "?"} | Date: ${b.BreachDate || "?"} | Data: ${(b.DataClasses || []).join(", ")}`,
+          severity: "high" as const, timestamp: b.BreachDate || null,
+        }));
+      }
+      if (r.status === 404) {
+        return [{ source: "HIBP", type: "no breaches", title: `${email} — NOT BREACHED`, url: "https://haveibeenpwned.com", snippet: "Email not found in any known breach.", severity: "info" as const, timestamp: null }];
+      }
+    } catch {}
+  }
+  // Fallback: lista de breaches conocidos (contexto)
   try {
     const r = await fetch("https://haveibeenpwned.com/api/v3/breaches", { headers: { "User-Agent": "MONITOR-THREAT" }, signal: AbortSignal.timeout(10000) });
     if (!r.ok) return [];
@@ -222,7 +255,9 @@ async function searchHibpBreaches(): Promise<SearchResult[]> {
   } catch { return []; }
 }
 
-// VirusTotal (si el email tiene dominio)
+// ============================================================
+//  VirusTotal — reputación del dominio del email
+// ============================================================
 async function searchVirusTotal(query: string, type: QueryType): Promise<SearchResult[]> {
   try {
     const key = process.env.VIRUSTOTAL_API_KEY || "";
@@ -237,7 +272,248 @@ async function searchVirusTotal(query: string, type: QueryType): Promise<SearchR
   } catch { return []; }
 }
 
-// ---- Main ----
+// ============================================================
+//  Wikipedia — búsqueda biográfica para nombres
+// ============================================================
+async function searchWikipedia(query: string): Promise<SearchResult[]> {
+  try {
+    // OpenSearch devuelve matches con título + snippet + URL
+    const r = await fetch(`https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=15&format=json&origin=*`, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return [];
+    const d: any = await r.json();
+    const titles: string[] = d[1] || [];
+    const urls: string[] = d[3] || [];
+    return titles.slice(0, 15).map((t, i) => ({
+      source: "Wikipedia", type: "biography match",
+      title: t, url: urls[i] || `https://en.wikipedia.org/wiki/${encodeURIComponent(t.replace(/ /g, "_"))}`,
+      snippet: `Encyclopedia entry — possible identity match`,
+      severity: "info" as const, timestamp: null,
+    }));
+  } catch { return []; }
+}
+
+// ============================================================
+//  Hunter.io — email → nombre/cargo/domain (con API key opcional)
+// ============================================================
+async function searchHunter(email: string): Promise<SearchResult[]> {
+  try {
+    const key = process.env.HUNTER_API_KEY || "";
+    if (!key) return [];
+    const r = await fetch(`https://api.hunter.io/v2/email-verifier?email=${encodeURIComponent(email)}&api_key=${key}`, { signal: AbortSignal.timeout(10000) });
+    if (!r.ok) return [];
+    const d: any = await r.json();
+    const data = d?.data || {};
+    return [{
+      source: "Hunter.io", type: "email verification",
+      title: `${email} — ${data.status || "?"}`,
+      url: `https://hunter.io/email-verifier/${encodeURIComponent(email)}`,
+      snippet: `Status: ${data.status || "?"} | Result: ${data.result || "?"} | Score: ${data.score || "?"} | Domain: ${data.domain || "?"}`,
+      severity: data.status === "valid" ? "info" : "low" as const, timestamp: null,
+    }];
+  } catch { return []; }
+}
+
+// ============================================================
+//  DuckDuckGo engine — ejecuta dorks y parsea HTML
+// ============================================================
+function parseDDGHtml(html: string, engine: string): SearchResult[] {
+  const results: SearchResult[] = [];
+  // DDG html.duckduckgo.com usa <a class="result__a" href="..."> + <a class="result__snippet">
+  const linkRe = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+  const snippetRe = /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+  const links: { url: string; title: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = linkRe.exec(html)) && links.length < 30) {
+    let href = m[1];
+    // DDG wraps with //duckduckgo.com/l/?uddg=ENC
+    const uddg = href.match(/uddg=([^&]+)/);
+    if (uddg) {
+      try { href = decodeURIComponent(uddg[1]); } catch {}
+    }
+    const title = m[2].replace(/<[^>]+>/g, "").trim();
+    if (href.startsWith("http")) links.push({ url: href, title });
+  }
+  const snippets: string[] = [];
+  while ((m = snippetRe.exec(html)) && snippets.length < 30) {
+    snippets.push(m[1].replace(/<[^>]+>/g, "").trim());
+  }
+  for (let i = 0; i < links.length; i++) {
+    results.push({
+      source: engine, type: "search hit",
+      title: links[i].title.slice(0, 120),
+      url: links[i].url,
+      snippet: (snippets[i] || "").slice(0, 200) || "(no snippet)",
+      severity: "medium" as const, timestamp: null,
+    });
+  }
+  return results;
+}
+
+function parseBingHtml(html: string, engine: string): SearchResult[] {
+  const results: SearchResult[] = [];
+  // Bing: <li class="b_algo"><h2><a href="...">title</a></h2><p>...snippet...</p>
+  const blockRe = /<li class="b_algo"[^>]*>([\s\S]*?)<\/li>/g;
+  const linkRe = /<a[^>]*href="(https?:[^"]+)"[^>]*>([\s\S]*?)<\/a>/;
+  const snippetRe = /<p[^>]*>([\s\S]*?)<\/p>/;
+  let m: RegExpExecArray | null;
+  let count = 0;
+  while ((m = blockRe.exec(html)) && count < 30) {
+    const block = m[1];
+    const lm = block.match(linkRe);
+    if (!lm) continue;
+    const url = lm[1];
+    const title = lm[2].replace(/<[^>]+>/g, "").trim();
+    const sm = block.match(snippetRe);
+    const snippet = (sm ? sm[1] : "").replace(/<[^>]+>/g, "").trim();
+    if (url && title) {
+      results.push({
+        source: engine, type: "search hit",
+        title: title.slice(0, 120),
+        url,
+        snippet: snippet.slice(0, 200) || "(no snippet)",
+        severity: "medium" as const, timestamp: null,
+      });
+      count++;
+    }
+  }
+  return results;
+}
+
+async function runDorkOnDDG(dork: string): Promise<SearchResult[]> {
+  try {
+    const r = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(dork)}`, {
+      headers: htmlFetchHeaders(),
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) return [];
+    const html = await r.text();
+    return parseDDGHtml(html, "DuckDuckGo");
+  } catch { return []; }
+}
+
+async function runDorkOnBing(dork: string): Promise<SearchResult[]> {
+  try {
+    const r = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(dork)}&count=30`, {
+      headers: htmlFetchHeaders(),
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) return [];
+    const html = await r.text();
+    return parseBingHtml(html, "Bing");
+  } catch { return []; }
+}
+
+// Ejecuta los N dorks más relevantes en paralelo contra DDG + Bing
+async function runSearchEngines(dorks: string[]): Promise<SearchResult[]> {
+  // Limita a los primeros 4 dorks para evitar rate-limit
+  const selected = dorks.slice(0, 4);
+  const tasks: Promise<SearchResult[]>[] = [];
+  for (const d of selected) {
+    tasks.push(runDorkOnDDG(d));
+    tasks.push(runDorkOnBing(d));
+  }
+  const all = await Promise.all(tasks);
+  // Combina y de-dup por URL dentro de esta llamada
+  const seen = new Set<string>();
+  const out: SearchResult[] = [];
+  for (const arr of all) {
+    for (const r of arr) {
+      if (seen.has(r.url)) continue;
+      seen.add(r.url);
+      out.push(r);
+    }
+  }
+  // Limita total a 60 resultados de motor
+  return out.slice(0, 60);
+}
+
+// ============================================================
+//  Sherlock — enumeración de usernames en 25+ sitios
+// ============================================================
+interface SherlockSite {
+  name: string;
+  url: (u: string) => string;
+  //errorMsg?: RegExp;  // opcional: patrón en el HTML que indica "no existe"
+}
+
+const SHERLOCK_SITES: SherlockSite[] = [
+  { name: "GitHub", url: u => `https://github.com/${u}` },
+  { name: "GitLab", url: u => `https://gitlab.com/${u}` },
+  { name: "Bitbucket", url: u => `https://bitbucket.org/${u}` },
+  { name: "Twitter/X", url: u => `https://x.com/${u}` },
+  { name: "Instagram", url: u => `https://instagram.com/${u}` },
+  { name: "Facebook", url: u => `https://facebook.com/${u}` },
+  { name: "Reddit", url: u => `https://reddit.com/user/${u}` },
+  { name: "TikTok", url: u => `https://tiktok.com/@${u}` },
+  { name: "YouTube", url: u => `https://youtube.com/@${u}` },
+  { name: "Twitch", url: u => `https://twitch.tv/${u}` },
+  { name: "Telegram", url: u => `https://t.me/${u}` },
+  { name: "Pinterest", url: u => `https://pinterest.com/${u}` },
+  { name: "Tumblr", url: u => `https://${u}.tumblr.com` },
+  { name: "Medium", url: u => `https://medium.com/@${u}` },
+  { name: "Dev.to", url: u => `https://dev.to/${u}` },
+  { name: "Hashnode", url: u => `https://hashnode.com/@${u}` },
+  { name: "HackerNews", url: u => `https://news.ycombinator.com/user?id=${u}` },
+  { name: "Steam", url: u => `https://steamcommunity.com/id/${u}` },
+  { name: "Keybase", url: u => `https://keybase.io/${u}` },
+  { name: "Replit", url: u => `https://replit.com/@${u}` },
+  { name: "Vimeo", url: u => `https://vimeo.com/${u}` },
+  { name: "SoundCloud", url: u => `https://soundcloud.com/${u}` },
+  { name: "Spotify", url: u => `https://open.spotify.com/user/${u}` },
+  { name: "Patreon", url: u => `https://patreon.com/${u}` },
+  { name: "Mastodon (mstdn)", url: u => `https://mstdn.social/@${u}` },
+  { name: "Stack Overflow", url: u => `https://stackoverflow.com/users/${u}` },
+  { name: "Kaggle", url: u => `https://kaggle.com/${u}` },
+];
+
+async function checkUrl(url: string): Promise<{ ok: boolean; status: number; finalUrl: string }> {
+  try {
+    const r = await fetch(url, {
+      method: "GET",
+      headers: htmlFetchHeaders(),
+      redirect: "follow",
+      signal: AbortSignal.timeout(8000),
+    });
+    // Algunos sitios devuelven 200 con página "no encontrado". Aceptamos como hit de todas formas
+    // (la verificación humana en el snippet/show lo confirma).
+    return { ok: r.ok && r.status === 200, status: r.status, finalUrl: r.url };
+  } catch {
+    return { ok: false, status: 0, finalUrl: url };
+  }
+}
+
+async function sherlockEnumerate(username: string): Promise<SearchResult[]> {
+  const user = username.startsWith("@") ? username.slice(1) : username;
+  // Limita a 12 sitios en paralelo para no agotar sockets
+  const chunks: SherlockSite[][] = [];
+  for (let i = 0; i < SHERLOCK_SITES.length; i += 12) {
+    chunks.push(SHERLOCK_SITES.slice(i, i + 12));
+  }
+  const results: SearchResult[] = [];
+  for (const chunk of chunks) {
+    const checks = await Promise.all(chunk.map(async s => {
+      const url = s.url(user);
+      const c = await checkUrl(url);
+      return { site: s.name, url, ...c };
+    }));
+    for (const c of checks) {
+      if (c.ok) {
+        results.push({
+          source: c.site, type: "username found",
+          title: `${user} en ${c.site}`,
+          url: c.finalUrl,
+          snippet: `HTTP ${c.status} — perfil probable de "${user}" en ${c.site}`,
+          severity: "medium" as const, timestamp: null,
+        });
+      }
+    }
+  }
+  return results;
+}
+
+// ============================================================
+//  Main
+// ============================================================
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const query = (searchParams.get("q") || "").trim();
@@ -249,18 +525,34 @@ export async function GET(request: Request) {
   const isUsername = type === "username";
   const isEmail = type === "email";
   const isPhone = type === "phone";
+  const isName = type === "name";
 
-  const [ghUsers, ghProfile, ghCode, ghGists, gravatar, hibp, vt] = await Promise.all([
-    (type === "name" || isUsername) ? searchGitHubUsers(query) : Promise.resolve([]),
+  // Lote 1 — fuentes API directas (rápidas)
+  const [ghUsers, ghProfile, ghCode, ghGists, gravatar, hibp, vt, wiki, hunter] = await Promise.all([
+    (isName || isUsername) ? searchGitHubUsers(query) : Promise.resolve([]),
     isUsername ? searchGitHubProfile(query) : Promise.resolve([]),
-    (isEmail || isPhone || type === "name") ? searchGitHubCode(query, type) : Promise.resolve([]),
-    (isEmail || isPhone || isUsername || type === "name") ? searchGitHubGists(query) : Promise.resolve([]),
+    (isEmail || isPhone || isName) ? searchGitHubCode(query, type) : Promise.resolve([]),
+    (isEmail || isPhone || isUsername || isName) ? searchGitHubGists(query) : Promise.resolve([]),
     isEmail ? searchGravatar(query) : Promise.resolve([]),
-    isEmail ? searchHibpBreaches() : Promise.resolve([]),
+    isEmail ? searchHibpBreaches(query) : Promise.resolve([]),
     searchVirusTotal(query, type),
+    isName ? searchWikipedia(query) : Promise.resolve([]),
+    isEmail ? searchHunter(query) : Promise.resolve([]),
   ]);
 
-  const all = [...ghUsers, ...ghProfile, ...ghCode, ...ghGists, ...gravatar, ...hibp, ...vt];
+  // Lote 2 — motores de búsqueda (DuckDuckGo + Bing ejecutando 4 dorks cada uno)
+  const engineResults = await runSearchEngines(dorks);
+
+  // Lote 3 — enumeración Sherlock (solo para username)
+  const sherlockResults = isUsername ? await sherlockEnumerate(query) : [];
+
+  const all = [
+    ...ghUsers, ...ghProfile, ...ghCode, ...ghGists,
+    ...gravatar, ...hibp, ...vt,
+    ...wiki, ...hunter,
+    ...engineResults,
+    ...sherlockResults,
+  ];
   const seen = new Set<string>();
   const deduped = all.filter(r => { if (seen.has(r.url)) return false; seen.add(r.url); return true; });
 
@@ -269,8 +561,17 @@ export async function GET(request: Request) {
   for (const r of deduped) { bySource[r.source] = (bySource[r.source] || 0) + 1; bySeverity[r.severity]++; }
 
   return NextResponse.json({
-    query, queryType: type, dorks, results: deduped,
-    summary: { total: deduped.length, bySource, bySeverity },
+    query, queryType: type, dorks,
+    sourcesUsed: Object.keys(bySource),
+    enginesUsed: ["DuckDuckGo", "Bing"],
+    results: deduped,
+    summary: {
+      total: deduped.length,
+      bySource,
+      bySeverity,
+      engines: { duckduckgo: engineResults.filter(r => r.source === "DuckDuckGo").length, bing: engineResults.filter(r => r.source === "Bing").length },
+      sherlock: sherlockResults.length,
+    },
     timestamp: new Date().toISOString(),
   }, { headers: { "Cache-Control": "no-store" } });
 }
