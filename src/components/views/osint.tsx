@@ -30,66 +30,8 @@ import { TELEGRAM_RESULT } from "@/lib/mock-data";
 // ---------- Deep & Dark Web (re-export from dedicated file) ----------
 export { DeepDarkWebView } from "@/components/views/deep-dark-web-view";
 
-// ---------- Telegram & Discord Monitor ----------
-export function TelegramDiscordView() {
-  const r = TELEGRAM_RESULT;
-  return (
-    <ModuleShell
-      name="Telegram & Discord Monitor"
-      description="Resolve users, channels and groups; track membership changes and historical activity."
-      icon={MessageSquare}
-      category="OSINT"
-    >
-      <SearchBar label="@username or invite" placeholder="@threatintel_feed" />
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-        <Panel title="Profile">
-          <FieldRow label="Type" value={r.type} />
-          <FieldRow label="Username" value={r.username} mono />
-          <FieldRow label="ID" value={r.id} mono />
-          <FieldRow label="Title" value={r.title} />
-          <FieldRow label="Members" value={r.members.toLocaleString()} mono />
-          <FieldRow
-            label="Verified"
-            value={
-              <Badge variant="secondary" className="font-mono">
-                {r.verified ? "yes" : "no"}
-              </Badge>
-            }
-          />
-        </Panel>
-        <Panel title="Description">
-          <p className="text-sm">{r.description}</p>
-        </Panel>
-        <Panel title="History" className="md:col-span-2">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Action</TableHead>
-                <TableHead>From</TableHead>
-                <TableHead>To</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {r.history.map((h, i) => (
-                <TableRow key={i}>
-                  <TableCell className="font-mono">{h.date}</TableCell>
-                  <TableCell>{h.action}</TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {"from" in h ? String(h.from) : "-"}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {"to" in h ? String(h.to) : "-"}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Panel>
-      </div>
-    </ModuleShell>
-  );
-}
+// ---------- Telegram & Discord Monitor (re-export from dedicated file) ----------
+export { TelegramDiscordView } from "@/components/views/telegram-discord-view";
 
 // ---------- Executive OSINT ----------
 export function ExecutiveOsintView() {
