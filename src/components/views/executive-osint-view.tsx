@@ -97,7 +97,7 @@ export function ExecutiveOsintView() {
   return (
     <ModuleShell
       name="Executive OSINT"
-      description="Busca informacion de ejecutivos en multiples fuentes y motores: nombre, email, telefono, alias. GitHub + Gravatar + HIBP + VirusTotal + Wikipedia + Hunter + DuckDuckGo + Bing + Sherlock (27 sitios)."
+      description="Busca informacion de ejecutivos en multiples fuentes y motores: nombre, email, telefono, alias. GitHub + Gravatar + HIBP + VirusTotal + Wikipedia + Hunter + Bing engine + Sherlock (17 sitios verificados)."
       icon={UserSearch}
       category="OSINT"
     >
@@ -116,7 +116,7 @@ export function ExecutiveOsintView() {
           <Input type="text" placeholder={queryType === "name" ? "ej: Juan Perez" : queryType === "email" ? "ej: juan@empresa.com" : queryType === "phone" ? "ej: +57 3001234567" : "ej: @jperez"} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === "Enter" && search()} className="flex-1 font-mono text-sm" autoFocus />
         </div>
         <div className="text-[10px] text-muted-foreground">
-          Fuentes API: GitHub (Users/Profile/Code/Gists), Gravatar, HIBP, VirusTotal, Wikipedia, Hunter.io · Motores: DuckDuckGo + Bing (auto-ejecutan los dorks) · Sherlock: 27 redes sociales.
+          Fuentes API: GitHub (Users/Profile/Code/Gists), Gravatar, HIBP, VirusTotal, Wikipedia, Hunter.io · Motor: Bing (auto-ejecuta los dorks y decodifica los URLs) · Sherlock: 17 redes sociales.
         </div>
         {(sourcesUsed.length > 0 || enginesUsed.length > 0) && (
           <div className="flex gap-1 flex-wrap mt-2">
@@ -150,14 +150,13 @@ export function ExecutiveOsintView() {
 
       {summary && summary.engines && (
         <div className="flex gap-2 mb-3">
-          {summary.engines.duckduckgo >= 0 && <div className="rounded p-2 border border-purple-500/40 bg-purple-500/5 flex-1"><div className="text-lg font-bold font-mono text-purple-400">{summary.engines.duckduckgo}</div><div className="text-[10px]">DuckDuckGo</div></div>}
-          {summary.engines.bing >= 0 && <div className="rounded p-2 border border-purple-500/40 bg-purple-500/5 flex-1"><div className="text-lg font-bold font-mono text-purple-400">{summary.engines.bing}</div><div className="text-[10px]">Bing</div></div>}
-          {summary.sherlock !== undefined && <div className="rounded p-2 border border-amber-500/40 bg-amber-500/5 flex-1"><div className="text-lg font-bold font-mono text-amber-400">{summary.sherlock}</div><div className="text-[10px]">Sherlock (27 sitios)</div></div>}
+          {summary.engines.bing !== undefined && <div className="rounded p-2 border border-purple-500/40 bg-purple-500/5 flex-1"><div className="text-lg font-bold font-mono text-purple-400">{summary.engines.bing}</div><div className="text-[10px]">Bing</div></div>}
+          {summary.sherlock !== undefined && <div className="rounded p-2 border border-amber-500/40 bg-amber-500/5 flex-1"><div className="text-lg font-bold font-mono text-amber-400">{summary.sherlock}</div><div className="text-[10px]">Sherlock (17 sitios)</div></div>}
         </div>
       )}
       {dorks.length > 0 && (
-        <Panel title={`Dorks generados (${dorks.length}) — 4 ejecutados en DuckDuckGo + Bing`} className="md:col-span-2">
-          <div className="text-[10px] text-muted-foreground mb-2">Los primeros 4 dorks se ejecutan automaticamente contra DuckDuckGo + Bing. El resto puedes copiarlos y pegarlos en Google/Yandex manualmente:</div>
+        <Panel title={`Dorks generados (${dorks.length}) — 5 ejecutados en Bing`} className="md:col-span-2">
+          <div className="text-[10px] text-muted-foreground mb-2">Los primeros 5 dorks se ejecutan automaticamente contra Bing. El resto puedes copiarlos y pegarlos en Google/Yandex manualmente:</div>
           <div className="max-h-48 overflow-y-auto space-y-1">
             {dorks.map((d, i) => (
               <div key={i} className="text-[10px] font-mono text-muted-foreground flex items-center gap-1">
