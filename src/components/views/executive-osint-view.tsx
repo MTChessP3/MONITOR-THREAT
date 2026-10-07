@@ -3,7 +3,7 @@
 import * as React from "react";
 import {
   UserSearch, Search, Loader2, Printer, AlertTriangle, ExternalLink, Copy,
-  Mail, Phone, User, AtSign, Upload, Image as ImageIcon, X,
+  Mail, Phone, User, AtSign, Upload, Image as ImageIcon, X, Plus,
   Users, Code, Globe, MapPin, FileText, Briefcase, Newspaper,
   MessageSquare, Shield, GraduationCap, Building, Radar, Skull, Eye,
   Scale, AtSign as AtSignIcon,
@@ -68,6 +68,15 @@ export function ExecutiveOsintView() {
   const [imageResults, setImageResults] = React.useState<any>(null);
   const [imageLoading, setImageLoading] = React.useState(false);
 
+  // Mis hallazgos manuales - URLs/links que el usuario encuentra al hacer
+  // busquedas manuales en Google/Yandex/Edge y quiere integrar al informe
+  const [manualFindings, setManualFindings] = React.useState<Array<{ url: string; title: string; notes: string; engine: string; category: string }>>([]);
+  const [newFindingUrl, setNewFindingUrl] = React.useState("");
+  const [newFindingTitle, setNewFindingTitle] = React.useState("");
+  const [newFindingNotes, setNewFindingNotes] = React.useState("");
+  const [newFindingEngine, setNewFindingEngine] = React.useState("Google");
+  const [newFindingCategory, setNewFindingCategory] = React.useState("manual");
+
   const search = async () => {
     if (!query.trim()) return;
     setLoading(true); setError(null); setResults([]); setCategories([]); setDorksByCategory({});
@@ -121,11 +130,41 @@ export function ExecutiveOsintView() {
     setImageResults(null);
   };
 
+  // Anadir un hallazgo manual a la lista
+  const addFinding = () => {
+    if (!newFindingUrl.trim()) return;
+    setManualFindings(prev => [...prev, {
+      url: newFindingUrl.trim(),
+      title: newFindingTitle.trim() || newFindingUrl.trim().slice(0, 80),
+      notes: newFindingNotes.trim(),
+      engine: newFindingEngine,
+      category: newFindingCategory,
+    }]);
+    setNewFindingUrl(""); setNewFindingTitle(""); setNewFindingNotes("");
+  };
+
+  const removeFinding = (idx: number) => {
+    setManualFindings(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  // Convertir hallazgos manuales a SearchResult[] para incluir en informe
+  const manualFindingsAsResults = (): SearchResult[] => manualFindings.map(f => ({
+    category: f.category,
+    source: `Manual (${f.engine})`,
+    type: "manual finding",
+    title: f.title,
+    url: f.url,
+    snippet: f.notes || `Hallazgo manual via ${f.engine}`,
+    severity: "medium" as const,
+    timestamp: null,
+  }));
+
   const sevColors: Record<string, "destructive" | "default" | "secondary" | "outline"> = { high: "destructive", medium: "default", low: "secondary", info: "outline" };
   const sevText: Record<string, string> = { high: "ALTA", medium: "MEDIA", low: "BAJA", info: "INFO" };
 
   const generatePdf = () => {
-    if (results.length === 0) return;
+    if (results.length === 0 && manualFindings.length === 0) return;
+    const allResults = [...results, ...manualFindingsAsResults()];
     const doc = new jsPDF({ unit: "pt", format: "a4" });
     const pw = doc.internal.pageSize.getWidth(), ph = doc.internal.pageSize.getHeight(), m = 40;
     let y = m;
@@ -139,7 +178,7 @@ export function ExecutiveOsintView() {
     y += 48; doc.line(m, y, pw - m, y); y += 28;
     autoTable(doc, {
       startY: y, head: [["Category", "Source", "Severity", "Type", "Title", "Snippet", "URL"]],
-      body: results.map(r => [r.category, r.source, sevText[r.severity], r.type, r.title.slice(0, 50), r.snippet.slice(0, 60), r.url.slice(0, 50)]),
+      body: allResults.map(r => [r.category, r.source, sevText[r.severity], r.type, r.title.slice(0, 50), r.snippet.slice(0, 60), r.url.slice(0, 50)]),
       theme: "grid", margin: { left: m, right: m }, styles: { fontSize: 7, cellPadding: 3 },
       headStyles: { fillColor: [220, 38, 38], textColor: [255, 255, 255], fontSize: 7 },
     });
@@ -153,7 +192,7 @@ export function ExecutiveOsintView() {
   // Genera un Informe HTML imprimible que se abre en nueva ventana con
   // estilos de impresion amigables y boton "Imprimir / Guardar como PDF"
   const generateHtmlReport = () => {
-    if (results.length === 0) return;
+    if (results.length === 0 && manualFindings.length === 0) return;
     const sevColorsHtml: Record<string, string> = {
       high: "#dc2626", medium: "#eab308", low: "#16a34a", info: "#3b82f6",
     };
@@ -162,7 +201,8 @@ export function ExecutiveOsintView() {
 
     // Group results by category
     const grouped: Record<string, SearchResult[]> = {};
-    for (const r of results) {
+    const allResultsForReport = [...results, ...manualFindingsAsResults()];
+    for (const r of allResultsForReport) {
       if (!grouped[r.category]) grouped[r.category] = [];
       grouped[r.category].push(r);
     }
@@ -239,9 +279,9 @@ export function ExecutiveOsintView() {
         <div class="engines-row">
           <div class="engine-stat"><span class="num">${summary.engines.bing}</span><span class="lbl">Bing</span></div>
           <div class="engine-stat"><span class="num">${summary.engines.duckduckgo}</span><span class="lbl">DuckDuckGo</span></div>
-          <div class="engine-stat"><span class="num">${summary.engines.google}</span><span class="lbl">Google (manual)</span></div>
-          <div class="engine-stat"><span class="num">${summary.engines.yandex}</span><span class="lbl">Yandex (manual)</span></div>
-          <div class="engine-stat"><span class="num">${summary.engines.edge}</span><span class="lbl">Edge (manual)</span></div>
+          <div class="engine-stat"><span class="num">${summary.engines.google}</span><span class="lbl">Google</span></div>
+          <div class="engine-stat"><span class="num">${summary.engines.yandex}</span><span class="lbl">Yandex</span></div>
+          <div class="engine-stat"><span class="num">${summary.engines.edge}</span><span class="lbl">Edge</span></div>
         </div>
       ` : ""}
     ` : "";
@@ -325,7 +365,7 @@ export function ExecutiveOsintView() {
     <div class="meta">
       <div><strong>Target:</strong> ${esc(query)} (${queryType})</div>
       <div><strong>Fecha:</strong> ${new Date().toLocaleString()}</div>
-      <div><strong>Dorks ejecutados:</strong> ${dorksExecuted} (Bing + DuckDuckGo automaticos; Google, Yandex, Edge manuales)</div>
+      <div><strong>Dorks ejecutados:</strong> ${dorksExecuted} (Bing + DuckDuckGo automaticos; Google, Yandex, Edge con botones)</div>
     </div>
   </div>
 
@@ -395,7 +435,7 @@ export function ExecutiveOsintView() {
           <Input type="text" placeholder={queryType === "name" ? "ej: Juan Perez" : queryType === "email" ? "ej: juan@empresa.com" : queryType === "phone" ? "ej: +57 3001234567" : "ej: @jperez"} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === "Enter" && search()} className="flex-1 font-mono text-sm" autoFocus />
         </div>
         <div className="text-[10px] text-muted-foreground">
-          20 categorias de dorks ejecutadas en <span className="text-emerald-400">Bing</span> + <span className="text-orange-400">DuckDuckGo</span> (auto) · <span className="text-blue-400">Google</span>, <span className="text-red-400">Yandex</span>, <span className="text-cyan-400">Edge</span> (manual, botones al lado de cada dork) · APIs: GitHub, Gravatar, HIBP, VirusTotal, Wikipedia (EN+ES), DuckDuckGo IA, Hunter, Wikidata, OpenCorporates, Sherlock (17 redes). {dorksExecuted > 0 && <span className="text-purple-400">| {dorksExecuted} dorks ejecutados</span>}
+          20 categorias de dorks ejecutadas en <span className="text-emerald-400">Bing</span> + <span className="text-orange-400">DuckDuckGo</span> (auto) · <span className="text-blue-400">Google</span>, <span className="text-red-400">Yandex</span>, <span className="text-cyan-400">Edge</span> (con botones al lado de cada dork) · APIs: GitHub, Gravatar, HIBP, VirusTotal, Wikipedia (EN+ES), DuckDuckGo IA, Hunter, Wikidata, OpenCorporates, Sherlock (17 redes). {dorksExecuted > 0 && <span className="text-purple-400">| {dorksExecuted} dorks ejecutados</span>}
         </div>
         {(sourcesUsed.length > 0 || enginesUsed.length > 0) && (
           <div className="flex gap-1 flex-wrap mt-2">
@@ -441,6 +481,31 @@ export function ExecutiveOsintView() {
 
         {imageResults && (
           <div className="mt-4 border-t border-border pt-3">
+            {/* Resultados de FaceCheck.ID si la API key esta configurada */}
+            {imageResults.faceMatches?.length > 0 && (
+              <div className="mb-3 p-2 rounded border border-emerald-500/40 bg-emerald-500/5">
+                <div className="text-xs font-semibold mb-2 flex items-center gap-1.5 text-emerald-400">
+                  <ImageIcon className="w-3.5 h-3.5" /> Reconocimiento facial automatico (FaceCheck.ID)
+                </div>
+                <div className="text-[10px] text-muted-foreground mb-2">{imageResults.faceMatches.length} coincidencias encontradas en internet. Score mas alto = mayor similitud.</div>
+                <div className="space-y-1 max-h-40 overflow-y-auto">
+                  {imageResults.faceMatches.map((m: any, i: number) => (
+                    <div key={i} className="text-[11px] flex items-center gap-2 p-1.5 rounded bg-muted/30 border border-border">
+                      <Badge variant={m.score > 70 ? "destructive" : m.score > 50 ? "default" : "secondary"} className="text-[9px] font-mono shrink-0">{m.score}%</Badge>
+                      <a href={m.url} target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline inline-flex items-center gap-1 flex-1 min-w-0">
+                        <span className="truncate">{m.source || m.url}</span>
+                        <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {imageResults.faceCheckUsed === false && imageResults.hasFaceCheckKey === false && (
+              <div className="mb-3 p-2 rounded border border-amber-500/40 bg-amber-500/5 text-[11px] text-amber-300">
+                <strong>Reconocimiento facial automatico desactivado.</strong> Para activarlo, configura <code className="bg-muted px-1 rounded">FACECHECK_API_KEY</code> en las variables de entorno. Sin la API key, se muestran enlaces a los motores para subida manual de la imagen.
+              </div>
+            )}
             <div className="text-xs font-semibold mb-2 flex items-center gap-1.5"><ImageIcon className="w-3.5 h-3.5" /> Motores de busqueda visual</div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
               {imageResults.searchEngines?.map((eng: any, i: number) => {
@@ -477,13 +542,71 @@ export function ExecutiveOsintView() {
 
       {error && <div className="mb-4 p-3 rounded border border-red-500/40 bg-red-500/10 text-red-400 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> {error}</div>}
 
+      {/* MIS HALLAZGOS MANUALES - Panel para agregar URLs encontradas en Google/Yandex/Edge */}
+      <Panel title={`Mis hallazgos manuales (${manualFindings.length})`} className="md:col-span-2">
+        <div className="text-[10px] text-muted-foreground mb-3">
+          Cuando hagas busquedas manuales en Google/Yandex/Edge (clic en los botones <span className="bg-blue-500 text-white px-1 rounded">G</span> <span className="bg-red-500 text-white px-1 rounded">Y</span> <span className="bg-cyan-500 text-white px-1 rounded">E</span> al lado de cada dork) y encuentres URLs relevantes que no aparecen en los resultados automaticos, agregalas aqui para que se incluyan en el informe HTML/PDF.
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-2 mb-2">
+          <Input type="url" placeholder="URL encontrada (https://...)" value={newFindingUrl} onChange={e => setNewFindingUrl(e.target.value)} className="md:col-span-4 font-mono text-xs" />
+          <Input type="text" placeholder="Titulo (opcional)" value={newFindingTitle} onChange={e => setNewFindingTitle(e.target.value)} className="md:col-span-3 text-xs" />
+          <Input type="text" placeholder="Notas (opcional)" value={newFindingNotes} onChange={e => setNewFindingNotes(e.target.value)} className="md:col-span-3 text-xs" />
+          <select value={newFindingEngine} onChange={e => setNewFindingEngine(e.target.value)} className="md:col-span-1 h-9 text-xs rounded border border-border bg-background px-1">
+            <option>Google</option>
+            <option>Yandex</option>
+            <option>Edge</option>
+            <option>Bing</option>
+            <option>DuckDuckGo</option>
+            <option>Manual</option>
+          </select>
+          <select value={newFindingCategory} onChange={e => setNewFindingCategory(e.target.value)} className="md:col-span-1 h-9 text-xs rounded border border-border bg-background px-1">
+            {categories.length > 0 ? (
+              <>
+                {categories.map(c => <option key={c.id} value={c.id}>{c.name.split(" ")[0]}</option>)}
+              </>
+            ) : (
+              <>
+                <option value="manual">Manual</option>
+                <option value="social-media">Social</option>
+                <option value="leaks-pastes">Leaks</option>
+                <option value="breaches">Breaches</option>
+                <option value="darkweb">Dark Web</option>
+              </>
+            )}
+          </select>
+        </div>
+        <div className="flex justify-end mb-3">
+          <Button size="sm" onClick={addFinding} disabled={!newFindingUrl.trim()}>
+            <Plus className="w-3.5 h-3.5 mr-1.5" /> Agregar hallazgo
+          </Button>
+        </div>
+        {manualFindings.length > 0 && (
+          <div className="border-t border-border pt-2 max-h-48 overflow-y-auto space-y-1">
+            {manualFindings.map((f, i) => (
+              <div key={i} className="text-[11px] flex items-center gap-2 p-1.5 rounded bg-muted/30 border border-border">
+                <Badge variant="outline" className="text-[9px] font-mono shrink-0">{f.engine}</Badge>
+                <Badge variant="outline" className="text-[9px] font-mono shrink-0 text-cyan-400">{f.category}</Badge>
+                <div className="flex-1 min-w-0">
+                  <a href={f.url} target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline inline-flex items-center gap-1">
+                    <span className="truncate">{f.title}</span>
+                    <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                  </a>
+                  {f.notes && <div className="text-[10px] text-muted-foreground mt-0.5">{f.notes}</div>}
+                </div>
+                <button onClick={() => removeFinding(i)} className="text-muted-foreground hover:text-red-500 shrink-0"><X className="w-3 h-3" /></button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+
       {/* SUMMARY */}
       {summary && (
         <Panel title={`Resultados: ${summary.total} encontrados en ${Object.keys(summary.byCategory || {}).length} categorias`} className="md:col-span-2"
           action={(
             <div className="flex gap-1.5">
-              <Button size="sm" variant="outline" onClick={generateHtmlReport} disabled={results.length === 0}><FileText className="w-3 h-3 mr-1.5" /> Informe HTML</Button>
-              <Button size="sm" variant="outline" onClick={generatePdf} disabled={results.length === 0}><Printer className="w-3 h-3 mr-1.5" /> PDF</Button>
+              <Button size="sm" variant="outline" onClick={generateHtmlReport} disabled={results.length === 0 && manualFindings.length === 0}><FileText className="w-3 h-3 mr-1.5" /> Informe HTML</Button>
+              <Button size="sm" variant="outline" onClick={generatePdf} disabled={results.length === 0 && manualFindings.length === 0}><Printer className="w-3 h-3 mr-1.5" /> PDF</Button>
             </div>
           )}
         >
@@ -496,13 +619,13 @@ export function ExecutiveOsintView() {
           </div>
           {summary.engines && (
             <>
-              <div className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1.5 mt-2">Motores de busqueda (auto + manual):</div>
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1.5 mt-2">Motores de busqueda:</div>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-2">
                 {summary.engines.bing !== undefined && <div className="rounded p-2 border border-emerald-500/40 bg-emerald-500/5"><div className="text-lg font-bold font-mono text-emerald-400">{summary.engines.bing}</div><div className="text-[10px]">Bing (auto)</div></div>}
                 {summary.engines.duckduckgo !== undefined && <div className="rounded p-2 border border-orange-500/40 bg-orange-500/5"><div className="text-lg font-bold font-mono text-orange-400">{summary.engines.duckduckgo}</div><div className="text-[10px]">DuckDuckGo (auto)</div></div>}
-                {summary.engines.google !== undefined && <div className="rounded p-2 border border-blue-500/40 bg-blue-500/5"><div className="text-lg font-bold font-mono text-blue-400">{summary.engines.google}</div><div className="text-[10px]">Google (manual)</div></div>}
-                {summary.engines.yandex !== undefined && <div className="rounded p-2 border border-red-500/40 bg-red-500/5"><div className="text-lg font-bold font-mono text-red-400">{summary.engines.yandex}</div><div className="text-[10px]">Yandex (manual)</div></div>}
-                {summary.engines.edge !== undefined && <div className="rounded p-2 border border-cyan-500/40 bg-cyan-500/5"><div className="text-lg font-bold font-mono text-cyan-400">{summary.engines.edge}</div><div className="text-[10px]">Edge (manual)</div></div>}
+                {summary.engines.google !== undefined && <div className="rounded p-2 border border-blue-500/40 bg-blue-500/5"><div className="text-lg font-bold font-mono text-blue-400">{summary.engines.google}</div><div className="text-[10px]">Google</div></div>}
+                {summary.engines.yandex !== undefined && <div className="rounded p-2 border border-red-500/40 bg-red-500/5"><div className="text-lg font-bold font-mono text-red-400">{summary.engines.yandex}</div><div className="text-[10px]">Yandex</div></div>}
+                {summary.engines.edge !== undefined && <div className="rounded p-2 border border-cyan-500/40 bg-cyan-500/5"><div className="text-lg font-bold font-mono text-cyan-400">{summary.engines.edge}</div><div className="text-[10px]">Edge</div></div>}
               </div>
             </>
           )}
@@ -549,7 +672,7 @@ export function ExecutiveOsintView() {
 
       {/* DORKS BY CATEGORY */}
       {Object.keys(dorksByCategory).length > 0 && (
-        <Panel title={`Dorks generados — ${dorksExecuted} ejecutados en Bing + DuckDuckGo · Google/Yandex/Edge manuales`} className="md:col-span-2">
+        <Panel title={`Dorks generados — ${dorksExecuted} ejecutados en Bing + DuckDuckGo · Google/Yandex/Edge`} className="md:col-span-2">
           <div className="text-[10px] text-muted-foreground mb-2">
             1 dork por categoria se ejecuta automaticamente en <span className="text-emerald-400">Bing</span> + <span className="text-orange-400">DuckDuckGo</span>.
             Para ejecutar en <span className="text-blue-400">Google</span>, <span className="text-red-400">Yandex</span> o <span className="text-cyan-400">Edge</span>, haz clic en los botones <span className="bg-blue-500 text-white px-1 rounded">G</span> <span className="bg-red-500 text-white px-1 rounded">Y</span> <span className="bg-cyan-500 text-white px-1 rounded">E</span> <span className="bg-emerald-500 text-white px-1 rounded">B</span> <span className="bg-orange-500 text-white px-1 rounded">D</span> al lado de cada dork:
