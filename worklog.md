@@ -569,3 +569,69 @@ Stage Summary:
   euclidiana
 - Fallback: si no hay rostro, compara por histograma de color
 - Build OK, deploy automatico en Vercel
+
+---
+Task ID: executive-osint-client-face-recognition
+Agent: main
+Task: Query se queda estatica sin resultados al subir imagen
+
+Work Log:
+- Root cause identificado: face-api.js con TensorFlow.js en el servidor
+  de Vercel tiene varios problemas:
+  1. Tiempo de inicializacion ~15s (modelos TF pesados) > limite Vercel
+     (10s free, 60s Pro) -> timeout.
+  2. Bundle @tensorflow/tfjs-node ~50MB excede el limite de Vercel.
+  3. Turbopack no soporta import() dinamico con face-api -> requiere
+     polyfills de TextEncoder y serverExternalPackages.
+
+- Solucion: reconocimiento facial en el CLIENTE (navegador).
+
+1) Endpoint del servidor simplificado:
+   - Quitadas todas las deps de face-api y tfjs (no se necesitan en el
+     servidor).
+   - Solo hace: sube a tmpfiles.org + Bing Visual Search + devuelve
+     bingCandidates[] + URLs de reverse image search.
+   - Tiempo de respuesta: 1.1s (vs 15s+ antes).
+
+2) Modelos copiados a /public/models (13MB):
+   - ssd_mobilenetv1, face_landmark_68, face_recognition, age_gender,
+     face_expression, tiny_face_detector.
+   - Servidos como archivos estaticos por Next.js, accesibles en
+     /models/...
+
+3) Frontend con face-api en el navegador:
+   - Carga dinamica del script face-api.min.js desde CDN jsdelivr.
+   - Carga los modelos desde /models/ (servidos por Next.js).
+   - PASO 1: llama al endpoint del servidor (recibe bingCandidates).
+   - PASO 2: en el navegador:
+     * detectFaceDescriptor() extrae descriptor 128-dim de la imagen
+       original con face-api.
+     * Para cada candidato: descarga la imagen via proxy CORS
+       (api.allorigins.win), detecta el rostro, compara con el
+       descriptor original por distancia euclidiana.
+     * Threshold 0.62 = mismo rostro.
+   - Estado faceApiStatus muestra el progreso al usuario.
+   - Badge 'Analizando...' con spinner en el boton mientras procesa.
+
+4) next.config.ts: revertidos los serverExternalPackages.
+
+- Verificado localmente:
+  - Endpoint del servidor: HTTP 200 en 1.1s con 30 candidatos de Bing.
+  - El frontend hace la deteccion facial en el navegador del usuario
+    (sin limite de tiempo de Vercel).
+  - Build OK.
+
+- Commit 2d78d4e..01c7cd9 push a main.
+
+Stage Summary:
+- Files modified:
+  - src/app/api/executive-osint/image-search/route.ts (sin face-api en
+    servidor, simplificado)
+  - src/components/views/executive-osint-view.tsx (face-api en cliente,
+    faceApiStatus, searchImage reescrito)
+  - public/models/* (14 archivos de modelos face-api)
+  - next.config.ts (revertidos serverExternalPackages)
+- Reconocimiento facial ahora en el navegador: no hay timeout, usa
+  GPU via WebGL, sin problemas de bundle de Vercel
+- Tiempo servidor: 1.1s (era 15s+)
+- Build OK, deploy automatico en Vercel
