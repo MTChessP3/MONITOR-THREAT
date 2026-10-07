@@ -100,17 +100,187 @@ export function ExecutiveOsintView() {
     setLoading(false);
   };
 
+  // Estado de detección facial (cliente)
+  const [faceApiLoading, setFaceApiLoading] = React.useState(false);
+  const [faceApiStatus, setFaceApiStatus] = React.useState<string>("");
+
+  // Carga dinámica de face-api desde CDN (solo cuando se necesita)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const _faceApiRef = React.useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const loadFaceApi = async (): Promise<any> => {
+    if (_faceApiRef.current) return _faceApiRef.current;
+    setFaceApiStatus("Cargando libreria face-api...");
+    // Load script dynamically
+    await new Promise<void>((resolve, reject) => {
+      if (document.querySelector('script[data-faceapi]')) return resolve();
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.min.js';
+      s.dataset.faceapi = 'true';
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error('No se pudo cargar face-api desde CDN'));
+      document.head.appendChild(s);
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    _faceApiRef.current = (window as any).faceapi;
+    setFaceApiStatus("Cargando modelos de deteccion facial...");
+    await _faceApiRef.current.nets.ssdMobilenetv1.loadFromUri('/models');
+    await _faceApiRef.current.nets.faceLandmark68Net.loadFromUri('/models');
+    await _faceApiRef.current.nets.faceRecognitionNet.loadFromUri('/models');
+    setFaceApiStatus("");
+    return _faceApiRef.current;
+  };
+
+  // Detecta el rostro de la imagen y devuelve descriptor de 128 dim
+  const detectFaceDescriptor = async (faceapi: any, imgEl: HTMLImageElement): Promise<Float32Array | null> => {
+    try {
+      const detections = await faceapi
+        .detectAllFaces(imgEl, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2 }))
+        .withFaceLandmarks()
+        .withFaceDescriptors();
+      if (!detections || detections.length === 0) return null;
+      // Tomar el rostro mas grande
+      let best = detections[0];
+      for (const d of detections) {
+        const area = d.detection.box.width * d.detection.box.height;
+        if (area > best.detection.box.width * best.detection.box.height) best = d;
+      }
+      return best.descriptor as Float32Array;
+    } catch { return null; }
+  };
+
+  const faceDistance = (a: Float32Array, b: Float32Array): number => {
+    let sum = 0;
+    const len = Math.min(a.length, b.length);
+    for (let i = 0; i < len; i++) {
+      const d = a[i] - b[i];
+      sum += d * d;
+    }
+    return Math.sqrt(sum);
+  };
+
   const searchImage = async () => {
     if (!imageFile) return;
     setImageLoading(true);
+    setError(null);
     try {
+      // PASO 1: Llamar al endpoint del servidor (sube a tmpfiles + Bing)
       const formData = new FormData();
       formData.append("image", imageFile);
       const nameParam = query ? `?name=${encodeURIComponent(query.trim())}` : "";
+      setFaceApiStatus("Enviando imagen al servidor...");
       const r = await fetch(`/api/executive-osint/image-search${nameParam}`, { method: "POST", body: formData });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = await r.json();
+      const j: any = await r.json();
       setImageResults(j);
+
+      // PASO 2: Si hay candidatos de Bing, hacer matching facial en el cliente
+      const candidates: any[] = j.bingCandidates || [];
+      if (candidates.length === 0) {
+        setImageLoading(false);
+        setFaceApiStatus("");
+        return;
+      }
+
+      setFaceApiLoading(true);
+      setFaceApiStatus("Iniciando reconocimiento facial...");
+      try {
+        const faceapi = await loadFaceApi();
+
+        // Detectar rostro en la imagen original subida
+        setFaceApiStatus("Detectando rostro en tu imagen...");
+        const origImg = new Image();
+        origImg.src = imagePreview || "";
+        await new Promise((res) => { origImg.onload = res; origImg.onerror = res; });
+        const origDescriptor = await detectFaceDescriptor(faceapi, origImg);
+
+        if (!origDescriptor) {
+          setFaceApiStatus("No se detecto rostro en la imagen original. Mostrando candidatos de Bing sin filtro facial.");
+          // Sin filtro facial: mostrar todos los candidatos como "color match"
+          const matches = candidates.map((c: any) => ({
+            url: c.url, imageUrl: c.imageUrl, thumbnailUrl: c.thumbnailUrl,
+            title: c.title, source: "Bing Visual",
+            width: c.width, height: c.height,
+            distance: 0, similarity: 0,
+            matchType: "color",
+          }));
+          setImageResults({ ...j, imageMatches: matches, matchCount: matches.length, faceDetected: false, faceMatchesCount: 0, colorMatchesCount: matches.length });
+          setImageLoading(false);
+          setFaceApiLoading(false);
+          return;
+        }
+
+        setFaceApiStatus(`Rostro detectado. Comparando con ${candidates.length} candidatos de Bing...`);
+        // Para cada candidato, descargar la imagen (via CORS proxy) y detectar el rostro
+        const faceMatches: any[] = [];
+        let processed = 0;
+        const FACE_THRESHOLD = 0.62;
+
+        // Procesa en lotes de 4 para no saturar
+        for (let i = 0; i < candidates.length; i += 4) {
+          const batch = candidates.slice(i, i + 4);
+          const results = await Promise.all(batch.map(async (c: any): Promise<any | null> => {
+            if (!c.imageUrl) return null;
+            try {
+              // Usar un proxy CORS para descargar la imagen (las paginas de Bing a veces no permiten CORS direct)
+              // Usamos allorigins.win que devuelve con headers CORS
+              const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(c.imageUrl)}`;
+              const candImg = new Image();
+              candImg.crossOrigin = "anonymous";
+              candImg.src = proxyUrl;
+              await new Promise((res, rej) => {
+                candImg.onload = res;
+                candImg.onerror = rej;
+                setTimeout(rej, 8000);
+              });
+              const candDesc = await detectFaceDescriptor(faceapi, candImg);
+              if (!candDesc) return null;
+              const distance = faceDistance(origDescriptor, candDesc);
+              const similarity = Math.max(0, Math.round(100 - (distance / FACE_THRESHOLD) * 100));
+              if (distance <= FACE_THRESHOLD) {
+                return {
+                  url: c.url, imageUrl: c.imageUrl, thumbnailUrl: c.thumbnailUrl,
+                  title: c.title, source: "Face Match (face-api)",
+                  width: c.width, height: c.height,
+                  distance, similarity, matchType: "face",
+                };
+              }
+              return null;
+            } catch { return null; }
+          }));
+          for (const m of results) if (m) faceMatches.push(m);
+          processed += batch.length;
+          setFaceApiStatus(`Comparando con ${candidates.length} candidatos... ${processed}/${candidates.length} (${faceMatches.length} coincidencias)`);
+        }
+
+        setFaceApiStatus(`Comparacion completa: ${faceMatches.length} coincidencias faciales reales.`);
+        setImageResults({
+          ...j,
+          imageMatches: faceMatches,
+          matchCount: faceMatches.length,
+          faceDetected: true,
+          faceMatchesCount: faceMatches.length,
+          colorMatchesCount: 0,
+          candidatesCount: candidates.length,
+          filteredOut: Math.max(0, candidates.length - faceMatches.length),
+        });
+      } catch (e: any) {
+        console.error("Face recognition error:", e);
+        setFaceApiStatus(`Error en reconocimiento facial: ${String(e?.message || e)}`);
+        // Mostrar candidatos sin filtro como fallback
+        const matches = candidates.map((c: any) => ({
+          url: c.url, imageUrl: c.imageUrl, thumbnailUrl: c.thumbnailUrl,
+          title: c.title, source: "Bing Visual",
+          width: c.width, height: c.height,
+          distance: 0, similarity: 0,
+          matchType: "color",
+        }));
+        setImageResults({ ...j, imageMatches: matches, matchCount: matches.length, faceDetected: false, faceMatchesCount: 0, colorMatchesCount: matches.length });
+      } finally {
+        setFaceApiLoading(false);
+        // Mantener el status 3s mas para que el usuario vea el resultado
+        setTimeout(() => setFaceApiStatus(""), 3000);
+      }
     } catch (e: any) { setError(String(e?.message || e)); }
     setImageLoading(false);
   };
@@ -463,18 +633,24 @@ export function ExecutiveOsintView() {
               {imageFile && (
                 <>
                   <Button size="sm" onClick={searchImage} disabled={imageLoading || !imageFile}>
-                    {imageLoading ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Buscando...</> : <><ImageIcon className="w-3.5 h-3.5 mr-1.5" /> Buscar imagen</>}
+                    {imageLoading || faceApiLoading ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Analizando...</> : <><ImageIcon className="w-3.5 h-3.5 mr-1.5" /> Buscar imagen</>}
                   </Button>
-                  <Button size="sm" variant="outline" onClick={clearImage}><X className="w-3.5 h-3.5" /></Button>
+                  <Button size="sm" variant="outline" onClick={() => { clearImage(); setFaceApiStatus(""); }}><X className="w-3.5 h-3.5" /></Button>
                 </>
               )}
               <span className="text-[10px] text-muted-foreground">{imageFile?.name}</span>
             </div>
+            {faceApiStatus && (
+              <div className="mt-2 p-2 rounded border border-cyan-500/40 bg-cyan-500/5 text-[11px] text-cyan-300 flex items-center gap-2">
+                <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                <span>{faceApiStatus}</span>
+              </div>
+            )}
           </div>
           {imagePreview && (
             <div className="relative">
               <img src={imagePreview} alt="preview" className="w-32 h-32 object-cover rounded border border-border" />
-              <button onClick={clearImage} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px]"><X className="w-3 h-3" /></button>
+              <button onClick={() => { clearImage(); setFaceApiStatus(""); }} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px]"><X className="w-3 h-3" /></button>
             </div>
           )}
         </div>
