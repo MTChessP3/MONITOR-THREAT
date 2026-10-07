@@ -700,3 +700,46 @@ Stage Summary:
   faciales reales despues de ~30s de analisis
 - Proxy CORS: images.weserv.nl (estable, optimizado para imagenes)
 - Build OK, deploy automatico en Vercel
+
+---
+Task ID: executive-osint-rewrite-fast
+Agent: main
+Task: Modulo no funcional, sin resultados
+
+Work Log:
+- Diagnosticado localmente: el endpoint del servidor tomaba 61 SEGUNDOS
+  en ejecutar 20 dorks en lotes de 4 contra Bing. Excedia el limite de
+  Vercel (10s free, 60s Pro) -> timeout -> pantalla vacia sin resultados.
+- REWRITE completo del endpoint /api/executive-osint/search:
+  - LOTE 1: APIs directas en paralelo (GitHub, Wikipedia, DDG IA,
+    Gravatar, HIBP, Wikidata) — rapido (<2s)
+  - LOTE 2: SOLO 5 dorks en Bing (las 5 categorias mas relevantes) en
+    paralelo — <6s
+  - Tiempo total: 8.5s (era 61s) — dentro del limite de Vercel
+- Las otras 15 categorias de dorks se generan y muestran en el frontend
+  con botones G/Y/E/B/D clickeables para ejecucion manual.
+- Resultados REALES verificados con 'Juan Perez':
+  - 10 GitHub User matches
+  - 6 Bing hits (social-media)
+  - Total: 16 resultados en 8.5s
+- Busqueda de imagen (/api/executive-osint/image-search): 1s
+  - Sube a tmpfiles.org, Bing Visual Search devuelve 30 candidatos
+  - Frontend muestra los candidatos INMEDIATAMENTE (caja azul con
+    thumbnails + URLs clickeables) en <2s
+  - face-api corre en background (no bloqueante)
+- Frontend simplificado: searchImage() muestra candidatos apenas el
+  servidor responde (no espera a face-api). Si face-api falla, los
+  candidatos siguen visibles.
+- Verificado localmente: TEXT SEARCH 8.5s/16 resultados, IMAGE SEARCH
+  1.0s/30 candidatos.
+- Build OK. Commit d1a7a6f..6c15df3 push a main.
+
+Stage Summary:
+- Files modified:
+  - src/app/api/executive-osint/search/route.ts (REWRITE, fast version)
+  - src/components/views/executive-osint-view.tsx (searchImage
+    simplificado, preview inmediato)
+- Tiempo servidor: 8.5s (era 61s) — dentro del limite Vercel
+- Resultados reales: 16 (GitHub+Bing) para 'Juan Perez'
+- Busqueda de imagen: 1s con preview inmediato
+- Build OK, deploy automatico en Vercel
