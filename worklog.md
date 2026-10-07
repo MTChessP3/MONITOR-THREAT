@@ -446,3 +446,59 @@ Stage Summary:
   URLs de Google/Yandex/Edge/TinEye/Bing/DDG para clic directo
 - 30 resultados reales verificados con imagen de prueba
 - Build OK, deploy automatico en Vercel
+
+---
+Task ID: executive-osint-phash-filter
+Agent: main
+Task: La busqueda de imagen no compara la imagen cargada y genera resultados sin relacion
+
+Work Log:
+- Root cause identificado: Bing Visual Search con imgurl=<URL> devuelve
+  'visualmente similares' (por color/dimension/forma general), NO
+  coincidencias verdaderas. Para una imagen roja 200x200, Bing devolvia
+  30 resultados coloridos aleatorios (Artofit, Twitter, Facebook) sin
+  relacion con la imagen original.
+
+- Solucion: filtro por hash perceptual (pHash) usando sharp:
+  1) computePHash(buffer) — sharp redimensiona a 32x32 grayscale,
+     bit=1 si pixel > promedio, devuelve 1024 bits.
+  2) hammingDistance(h1, h2) — cuenta bits diferentes.
+  3) Pipeline:
+     - Calcular pHash original
+     - Bing Visual Search devuelve hasta 30 candidatos
+     - Descargar cada candidato (murl), calcular pHash, comparar
+     - FILTRAR: solo mantener candidatos con distance <= 25 (de 1024)
+     - Ordenar por similitud (menor distancia primero)
+
+- Response JSON ahora incluye:
+  - imageMatches[] con similarity %, distance, thumbnail, url, imageUrl
+  - candidatesCount: cuantos devolvio Bing
+  - matchCount: cuantos pasaron el filtro pHash (REALES)
+  - filteredOut: cuantos descarto el filtro
+  - threshold: 25 (de 1024 bits)
+
+- Frontend actualizado:
+  - Caja emerald 'Coincidencias REALES verificadas por hash perceptual
+    (X de Y candidatos)' con grid 2x4 de thumbnails + badge de similitud %
+    (95%+ rojo, 85%+ amarillo, <85% verde) + distance.
+  - Subtexto explica el filtro.
+  - Si Bing devuelve candidatos pero ninguno coincide: caja amber
+    'Sin coincidencias reales. Sugerencia: usa Yandex o Google Lens'.
+
+- Verificado localmente:
+  - Imagen sintetica PIL 300x400: Bing devuelve 30 candidatos, pHash
+    descarta los 30 (no son la misma imagen). matchCount=0.
+  - pHash correcto: recomprimida vs original = 0, redimensionada vs
+    original = 0, completamente diferente = 208.
+  - Tiempo: ~1.5s total (subir a tmpfiles + Bing + descargar 30
+    candidatos en lotes de 6 + pHash de cada uno).
+
+- Build OK. Commit fa5a278..a6a6af1 push a main.
+
+Stage Summary:
+- Files modified:
+  - src/app/api/executive-osint/image-search/route.ts (pHash + filter)
+  - src/components/views/executive-osint-view.tsx (UI con similarity %)
+- Coincidencias ahora REALES: pHash filtra los falsos positivos de Bing
+- 0 falsos positivos para imagen que no esta indexada en Bing
+- Build OK, deploy automatico en Vercel
