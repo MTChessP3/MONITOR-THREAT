@@ -331,3 +331,63 @@ Stage Summary:
 - Informe HTML imprimible con boton 'Imprimir / Guardar como PDF'
 - 52 resultados para 'Juan Perez' verificado localmente
 - Build OK, deploy automatico en Vercel
+
+---
+Task ID: executive-osint-face-recognition-manual-findings
+Agent: main
+Task: Reconocedor facial real + quitar 'manuales' + hallazgos manuales en informe
+
+Work Log:
+- User report:
+  - Queres que la imagen subida dispare busqueda real, no solo sugerir motores
+  - Quitar la palabra 'manuales' de los titulos
+  - Pregunta: 'si encuentro resultados por fuera en la busqueda, salen en mi informe?'
+
+- Quitada la palabra 'manuales' del:
+  - Titulo del panel de dorks
+  - Texto del header del modulo
+  - Tarjetas de motores (Google/Yandex/Edge ya no dicen '(manual)')
+  - Header 'Motores de busqueda:' (sin '(auto + manual)')
+  - Informe HTML (mismo cambio)
+
+- Reconocedor facial real via FaceCheck.ID:
+  - /api/executive-osint/image-search reescrito para llamar a FaceCheck.ID
+    cuando FACECHECK_API_KEY esta configurada en env:
+    * POST /api/upload_pic con raw binary (Authorization header)
+    * POST /api/search con id_search
+    * Poll cada 3s hasta 30s max
+    * Devuelve faceMatches[]: { url, score, source, snippet }
+  - Response incluye faceCheckUsed, hasFaceCheckKey, faceCheckError.
+  - Frontend: si faceMatches.length > 0, muestra caja emerald con
+    'Reconocimiento facial automatico (FaceCheck.ID)' y la lista de
+    coincidencias con score como badge (rojo > 70%, amarillo > 50%, verde).
+  - Si no hay API key, warning amber explicando como activar.
+  - Los motores de subida manual se mantienen como antes (Google, Yandex,
+    PimEyes, TinEye, FaceCheck, Search4faces, etc).
+
+- Panel 'Mis hallazgos manuales' (RESPUESTA A LA PREGUNTA):
+  - Antes: las busquedas hechas en Google/Yandex/Edge eran externas al
+    modulo; los resultados encontrados NO se incluian en el informe.
+  - Ahora: el usuario pega URLs que encontro manualmente, con titulo,
+    notas, motor (Google/Yandex/Edge/Bing/DDG/Manual) y categoria.
+  - Cada hallazgo se lista con badge del motor + badge de categoria +
+    link clickeable + boton eliminar.
+  - Los hallazgos manuales se integran automaticamente en el Informe
+    HTML y el PDF: aparecen en su categoria junto a los resultados
+    automaticos con source='Manual (Google)'.
+  - Botones Informe HTML y PDF se habilitan tambien cuando hay hallazgos
+    manuales aunque no haya resultados automaticos.
+
+- Build OK. Commit d48ee7c..83dca0e push a main.
+
+Stage Summary:
+- Files modified:
+  - src/app/api/executive-osint/image-search/route.ts (FaceCheck.ID API)
+  - src/components/views/executive-osint-view.tsx (manualFindings state +
+    panel + integracion en HTML/PDF + display faceMatches)
+- 'manuales' quitado en 5 lugares del UI
+- FaceCheck.ID: si hay FACECHECK_API_KEY, busqueda real automatica;
+  si no, subida manual con motores
+- Mis hallazgos manuales: panel nuevo donde el usuario pega URLs de
+  busquedas externas (Google/Yandex/Edge) y se integran al informe
+- Build OK, deploy automatico en Vercel
