@@ -635,3 +635,68 @@ Stage Summary:
   GPU via WebGL, sin problemas de bundle de Vercel
 - Tiempo servidor: 1.1s (era 15s+)
 - Build OK, deploy automatico en Vercel
+
+---
+Task ID: executive-osint-image-search-fix
+Agent: main
+Task: Busqueda de imagen no funciona, no hay resultados
+
+Work Log:
+- Diagnostico:
+  - Endpoint del servidor SI funcionaba (HTTP 200 en 1.1s con 30
+    candidatos de Bing).
+  - El problema estaba en el frontend: el proxy CORS api.allorigins.win
+    estaba caido. Cuando el proxy fallaba, el codigo en el catch
+    bloqueaba todo y el usuario no veia nada.
+  - Faltaba feedback inmediato: el usuario no veia resultados mientras
+    face-api cargaba (~5s) y analizaba los 30 candidatos (~30s).
+
+- Soluciones aplicadas:
+
+  1) Cambio de proxy CORS: api.allorigins.win (caido) -> images.weserv.nl
+     (proxy de imagenes con CORS headers correctos). Probado: devuelve
+     JPEG 128x128 correctamente.
+
+  2) Preview INMEDIATO: apenas el servidor responde (1s), se muestran
+     TODOS los candidatos de Bing en caja azul 'Candidatos de Bing
+     Visual Search (N)' con thumbnails + titles + URLs clickeables. El
+     usuario ve feedback en <2s.
+
+  3) Cuando face-api termina, se reemplaza el preview con la caja
+     verde 'Coincidencias verificadas' (filtradas por rostro).
+
+  4) Fallback graceful: si face-api no carga o falla, muestra TODOS los
+     candidatos con matchType=color en vez de dejar la pantalla vacia.
+
+  5) Mensajes de progreso mas informativos:
+     - 'Enviando imagen al servidor...'
+     - 'Cargando libreria face-api...' (~5s primera vez)
+     - 'Cargando modelos de deteccion facial...' (~5s)
+     - 'Detectando rostro en tu imagen...' (~1s)
+     - 'Comparando con 30 candidatos... X/30 (Y coincidencias)' (~30s)
+     - 'Comparacion completa: N coincidencias faciales reales' (final)
+
+  6) Estados con timeout visible (5s) para que el usuario alcance a
+     leer el resultado final.
+
+  7) Boton muestra 'Analizando...' con spinner mientras procesa.
+
+  8) Estado de error amigable: 'Reconocimiento facial no disponible
+     (msg). Mostrando candidatos sin filtro.'
+
+- Verificado localmente:
+  - Endpoint servidor: HTTP 200 en 1.1s con 30 candidatos
+  - Models en /models/: HTTP 200 (13MB servidos por Next.js)
+  - CDN face-api: HTTP 200 (1.3MB)
+  - Proxy images.weserv.nl: HTTP 200 con JPEG valido
+  - Build OK
+
+- Commit 01c7cd9..d1a7a6f push a main.
+
+Stage Summary:
+- Files modified: src/components/views/executive-osint-view.tsx (cambio
+  de proxy + preview inmediato + fallback graceful + mensajes de progreso)
+- Busqueda de imagen ahora muestra feedback inmediato (<2s) y resultados
+  faciales reales despues de ~30s de analisis
+- Proxy CORS: images.weserv.nl (estable, optimizado para imagenes)
+- Build OK, deploy automatico en Vercel
