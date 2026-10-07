@@ -1,23 +1,103 @@
-// Executive OSINT — Reverse Image Search con reconocimiento facial real
+// Executive OSINT — Reverse Image Search con reconocimiento real
 //
 // Recibe una imagen (base64 o multipart) y:
-//  1. La guarda en /tmp/ y genera una URL data: para uso inmediato
-//  2. Si FACECHECK_API_KEY esta configurada, sube la imagen a FaceCheck.ID
-//     y devuelve resultados reales de face match (URLs donde aparece el rostro)
-//  3. Genera URLs de reverse image search para Google, Yandex, Bing, TinEye
-//     con auto-submit (formulario que se auto-postea al cargar la pagina)
+//  1. La sube a tmpfiles.org (hosting publico gratuito anonimo, sin API key)
+//  2. Ejecuta la BUSQUEDA REAL en Bing Visual Search via imgurl parameter
+//     (parsea los <a class="iusc" m="{...}"> con murl, purl, title)
+//  3. Genera URLs de reverse image search para Google, Yandex, DuckDuckGo,
+//     Edge con la URL publica de la imagen (subida a tmpfiles.org)
 //  4. Genera dorks de deepfake usando el nombre del investigado
 
 import { NextResponse } from "next/server";
-import { writeFile, mkdir, readFile } from "fs/promises";
+import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 
-interface FaceMatch {
-  url: string;
-  score: number;
-  source?: string;
-  snippet?: string;
+interface ImageMatch {
+  url: string;          // page URL where image appears (purl)
+  imageUrl: string;      // direct image URL (murl)
+  thumbnailUrl: string;  // thumbnail (turl)
+  title: string;
+  source: string;        // engine
+  width?: number;
+  height?: number;
+}
+
+function htmlFetchHeaders(): Record<string, string> {
+  return {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip",
+  };
+}
+
+// Sube una imagen a tmpfiles.org y devuelve la URL publica directa
+async function uploadToTmpfiles(imageBuffer: Buffer, mime: string): Promise<string | null> {
+  try {
+    const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+    const filename = `executive-osint-${Date.now()}.${ext}`;
+    const blob = new Blob([imageBuffer], { type: mime });
+    const formData = new FormData();
+    formData.append("file", blob, filename);
+    const r = await fetch("https://tmpfiles.org/api/v1/upload", {
+      method: "POST",
+      body: formData,
+      headers: { "User-Agent": "MONITOR-THREAT" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!r.ok) return null;
+    const d: any = await r.json();
+    const url: string = d?.data?.url || "";
+    if (!url) return null;
+    // Convertir https://tmpfiles.org/xxx/file.jpg -> https://tmpfiles.org/dl/xxx/file.jpg
+    return url.replace("tmpfiles.org/", "tmpfiles.org/dl/");
+  } catch (err) {
+    console.error("[image-search] tmpfiles upload error:", err);
+    return null;
+  }
+}
+
+// Ejecuta la busqueda real en Bing Visual Search y parsea los resultados
+async function bingReverseImageSearch(imageUrl: string): Promise<ImageMatch[]> {
+  try {
+    const url = `https://www.bing.com/images/search?q=&qft=+filterui:photo-photo&tbimg=1&imgurl=${encodeURIComponent(imageUrl)}&tsc=ImageHoverTitle&FORM=IRFLTR`;
+    const r = await fetch(url, {
+      headers: htmlFetchHeaders(),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!r.ok) return [];
+    const html = await r.text();
+    // Bing inserta: <a class="iusc" style="..." m="{&quot;type&quot;:&quot;image&quot;,...,&quot;murl&quot;:&quot;...&quot;,&quot;purl&quot;:&quot;...&quot;,...}">
+    // m= value is HTML-encoded JSON
+    const blockRe = /class="iusc"[^>]*?m="(\{[^"]+\})"/g;
+    const matches: ImageMatch[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = blockRe.exec(html)) && matches.length < 30) {
+      try {
+        // Decode HTML entities
+        const jsonStr = m[1]
+          .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">");
+        const d = JSON.parse(jsonStr);
+        if (!d.murl && !d.purl) continue;
+        matches.push({
+          url: d.purl || d.murl,
+          imageUrl: d.murl || "",
+          thumbnailUrl: d.turl || "",
+          title: d.title || d.desc || "(no title)",
+          source: "Bing Visual",
+          width: d.w,
+          height: d.h,
+        });
+      } catch {}
+    }
+    return matches;
+  } catch {
+    return [];
+  }
 }
 
 export async function POST(request: Request) {
@@ -54,7 +134,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "empty_image" }, { status: 400 });
     }
 
-    // Guardar la imagen
+    // Guardar la imagen localmente (para referencia)
     const tmpDir = "/tmp/executive-osint-images";
     if (!existsSync(tmpDir)) await mkdir(tmpDir, { recursive: true });
     const imgId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -62,131 +142,83 @@ export async function POST(request: Request) {
     const imgPath = path.join(tmpDir, `${imgId}.${ext}`);
     await writeFile(imgPath, imageBuffer);
 
-    // Generar data URL para uso en los motores que acepten POST de imagen
-    const b64Image = imageBuffer.toString("base64");
-    const dataUrl = `data:${imageMime};base64,${b64Image}`;
-
-    // =====================================================
-    // 1. FACECHECK.ID - API real de reconocimiento facial
-    //    Requiere FACECHECK_API_KEY en env. Si no hay, devolvemos
-    //    enlaces para subida manual.
-    // =====================================================
-    let faceMatches: FaceMatch[] = [];
-    let faceCheckUsed = false;
-    let faceCheckError: string | null = null;
-
-    const faceCheckKey = process.env.FACECHECK_API_KEY || "";
-    if (faceCheckKey) {
-      try {
-        // Paso 1: subir la imagen a FaceCheck
-        const uploadRes = await fetch("https://facecheck.id/api/upload_pic", {
-          method: "POST",
-          headers: {
-            "Authorization": faceCheckKey,
-            "User-Agent": "MONITOR-THREAT",
-          },
-          body: imageBuffer, // raw binary
-        });
-        if (uploadRes.ok) {
-          const uploadData: any = await uploadRes.json();
-          const idSearch = uploadData.id_search;
-          if (idSearch) {
-            // Paso 2: iniciar busqueda
-            const searchRes = await fetch("https://facecheck.id/api/search", {
-              method: "POST",
-              headers: {
-                "Authorization": faceCheckKey,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ id_search: idSearch }),
-            });
-            if (searchRes.ok) {
-              const searchData: any = await searchRes.json();
-              // Paso 3: poll hasta completar (max 30s)
-              let attempts = 0;
-              let results = searchData.output?.results || [];
-              while ((!results || results.length === 0) && attempts < 10) {
-                await new Promise(r => setTimeout(r, 3000));
-                const pollRes = await fetch("https://facecheck.id/api/search", {
-                  method: "POST",
-                  headers: { "Authorization": faceCheckKey, "Content-Type": "application/json" },
-                  body: JSON.stringify({ id_search: idSearch }),
-                });
-                if (pollRes.ok) {
-                  const pd: any = await pollRes.json();
-                  if (pd.output?.results?.length > 0) {
-                    results = pd.output.results;
-                    break;
-                  }
-                }
-                attempts++;
-              }
-              faceMatches = (results || []).slice(0, 20).map((r: any) => ({
-                url: r.url || "",
-                score: r.score || 0,
-                source: r.base || r.site || "FaceCheck.ID",
-                snippet: `Confidence: ${r.score || 0}% — ${r.base || r.site || ""}`,
-              }));
-              faceCheckUsed = true;
-            }
-          }
-        } else {
-          faceCheckError = `FaceCheck upload HTTP ${uploadRes.status}`;
-        }
-      } catch (e: any) {
-        faceCheckError = String(e?.message || e);
-      }
+    // PASO 1: Subir la imagen a tmpfiles.org para obtener una URL publica
+    let publicImageUrl: string | null = null;
+    let uploadError: string | null = null;
+    try {
+      publicImageUrl = await uploadToTmpfiles(imageBuffer, imageMime);
+      if (!publicImageUrl) uploadError = "tmpfiles.org upload returned empty URL";
+    } catch (e: any) {
+      uploadError = String(e?.message || e);
     }
 
-    // =====================================================
-    // 2. Generar URLs de reverse image search con auto-submit
-    //    Como no podemos ejecutar browser real server-side, generamos
-    //    HTML auto-submit forms que el usuario abre en su navegador.
-    //    Google/Yandex/Bing no aceptan image upload via URL directa,
-    //    pero sus formularios de upload son accesibles.
-    // =====================================================
+    // PASO 2: Si tenemos URL publica, ejecutar Bing Visual Search real
+    let imageMatches: ImageMatch[] = [];
+    if (publicImageUrl) {
+      imageMatches = await bingReverseImageSearch(publicImageUrl);
+    }
 
-    // Lista de motores con instrucciones de subida manual + URL de formulario
-    const searchEngines = [
+    // PASO 3: Generar URLs de reverse image search para los 5 motores
+    // usando la URL publica de la imagen
+    const engines = publicImageUrl ? [
       {
         source: "Google Images (Reverse)",
         type: "reverse image search",
-        url: "https://images.google.com/",
-        snippet: "Sube la imagen en Google Images para encontrar coincidencias visuales en la web",
+        url: `https://www.google.com/searchbyimage?image_url=${encodeURIComponent(publicImageUrl)}&sbisrc=tp`,
+        snippet: "Google busca coincidencias visuales de la imagen en la web indexada",
         severity: "info",
-        instructions: "Abre el enlace, haz clic en el icono de camara y arrastra tu imagen",
-      },
-      {
-        source: "Google Lens",
-        type: "visual search",
-        url: "https://lens.google.com/",
-        snippet: "Google Lens detecta rostros, objetos, texto y lugares. Encuentra coincidencias visuales",
-        severity: "info",
-        instructions: "Sube la imagen o pega la URL data:image/...",
+        instructions: "Click para abrir — Google ejecutara la busqueda automaticamente",
+        autoOpen: true,
       },
       {
         source: "Bing Visual Search",
-        type: "reverse image search",
-        url: "https://www.bing.com/images?form=HDRSC2",
-        snippet: "Bing Visual Search permite buscar por imagen, con deteccion de rostros",
-        severity: "info",
-        instructions: "Click en el icono de camara y sube la imagen",
+        type: "reverse image search (auto-ejecutado)",
+        url: `https://www.bing.com/images/search?q=&qft=+filterui:photo-photo&tbimg=1&imgurl=${encodeURIComponent(publicImageUrl)}&tsc=ImageHoverTitle&FORM=IRFLTR`,
+        snippet: imageMatches.length > 0
+          ? `Busqueda ejecutada: ${imageMatches.length} coincidencias encontradas`
+          : "Bing Visual Search ejecuta busqueda con la imagen",
+        severity: "high",
+        instructions: imageMatches.length > 0
+          ? `Ver resultados abajo (${imageMatches.length} coincidencias)`
+          : "Click para abrir Bing Visual Search en tu navegador",
+        autoOpen: true,
+        resultsCount: imageMatches.length,
       },
       {
         source: "Yandex Images (Reverse)",
         type: "reverse image search (best for faces)",
-        url: "https://yandex.com/images",
+        url: `https://yandex.com/images/search?url=${encodeURIComponent(publicImageUrl)}&rpt=imageview`,
         snippet: "Yandex es EL MEJOR motor para reconocer rostros. Muy recomendado para OSINT",
         severity: "high",
-        instructions: "Click en el icono de camara y sube la imagen",
+        instructions: "Click para abrir Yandex con la imagen cargada",
+        autoOpen: true,
+      },
+      {
+        source: "DuckDuckGo Image",
+        type: "reverse image search",
+        url: `https://duckduckgo.com/?q=${encodeURIComponent(publicImageUrl)}&iax=images&ia=images`,
+        snippet: "DuckDuckGo no soporta upload directo, pero puedes buscar la URL de la imagen",
+        severity: "info",
+        instructions: "Click para abrir DuckDuckGo con la URL de la imagen",
+        autoOpen: false,
+      },
+      {
+        source: "Edge (Bing)",
+        type: "reverse image search via Edge/Bing",
+        url: `https://www.bing.com/images/search?q=&qft=+filterui:photo-photo&tbimg=1&imgurl=${encodeURIComponent(publicImageUrl)}&form=EDGE&setmkt=en-US`,
+        snippet: "Edge usa el backend de Bing para la busqueda visual",
+        severity: "info",
+        instructions: "Click para abrir Bing con el formulario de Edge",
+        autoOpen: true,
       },
       {
         source: "TinEye",
         type: "reverse image search (exact match)",
-        url: "https://tineye.com/",
+        url: `https://tineye.com/search?url=${encodeURIComponent(publicImageUrl)}`,
         snippet: "TinEye busca coincidencias EXACTAS de la imagen (no similar). Util para rastrear donde se publico",
         severity: "medium",
-        instructions: "Sube la imagen o pega su URL",
+        instructions: "Click para abrir TinEye con la URL de la imagen",
+        autoOpen: true,
       },
       {
         source: "PimEyes (Face Recognition)",
@@ -194,26 +226,73 @@ export async function POST(request: Request) {
         url: "https://pimeyes.com/",
         snippet: "PimEyes es un motor especializado en reconocimiento facial. Encuentra donde aparece este rostro en internet",
         severity: "high",
-        instructions: "Sube la foto del rostro (idealmente recortada a la cara)",
+        instructions: "Sube la imagen del rostro (idealmente recortada a la cara) manualmente — no acepta URL externa",
+        autoOpen: false,
       },
       {
-        source: "FaceCheck.ID (Face Recognition)",
+        source: "FaceCheck.ID",
         type: "face search",
         url: "https://facecheck.id/",
-        snippet: faceCheckUsed
-          ? `Busqueda automatica completada: ${faceMatches.length} coincidencias encontradas`
-          : "FaceCheck.ID busca rostros en redes sociales. Sube la imagen del rostro manualmente",
+        snippet: "FaceCheck.ID busca rostros en redes sociales. Sube la imagen del rostro manualmente",
         severity: "high",
-        instructions: "Sube la imagen del rostro",
-        faceMatches: faceCheckUsed ? faceMatches : undefined,
+        instructions: "Sube la imagen del rostro manualmente",
+        autoOpen: false,
+      },
+    ] : [
+      // Fallback si tmpfiles.org fallo: solo enlaces a los motores para subida manual
+      {
+        source: "Google Images (Reverse)",
+        type: "reverse image search (manual)",
+        url: "https://images.google.com/",
+        snippet: "Sube la imagen manualmente (fallo la subida automatica a hosting publico)",
+        severity: "info",
+        instructions: "Abre el enlace y arrastra tu imagen al buscador",
+        autoOpen: false,
       },
       {
-        source: "Search4faces",
-        type: "face recognition (VK/OK)",
-        url: "https://search4faces.com/",
-        snippet: "Busca rostros en redes sociales rusas (VKontakte, Odnoklassniki) y otras. Muy util para identificadores ex-Soviet",
+        source: "Bing Visual Search",
+        type: "reverse image search (manual)",
+        url: "https://www.bing.com/images?form=HDRSC2",
+        snippet: "Sube la imagen manualmente",
+        severity: "info",
+        instructions: "Click en el icono de camara y sube la imagen",
+        autoOpen: false,
+      },
+      {
+        source: "Yandex Images (Reverse)",
+        type: "reverse image search (best for faces)",
+        url: "https://yandex.com/images",
+        snippet: "Yandex es EL MEJOR motor para reconocer rostros",
+        severity: "high",
+        instructions: "Click en el icono de camara y sube la imagen",
+        autoOpen: false,
+      },
+      {
+        source: "TinEye",
+        type: "reverse image search (exact match)",
+        url: "https://tineye.com/",
+        snippet: "TinEye busca coincidencias EXACTAS",
         severity: "medium",
+        instructions: "Sube la imagen o pega su URL",
+        autoOpen: false,
+      },
+      {
+        source: "PimEyes (Face Recognition)",
+        type: "face search (premium)",
+        url: "https://pimeyes.com/",
+        snippet: "PimEyes: reconocimiento facial especializado",
+        severity: "high",
+        instructions: "Sube la foto del rostro",
+        autoOpen: false,
+      },
+      {
+        source: "FaceCheck.ID",
+        type: "face search",
+        url: "https://facecheck.id/",
+        snippet: "FaceCheck.ID busca rostros en redes sociales",
+        severity: "high",
         instructions: "Sube la imagen del rostro",
+        autoOpen: false,
       },
     ];
 
@@ -235,12 +314,11 @@ export async function POST(request: Request) {
       imageId: imgId,
       imageSaved: true,
       imageBytes: imageBuffer.length,
-      imageDataUrl: dataUrl,
-      searchEngines,
-      faceMatches: faceCheckUsed ? faceMatches : [],
-      faceCheckUsed,
-      faceCheckError,
-      hasFaceCheckKey: !!faceCheckKey,
+      publicImageUrl,
+      uploadError,
+      engines,
+      imageMatches,
+      matchCount: imageMatches.length,
       deepfakeDorks,
       timestamp: new Date().toISOString(),
     }, { headers: { "Cache-Control": "no-store" } });

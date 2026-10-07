@@ -481,40 +481,64 @@ export function ExecutiveOsintView() {
 
         {imageResults && (
           <div className="mt-4 border-t border-border pt-3">
-            {/* Resultados de FaceCheck.ID si la API key esta configurada */}
-            {imageResults.faceMatches?.length > 0 && (
+            {/* URL publica subida + estado de la subida */}
+            {imageResults.publicImageUrl && (
+              <div className="mb-3 p-2 rounded border border-emerald-500/40 bg-emerald-500/5 text-[11px]">
+                <div className="flex items-center gap-1.5 text-emerald-400 mb-1">
+                  <ImageIcon className="w-3 h-3" /> Imagen subida a hosting publico
+                </div>
+                <code className="text-[10px] text-muted-foreground break-all">{imageResults.publicImageUrl}</code>
+              </div>
+            )}
+            {imageResults.uploadError && !imageResults.publicImageUrl && (
+              <div className="mb-3 p-2 rounded border border-amber-500/40 bg-amber-500/5 text-[11px] text-amber-300">
+                Error subiendo a hosting publico: {imageResults.uploadError}. Los motores aparecen en modo subida manual.
+              </div>
+            )}
+
+            {/* Coincidencias reales encontradas en Bing Visual Search */}
+            {imageResults.imageMatches?.length > 0 && (
               <div className="mb-3 p-2 rounded border border-emerald-500/40 bg-emerald-500/5">
                 <div className="text-xs font-semibold mb-2 flex items-center gap-1.5 text-emerald-400">
-                  <ImageIcon className="w-3.5 h-3.5" /> Reconocimiento facial automatico (FaceCheck.ID)
+                  <ImageIcon className="w-3.5 h-3.5" /> Coincidencias encontradas en Bing Visual Search ({imageResults.imageMatches.length})
                 </div>
-                <div className="text-[10px] text-muted-foreground mb-2">{imageResults.faceMatches.length} coincidencias encontradas en internet. Score mas alto = mayor similitud.</div>
-                <div className="space-y-1 max-h-40 overflow-y-auto">
-                  {imageResults.faceMatches.map((m: any, i: number) => (
-                    <div key={i} className="text-[11px] flex items-center gap-2 p-1.5 rounded bg-muted/30 border border-border">
-                      <Badge variant={m.score > 70 ? "destructive" : m.score > 50 ? "default" : "secondary"} className="text-[9px] font-mono shrink-0">{m.score}%</Badge>
-                      <a href={m.url} target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline inline-flex items-center gap-1 flex-1 min-w-0">
-                        <span className="truncate">{m.source || m.url}</span>
-                        <ExternalLink className="w-2.5 h-2.5 shrink-0" />
-                      </a>
-                    </div>
+                <div className="text-[10px] text-muted-foreground mb-2">
+                  Estos son los resultados reales donde Bing encontro la imagen (o similares) en internet. Haz clic en cada coincidencia para abrir la pagina donde aparece:
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 max-h-72 overflow-y-auto">
+                  {imageResults.imageMatches.map((m: any, i: number) => (
+                    <a key={i} href={m.url} target="_blank" rel="noreferrer" className="block p-1.5 rounded border border-border bg-muted/20 hover:bg-accent transition">
+                      {m.thumbnailUrl && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={m.thumbnailUrl} alt={m.title} className="w-full h-20 object-cover rounded mb-1" />
+                      )}
+                      <div className="text-[10px] font-semibold truncate" title={m.title}>{m.title}</div>
+                      <div className="text-[9px] text-cyan-500 truncate" title={m.imageUrl}>{m.imageUrl}</div>
+                    </a>
                   ))}
                 </div>
               </div>
             )}
-            {imageResults.faceCheckUsed === false && imageResults.hasFaceCheckKey === false && (
-              <div className="mb-3 p-2 rounded border border-amber-500/40 bg-amber-500/5 text-[11px] text-amber-300">
-                <strong>Reconocimiento facial automatico desactivado.</strong> Para activarlo, configura <code className="bg-muted px-1 rounded">FACECHECK_API_KEY</code> en las variables de entorno. Sin la API key, se muestran enlaces a los motores para subida manual de la imagen.
-              </div>
-            )}
+
             <div className="text-xs font-semibold mb-2 flex items-center gap-1.5"><ImageIcon className="w-3.5 h-3.5" /> Motores de busqueda visual</div>
+            <div className="text-[10px] text-muted-foreground mb-2">
+              {imageResults.publicImageUrl
+                ? "Imagen ya cargada — haz clic en cualquier motor para ejecutar la busqueda automaticamente:"
+                : "Sube la imagen manualmente en cada motor:"}
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {imageResults.searchEngines?.map((eng: any, i: number) => {
+              {imageResults.engines?.map((eng: any, i: number) => {
                 const sevColor = eng.severity === "high" ? "border-red-500/40 bg-red-500/5" : eng.severity === "medium" ? "border-yellow-500/40 bg-yellow-500/5" : "border-blue-500/40 bg-blue-500/5";
                 return (
                   <a key={i} href={eng.url} target="_blank" rel="noreferrer" className={`block p-2 rounded border ${sevColor} hover:bg-accent transition`}>
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-xs font-semibold">{eng.source}</span>
-                      <Badge variant={sevColors[eng.severity] || "outline"} className="text-[9px]">{sevText[eng.severity]}</Badge>
+                      <div className="flex gap-1 items-center">
+                        {eng.autoOpen && imageResults.publicImageUrl && (
+                          <Badge variant="outline" className="text-[8px] font-mono text-emerald-400 border-emerald-500/40">auto</Badge>
+                        )}
+                        <Badge variant={sevColors[eng.severity] || "outline"} className="text-[9px]">{sevText[eng.severity]}</Badge>
+                      </div>
                     </div>
                     <div className="text-[10px] text-muted-foreground">{eng.snippet}</div>
                     <div className="text-[10px] text-cyan-500 mt-1">{eng.instructions}</div>
