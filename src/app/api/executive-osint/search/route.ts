@@ -1,11 +1,15 @@
-// Executive OSINT Search — 4 tipos: name, email, phone, username
-// Multi-source / multi-engine: GitHub (4 sub-fuentes), Gravatar, HIBP (real),
-// VirusTotal, Wikipedia, Bing engine (parser decodifica ck/a?u=a1<base64>),
-// Hunter.io, Sherlock (17 sitios verificados server-side)
+// Executive OSINT Search — investigacion por dorks en 20 categorias
+// Multi-source / multi-engine: 20 categorias de dorks (LinkedIn, Facebook, Twitter,
+// Instagram, TikTok, GitHub, GitLab, StackOverflow, email/username, location, PDFs,
+// work history, images, news, public records, forums, leaks, academic, company
+// registries, breach databases, IntelX/Shodan, dark web, phone/address, deepfake)
+// + Bing engine (parser decodifica ck/a?u=a1<base64>)
+// + Image search via face match (Google reverse image + Bing visual search)
 
 import { NextResponse } from "next/server";
 
 interface SearchResult {
+  category: string;
   source: string;
   type: string;
   title: string;
@@ -41,7 +45,6 @@ function htmlFetchHeaders(): Record<string, string> {
 
 // ---- Helpers de normalizacion ----
 
-// Convierte un nombre a variantes con/sin acentos (ej: "Juan Pérez" -> ["Juan Pérez", "Juan Perez"])
 function accentVariants(name: string): string[] {
   const noAccent = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   const variants = new Set<string>([name]);
@@ -49,103 +52,268 @@ function accentVariants(name: string): string[] {
   return Array.from(variants);
 }
 
-// Tokeniza un nombre en palabras significativas (ignora preposiciones tipo "de", "del", "la", "los", "y")
 function nameTokens(name: string): string[] {
   return name.toLowerCase().split(/\s+/).filter(t => t.length > 1 && !/^(de|del|la|las|los|el|y|van|von|di|da|do|dos|san|sant|santa)$/.test(t));
 }
 
-// Para Bing: añade "+" delante de cada palabra obligatoria (fuerza coincidencia exacta)
-function bingExact(query: string, type: QueryType): string {
-  const clean = query.replace(/"/g, "").trim();
-  if (type === "email" || type === "phone" || type === "username") {
-    return `+${clean}`;
-  }
-  // Para nombres: +Palabra1 +Palabra2 (cada token obligatorio)
-  const tokens = clean.split(/\s+/).filter(t => t.length > 1);
-  return tokens.map(t => `+${t}`).join(" ");
+// ============================================================
+//  CATEGORIAS DE DORKS (20 categorias)
+// ============================================================
+// Cada categoria: { id, name, icon, dorks[] }.
+// Los dorks usan {Q} como placeholder para el query string (nombre/email/etc.).
+
+interface DorkCategory {
+  id: string;
+  name: string;
+  icon: string;
+  dorks: string[];
+  // Severity por defecto de los hits de esta categoria
+  severity: "high" | "medium" | "low" | "info";
 }
 
-// ---- DORKS ----
-function generateDorks(query: string, type: QueryType): string[] {
+function buildDorkCategories(query: string, type: QueryType): DorkCategory[] {
   const q = query.replace(/"/g, "");
-  switch (type) {
-    case "name": {
-      // Variantes con/sin acentos
-      const variants = accentVariants(q);
-      const dorks: string[] = [];
-      for (const v of variants) {
-        dorks.push(
-          `"${v}" site:linkedin.com/in`,
-          `"${v}" site:twitter.com OR site:x.com`,
-          `"${v}" site:facebook.com`,
-          `"${v}" site:instagram.com`,
-          `"${v}" site:reddit.com`,
-          `"${v}" site:youtube.com`,
-          `"${v}" site:tiktok.com`,
-          `"${v}" filetype:pdf`,
-          `"${v}" "curriculum" OR "cv" OR "resume"`,
-          `"${v}" "director" OR "gerente" OR "CEO" OR "CTO" OR "CFO"`,
-          `"${v}" "empresa" OR "company"`,
-          `"${v}" site:bloomberg.com OR site:reuters.com`,
-          `"${v}" "entrevista" OR "conference" OR "presentation"`,
-          `"${v}" filetype:doc OR filetype:docx`,
-          `"${v}" "contact" OR "email" OR "phone" OR "telefono"`,
-        );
-      }
-      return dorks;
-    }
-    case "email":
-      return [
-        `"${q}" site:pastebin.com`,
-        `"${q}" site:github.com`,
-        `"${q}" "password" OR "credential" OR "token"`,
-        `"${q}" filetype:sql "INSERT INTO"`,
-        `"${q}" site:ghostbin.com OR site:hastebin.com`,
-        `"${q}" "leaked" OR "breach" OR "dump"`,
-        `"${q}" site:linkedin.com`,
-        `"${q}" site:twitter.com OR site:x.com`,
-        `"${q}" "BEGIN RSA PRIVATE KEY"`,
-        `"${q}" site:gist.github.com`,
-        `"${q}" "AWS_SECRET_ACCESS_KEY" OR "api_key"`,
-        `"${q}" filetype:vcf OR filetype:csv`,
-        `"${q}" site:docs.google.com OR site:drive.google.com`,
-        `"${q}" "slack_token" OR "discord_token"`,
-        `"${q}" site:telegram.org OR site:t.me`,
-      ];
-    case "phone":
-      return [
-        `"${q}" site:pastebin.com`,
-        `"${q}" "leaked" OR "breach" OR "dump"`,
-        `"${q}" filetype:vcf OR filetype:csv OR filetype:txt`,
-        `"${q}" site:telegram.org OR site:t.me`,
-        `"${q}" "whatsapp" OR "signal" OR "viber"`,
-        `"${q}" "contact" OR "address book" OR "phonebook"`,
-        `"${q}" filetype:sql "phone" OR "mobile" OR "cell"`,
-        `"${q}" site:truecaller.com OR site:sync.me`,
-        `"${q}" "darknet" OR "leak" OR "sell"`,
-        `"${q}" "registro" OR "database" OR "base de datos"`,
-      ];
-    case "username": {
-      const clean = q.replace(/^@/, "");
-      return [
-        `"${clean}" site:github.com OR site:gitlab.com`,
-        `"${clean}" site:twitter.com OR site:x.com`,
-        `"${clean}" site:instagram.com`,
-        `"${clean}" site:facebook.com`,
-        `"${clean}" site:reddit.com OR site:medium.com`,
-        `"${clean}" site:linkedin.com`,
-        `"${clean}" site:tiktok.com`,
-        `"${clean}" site:youtube.com`,
-        `"${clean}" site:twitch.tv OR site:steamcommunity.com`,
-        `"${clean}" site:telegram.org OR site:t.me`,
-        `"${clean}" site:pinterest.com OR site:tumblr.com`,
-        `"${clean}" "password" OR "credential" OR "leaked"`,
-        `"${clean}" site:medium.com OR site:dev.to OR site:hashnode.com`,
-        `"${clean}" "profile" OR "about" OR "bio"`,
-        `"${clean}" "darknet" OR "onion" OR "marketplace"`,
-      ];
-    }
+  const Q = `"${q}"`;
+
+  // Para email y username, usamos el query tal cual; para name, las variantes con/sin acentos
+  // se aplican solo en el fetch posterior, no en el dork base.
+  const categories: DorkCategory[] = [
+    {
+      id: "social-media",
+      name: "Social Media Profiles",
+      icon: "Users",
+      severity: "info",
+      dorks: [
+        `${Q} (site:linkedin.com | site:facebook.com | site:twitter.com | site:x.com | site:instagram.com | site:tiktok.com)`,
+        `${Q} site:linkedin.com/in`,
+        `${Q} site:twitter.com OR site:x.com`,
+        `${Q} site:facebook.com`,
+        `${Q} site:instagram.com`,
+        `${Q} site:tiktok.com`,
+      ],
+    },
+    {
+      id: "developer-profiles",
+      name: "Developer & Tech Profiles",
+      icon: "Code",
+      severity: "info",
+      dorks: [
+        `${Q} (site:github.com | site:gitlab.com | site:stackoverflow.com)`,
+        `${Q} site:github.com`,
+        `${Q} site:gitlab.com`,
+        `${Q} site:stackoverflow.com`,
+        `${Q} site:dev.to OR site:hashnode.com OR site:medium.com`,
+      ],
+    },
+    {
+      id: "general-web",
+      name: "General Web Presence",
+      icon: "Globe",
+      severity: "low",
+      dorks: [
+        `${Q} (email | username | contact | contacto | about | perfil | profile)`,
+        `${Q} "about me" OR "acerca de" OR "biografia" OR "bio"`,
+        `${Q} "contacto" OR "contact" OR "perfil" OR "profile"`,
+      ],
+    },
+    {
+      id: "emails-usernames",
+      name: "Find Emails & Usernames",
+      icon: "Mail",
+      severity: "medium",
+      dorks: [
+        `${Q} (email | username | alias | handle | contacto)`,
+        `${Q} "@" OR "email:" OR "correo:" OR "mail:"`,
+        `${Q} (mail | correo | contacto) site:pastebin.com OR site:ghostbin.com`,
+      ],
+    },
+    {
+      id: "location-contact",
+      name: "Find Location & Contact Info",
+      icon: "MapPin",
+      severity: "medium",
+      dorks: [
+        `${Q} (location | address | phone | "contact info" | ubicacion | direccion | telefono | contacto)`,
+        `${Q} "address:" OR "direccion:" OR "location:" OR "ubicacion:"`,
+        `${Q} (address | direccion | location | ubicacion | ciudad | city | pais | country)`,
+      ],
+    },
+    {
+      id: "pdf-pubs",
+      name: "Professional & Academic Publications (PDF)",
+      icon: "FileText",
+      severity: "low",
+      dorks: [
+        `${Q} filetype:pdf (resume | cv | "hoja de vida" | paper | publication | portfolio | publicacion)`,
+        `${Q} filetype:pdf (cv | curriculum | resume | "hoja de vida")`,
+        `${Q} filetype:pdf (paper | publication | publicacion | articulo | article)`,
+        `${Q} filetype:pdf (portfolio | portafolio | "case study" | "caso de estudio")`,
+      ],
+    },
+    {
+      id: "work-history",
+      name: "Work History & Company Mentions",
+      icon: "Briefcase",
+      severity: "low",
+      dorks: [
+        `${Q} (worked at | "trabajo en" | employed by | "empleado de" | founder of | "fundador de" | CEO of | company | empresa)`,
+        `${Q} (CEO | CFO | CTO | "director" | "gerente" | "presidente")`,
+        `${Q} (company | empresa | founded | cofundador | "co-founder")`,
+      ],
+    },
+    {
+      id: "images",
+      name: "Images",
+      icon: "Image",
+      severity: "info",
+      dorks: [
+        `${Q} (filetype:jpg OR filetype:png OR filetype:jpeg OR filetype:webp)`,
+        `${Q} site:images.google.com OR site:flickr.com OR site:imgur.com`,
+        `${Q} (foto | photo | picture | imagen)`,
+      ],
+    },
+    {
+      id: "news-blogs",
+      name: "News, Blogs, & Articles",
+      icon: "Newspaper",
+      severity: "low",
+      dorks: [
+        `${Q} (interview | entrevista | article | articulo | mentioned in | "mencionado en" | blog | post)`,
+        `${Q} site:bloomberg.com OR site:reuters.com OR site:ft.com OR site:wsj.com OR site:nytimes.com`,
+        `${Q} site:eluniversal.com OR site:eltiempo.com OR site:lanacion.com.ar OR site:elpais.com`,
+        `${Q} (entrevista | article | articulo | mentioned | mencionado)`,
+      ],
+    },
+    {
+      id: "public-records",
+      name: "Public Records & Legal Documents",
+      icon: "Scale",
+      severity: "medium",
+      dorks: [
+        `${Q} (court | corte | lawsuit | demanda | case | caso | docket | filing)`,
+        `${Q} (lawsuit | demanda | "court case" | "caso judicial" | "demanda judicial")`,
+        `${Q} (inurl:docket | inurl:court | inurl:demanda | inurl:caso)`,
+      ],
+    },
+    {
+      id: "forums",
+      name: "Forum & Community Discussions",
+      icon: "MessageSquare",
+      severity: "low",
+      dorks: [
+        `${Q} (inurl:forum | inurl:foro | inurl:thread | inurl:hilo | "discussion" | "discusion" | "profile" | "perfil")`,
+        `${Q} site:reddit.com OR site:quora.com OR site:discord.com`,
+        `${Q} (inurl:thread | inurl:hilo | inurl:topic | inurl:tema)`,
+      ],
+    },
+    {
+      id: "leaks-pastes",
+      name: "Data Leaks & Paste Sites",
+      icon: "AlertTriangle",
+      severity: "high",
+      dorks: [
+        `${Q} (site:pastebin.com | site:ghostbin.com | site:throwbin.io | "leak" | "breach" | "filtracion" | "base de datos")`,
+        `${Q} site:pastebin.com OR site:ghostbin.com OR site:throwbin.io OR site:hastebin.com`,
+        `${Q} (leak | leak | breach | brecha | filtracion | "fuga de datos" | "base de datos")`,
+      ],
+    },
+    {
+      id: "academic",
+      name: "Academic & Research Profiles",
+      icon: "GraduationCap",
+      severity: "info",
+      dorks: [
+        `${Q} (site:scholar.google.com | site:researchgate.net | site:academia.edu | site:orcid.org)`,
+        `${Q} site:researchgate.net OR site:academia.edu OR site:orcid.org`,
+        `${Q} site:scholar.google.com OR site:semanticscholar.org OR site:arxiv.org`,
+        `${Q} (PhD | Doctor | researcher | investigador | profesor | professor)`,
+      ],
+    },
+    {
+      id: "company-registries",
+      name: "Company Registries & Business Filings",
+      icon: "Building",
+      severity: "medium",
+      dorks: [
+        `${Q} (site:opencorporates.com | site:sec.gov | "director" | "shareholder" | "administrador" | "socio" | "registro mercantil")`,
+        `${Q} site:opencorporates.com OR site:sec.gov OR site:companieshouse.gov.uk`,
+        `${Q} (director | "shareholder" | "accionista" | "administrador" | "socio" | "registro mercantil" | "razon social")`,
+      ],
+    },
+    {
+      id: "usernames-handles",
+      name: "Usernames & Handles (cross-reference)",
+      icon: "AtSign",
+      severity: "medium",
+      dorks: [
+        `${Q} (intext:"@" | "username:" | "alias" | "perfil de usuario" | "user profile")`,
+        `${Q} (intext:"@" OR inurl:user OR inurl:profile OR inurl:perfil)`,
+        `${Q} (alias | handle | nickname | apodo | "user profile" | "perfil de usuario")`,
+      ],
+    },
+    {
+      id: "breaches",
+      name: "Breach Databases (HIBP, LeakLookup, Breachbase)",
+      icon: "Shield",
+      severity: "high",
+      dorks: [
+        `${Q} (site:haveibeenpwned.com | site:leak-lookup.com | site:breachbase.com | site:dehashed.com | "exposed in" | "found in breach")`,
+        `${Q} site:haveibeenpwned.com OR site:leak-lookup.com OR site:breachbase.com`,
+        `${Q} ("exposed in" | "found in breach" | "filtrado en" | "encontrado en breach" | "compromised" | "comprometido")`,
+      ],
+    },
+    {
+      id: "intel-search",
+      name: "Intelligence Search (IntelX, Shodan, ZoomEye)",
+      icon: "Radar",
+      severity: "medium",
+      dorks: [
+        `${Q} (site:intelx.io | site:shodan.io | site:zoomeye.org | site:fofa.info | "exposed" | "indexed")`,
+        `${Q} site:intelx.io OR site:shodan.io OR site:zoomeye.org OR site:fofa.info`,
+        `${Q} (exposed | indexed | "open" | "exposto" | expuesto)`,
+      ],
+    },
+    {
+      id: "darkweb",
+      name: "Dark Web & Onion Mentions",
+      icon: "Skull",
+      severity: "high",
+      dorks: [
+        `${Q} (site:onion.ly | site:dark.fail | "dark web" | "darkweb" | onion | tor | .onion)`,
+        `${Q} ("dark web" | darkweb | "deep web" | "profunda web")`,
+        `${Q} (onion | tor | .onion | "hidden service" | "servicio oculto")`,
+      ],
+    },
+    {
+      id: "phone-address",
+      name: "Phone & Address Lookups",
+      icon: "Phone",
+      severity: "medium",
+      dorks: [
+        `${Q} (site:truecaller.com | site:whitepages.com | site:spokeo.com | site:pipl.com | phone | telefono | address)`,
+        `${Q} (phone | telefono | celular | movil | mobile)`,
+        `${Q} (address | direccion | location | ubicacion | "phone book" | agenda)`,
+      ],
+    },
+    {
+      id: "deepfake",
+      name: "Deep Fake Search",
+      icon: "Eye",
+      severity: "high",
+      dorks: [
+        `${Q} ("deepfake" OR "deep fake") (filetype:mp4 OR filetype:mkv OR filetype:avi OR site:reddit.com OR site:twitter.com OR site:x.com OR site:youtube.com)`,
+        `${Q} ("deepfake" OR "deep fake" OR "deepfakes" OR "fake video")`,
+        `${Q} (deepfake | "deep fake") (video | synthesis | sintesis | manipulated | manipulado)`,
+      ],
+    },
+  ];
+
+  // Para email/phone/username, adaptamos algunos dorks que solo aplican a nombres
+  if (type === "email" || type === "phone") {
+    return categories.filter(c => !["pdf-pubs", "academic", "company-registries", "deepfake", "work-history"].includes(c.id));
   }
+
+  return categories;
 }
 
 // ============================================================
@@ -156,7 +324,6 @@ async function searchGitHubUsers(query: string, type: QueryType): Promise<Search
     let ghQueries: string[] = [];
     if (type === "name") {
       const tokens = nameTokens(query);
-      // Probar tanto el nombre literal como la variante sin acentos
       const variants = accentVariants(query);
       for (const v of variants) {
         if (tokens.length >= 2) {
@@ -190,13 +357,10 @@ async function searchGitHubUsers(query: string, type: QueryType): Promise<Search
         }
       } catch {}
     }));
-    // Filtro post-hoc para nombres: para cada candidato, hacer fetch del perfil real
-    // y verificar que el campo "name" contiene TODOS los tokens del query
     let filtered = allItems;
     if (type === "name") {
       const required = nameTokens(query);
       const accentless = required.map(t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
-      // Limitamos a 12 verificaciones para no agotar rate limit
       const checks = await Promise.all(allItems.slice(0, 12).map(async (u: any) => {
         try {
           const pr = await fetch(`https://api.github.com/users/${u.login}`, { headers: ghHeaders(), signal: AbortSignal.timeout(6000) });
@@ -212,6 +376,7 @@ async function searchGitHubUsers(query: string, type: QueryType): Promise<Search
       }).map(c => c.u);
     }
     return filtered.slice(0, 20).map((u: any) => ({
+      category: "developer-profiles",
       source: "GitHub User", type: "user match", title: u.login,
       url: u.html_url, snippet: `Type: ${u.type || "?"} | Avatar: ${u.avatar_url || "?"}`,
       severity: "info" as const, timestamp: null,
@@ -227,6 +392,7 @@ async function searchGitHubProfile(username: string): Promise<SearchResult[]> {
     if (r.ok) {
       const d: any = await r.json();
       results.push({
+        category: "developer-profiles",
         source: "GitHub Profile", type: "user profile", title: d.name || d.login || user,
         url: d.html_url, snippet: `Bio: ${d.bio || "N/A"} | Company: ${d.company || "N/A"} | Location: ${d.location || "N/A"} | Email: ${d.email || "N/A"} | Blog: ${d.blog || "N/A"} | Repos: ${d.public_repos || 0} | Followers: ${d.followers || 0} | Following: ${d.following || 0} | Created: ${d.created_at || "?"}`,
         severity: "info" as const, timestamp: d.created_at || null,
@@ -237,6 +403,7 @@ async function searchGitHubProfile(username: string): Promise<SearchResult[]> {
       const repos: any[] = await r2.json();
       for (const repo of repos.slice(0, 20)) {
         results.push({
+          category: "developer-profiles",
           source: "GitHub Repos", type: "user repo", title: repo.full_name,
           url: repo.html_url, snippet: `Stars: ${repo.stargazers_count || 0} | Forks: ${repo.forks_count || 0} | Lang: ${repo.language || "?"} | ${(repo.description || "").slice(0, 80)}`,
           severity: "low" as const, timestamp: repo.updated_at || null,
@@ -263,6 +430,7 @@ async function searchGitHubCode(query: string, type: QueryType): Promise<SearchR
         const d: any = await r.json();
         for (const item of (d.items || []).slice(0, 20)) {
           all.push({
+            category: "leaks-pastes",
             source: "GitHub Code", type: "code leak", title: item.name || item.path || "File",
             url: item.html_url, snippet: `Repo: ${item.repository?.full_name || "?"} | File: ${item.path || "?"}`,
             severity: "high" as const, timestamp: null,
@@ -283,6 +451,7 @@ async function searchGitHubGists(query: string): Promise<SearchResult[]> {
       const text = `${g.description || ""} ${Object.keys(g.files || {}).join(" ")}`.toLowerCase();
       return text.includes(query.toLowerCase());
     }).slice(0, 20).map(g => ({
+      category: "leaks-pastes",
       source: "GitHub Gist", type: "paste", title: g.description || "Gist",
       url: g.html_url, snippet: `Files: ${Object.keys(g.files || {}).join(", ")} | Owner: ${g.owner?.login || "?"}`,
       severity: "high" as const, timestamp: g.created_at || null,
@@ -303,6 +472,7 @@ async function searchGravatar(email: string): Promise<SearchResult[]> {
     const profile = d.entry?.[0];
     if (!profile) return [];
     return [{
+      category: "images",
       source: "Gravatar", type: "email profile",
       title: profile.displayName || profile.preferredUsername || email,
       url: profile.profileUrl || `https://gravatar.com/${hash}`,
@@ -326,6 +496,7 @@ async function searchHibpBreaches(email?: string): Promise<SearchResult[]> {
       if (r.ok) {
         const breaches: any[] = await r.json();
         return breaches.slice(0, 25).map(b => ({
+          category: "breaches",
           source: "HIBP Breach", type: "confirmed breach",
           title: `${b.Name} — ${email}`, url: `https://haveibeenpwned.com/breach/${b.Name}`,
           snippet: `PwnCount: ${b.PwnCount || "?"} | Date: ${b.BreachDate || "?"} | Data: ${(b.DataClasses || []).join(", ")}`,
@@ -333,7 +504,7 @@ async function searchHibpBreaches(email?: string): Promise<SearchResult[]> {
         }));
       }
       if (r.status === 404) {
-        return [{ source: "HIBP", type: "no breaches", title: `${email} — NOT BREACHED`, url: "https://haveibeenpwned.com", snippet: "Email not found in any known breach.", severity: "info" as const, timestamp: null }];
+        return [{ category: "breaches", source: "HIBP", type: "no breaches", title: `${email} — NOT BREACHED`, url: "https://haveibeenpwned.com", snippet: "Email not found in any known breach.", severity: "info" as const, timestamp: null }];
       }
     } catch {}
   }
@@ -342,6 +513,7 @@ async function searchHibpBreaches(email?: string): Promise<SearchResult[]> {
     if (!r.ok) return [];
     const breaches: any[] = await r.json();
     return breaches.slice(0, 20).map(b => ({
+      category: "breaches",
       source: "HIBP Breaches", type: "known breach",
       title: b.Name || "Breach", url: `https://haveibeenpwned.com/breach/${b.Name}`,
       snippet: `PwnCount: ${b.PwnCount || "?"} | Date: ${b.BreachDate || "?"} | Data: ${(b.DataClasses || []).join(", ")}`,
@@ -363,18 +535,17 @@ async function searchVirusTotal(query: string, type: QueryType): Promise<SearchR
     if (!r.ok) return [];
     const d: any = await r.json();
     const s = d?.data?.attributes?.last_analysis_stats || {};
-    return [{ source: "VirusTotal", type: "domain reputation", title: `${domain} - ${s.malicious || 0} malicious`, url: `https://www.virustotal.com/gui/domain/${domain}`, snippet: `Malicious: ${s.malicious || 0} | Suspicious: ${s.suspicious || 0} | Harmless: ${s.harmless || 0}`, severity: (s.malicious || 0) > 0 ? "high" : "info" as const, timestamp: null }];
+    return [{ category: "intel-search", source: "VirusTotal", type: "domain reputation", title: `${domain} - ${s.malicious || 0} malicious`, url: `https://www.virustotal.com/gui/domain/${domain}`, snippet: `Malicious: ${s.malicious || 0} | Suspicious: ${s.suspicious || 0} | Harmless: ${s.harmless || 0}`, severity: (s.malicious || 0) > 0 ? "high" : "info" as const, timestamp: null }];
   } catch { return []; }
 }
 
 // ============================================================
-//  Wikipedia — búsqueda biográfica
+//  Wikipedia — búsqueda biográfica (EN + ES)
 // ============================================================
 async function searchWikipedia(query: string, type: QueryType): Promise<SearchResult[]> {
   if (type !== "name") return [];
   try {
     const results: SearchResult[] = [];
-    // 1. Wikipedia REST search: devuelve matches con ambos terminos (busqueda AND)
     const r = await fetch(`https://en.wikipedia.org/w/rest.php/v1/search/page?q=${encodeURIComponent(query)}&limit=15`, {
       headers: { "User-Agent": "MONITOR-THREAT" },
       signal: AbortSignal.timeout(8000),
@@ -388,20 +559,17 @@ async function searchWikipedia(query: string, type: QueryType): Promise<SearchRe
         const excerpt = (p.excerpt || "").replace(/<[^>]+>/g, "");
         const combined = `${title} ${excerpt}`.toLowerCase();
         const normalized = combined.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-        // Verificar que TODOS los tokens esten presentes
         if (required.length > 0 && !required.every(t => combined.includes(t)) && !accentless.every(t => normalized.includes(t))) continue;
         results.push({
-          source: "Wikipedia",
-          type: "biography match",
+          category: "news-blogs",
+          source: "Wikipedia", type: "biography match",
           title,
           url: `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}`,
           snippet: excerpt.slice(0, 200),
-          severity: "info" as const,
-          timestamp: null,
+          severity: "info" as const, timestamp: null,
         });
       }
     }
-    // 2. Spanish Wikipedia
     const rEs = await fetch(`https://es.wikipedia.org/w/rest.php/v1/search/page?q=${encodeURIComponent(query)}&limit=10`, {
       headers: { "User-Agent": "MONITOR-THREAT" },
       signal: AbortSignal.timeout(8000),
@@ -417,24 +585,22 @@ async function searchWikipedia(query: string, type: QueryType): Promise<SearchRe
         const normalized = combined.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
         if (required.length > 0 && !required.every(t => combined.includes(t)) && !accentless.every(t => normalized.includes(t))) continue;
         results.push({
-          source: "Wikipedia (ES)",
-          type: "biography match",
+          category: "news-blogs",
+          source: "Wikipedia (ES)", type: "biography match",
           title,
           url: `https://es.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}`,
           snippet: excerpt.slice(0, 200),
-          severity: "info" as const,
-          timestamp: null,
+          severity: "info" as const, timestamp: null,
         });
       }
     }
-    // Dedup by URL
     const seen = new Set<string>();
     return results.filter(r => { if (seen.has(r.url)) return false; seen.add(r.url); return true; }).slice(0, 20);
   } catch { return []; }
 }
 
 // ============================================================
-//  DuckDuckGo Instant Answer API — biografias exactas
+//  DuckDuckGo Instant Answer API
 // ============================================================
 async function searchDdgInstantAnswer(query: string, type: QueryType): Promise<SearchResult[]> {
   if (type !== "name") return [];
@@ -446,35 +612,30 @@ async function searchDdgInstantAnswer(query: string, type: QueryType): Promise<S
     if (!r.ok) return [];
     const d: any = await r.json();
     const results: SearchResult[] = [];
-    // AbstractText (resumen de Wikipedia/Infozubiri)
     if (d.AbstractText) {
       results.push({
-        source: "DuckDuckGo IA",
-        type: "biography abstract",
+        category: "news-blogs",
+        source: "DuckDuckGo IA", type: "biography abstract",
         title: d.Heading || query,
         url: d.AbstractURL || `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
         snippet: d.AbstractText.slice(0, 250),
-        severity: "info" as const,
-        timestamp: null,
+        severity: "info" as const, timestamp: null,
       });
     }
-    // RelatedTopics (resultados relacionados)
     const required = nameTokens(query);
     const accentless = required.map(t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
     for (const t of (d.RelatedTopics || [])) {
       if (typeof t !== "object" || !t.Text) continue;
       const text = (t.Text || "").toLowerCase();
       const normalized = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-      // Solo incluir si contiene TODOS los tokens del nombre
       if (required.length > 0 && !required.every(tok => text.includes(tok)) && !accentless.every(tok => normalized.includes(tok))) continue;
       results.push({
-        source: "DuckDuckGo IA",
-        type: "related topic",
+        category: "general-web",
+        source: "DuckDuckGo IA", type: "related topic",
         title: (t.Text || "").slice(0, 100),
         url: t.FirstURL || `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
         snippet: (t.Text || "").slice(0, 200),
-        severity: "low" as const,
-        timestamp: null,
+        severity: "low" as const, timestamp: null,
       });
     }
     return results.slice(0, 20);
@@ -482,7 +643,7 @@ async function searchDdgInstantAnswer(query: string, type: QueryType): Promise<S
 }
 
 // ============================================================
-//  Hunter.io — verificacion de email (con API key opcional)
+//  Hunter.io
 // ============================================================
 async function searchHunter(email: string): Promise<SearchResult[]> {
   try {
@@ -493,6 +654,7 @@ async function searchHunter(email: string): Promise<SearchResult[]> {
     const d: any = await r.json();
     const data = d?.data || {};
     return [{
+      category: "emails-usernames",
       source: "Hunter.io", type: "email verification",
       title: `${email} — ${data.status || "?"}`,
       url: `https://hunter.io/email-verifier/${encodeURIComponent(email)}`,
@@ -503,7 +665,7 @@ async function searchHunter(email: string): Promise<SearchResult[]> {
 }
 
 // ============================================================
-//  Wikidata — busqueda de entidades por nombre completo
+//  Wikidata
 // ============================================================
 async function searchWikidata(query: string, type: QueryType): Promise<SearchResult[]> {
   if (type !== "name") return [];
@@ -522,19 +684,18 @@ async function searchWikidata(query: string, type: QueryType): Promise<SearchRes
       if (required.length === 0) return true;
       return required.every(t => combined.includes(t)) || accentless.every(t => normalized.includes(t));
     }).slice(0, 15).map((e: any) => ({
-      source: "Wikidata",
-      type: "entity match",
+      category: "academic",
+      source: "Wikidata", type: "entity match",
       title: e.label || query,
       url: `https://www.wikidata.org/wiki/${e.id}`,
       snippet: `${e.description || "(no description)"} [QID: ${e.id || "?"}]`,
-      severity: "info" as const,
-      timestamp: null,
+      severity: "info" as const, timestamp: null,
     }));
   } catch { return []; }
 }
 
 // ============================================================
-//  OpenCorporates — busqueda de directivos en registros mercantiles
+//  OpenCorporates
 // ============================================================
 async function searchOpenCorporates(query: string, type: QueryType): Promise<SearchResult[]> {
   if (type !== "name") return [];
@@ -552,13 +713,12 @@ async function searchOpenCorporates(query: string, type: QueryType): Promise<Sea
       if (required.length === 0) return true;
       return required.every(t => combined.includes(t)) || accentless.every(t => normalized.includes(t));
     }).slice(0, 20).map((o: any) => ({
-      source: "OpenCorporates",
-      type: "company officer",
+      category: "company-registries",
+      source: "OpenCorporates", type: "company officer",
       title: o.officer?.name || "Officer",
       url: `https://opencorporates.com/officers/${o.officer?.id || ""}`,
       snippet: `Company: ${o.officer?.company?.name || "?"} | Position: ${o.officer?.position || "?"} | Jurisdiction: ${o.officer?.company?.jurisdiction_code || "?"} | Start: ${o.officer?.start_date || "?"}`,
-      severity: "medium" as const,
-      timestamp: o.officer?.start_date || null,
+      severity: "medium" as const, timestamp: o.officer?.start_date || null,
     }));
   } catch { return []; }
 }
@@ -568,17 +728,12 @@ async function searchOpenCorporates(query: string, type: QueryType): Promise<Sea
 // ============================================================
 function decodeBingUrl(ckAurl: string): string | null {
   try {
-    // Bing URL: https://www.bing.com/ck/a?...&u=a1<base64>&ntb=1
-    // The base64 may be URL-encoded (&amp; → &)
     const decoded = ckAurl.replace(/&amp;/g, "&");
     const m = decoded.match(/u=a1([A-Za-z0-9+/=_-]+)/);
     if (!m) return null;
     let b64 = m[1];
-    // URL-decode (%3D → =) — but base64 in URLs typically already unescaped
     b64 = decodeURIComponent(b64);
-    // Bing uses URL-safe base64 (- and _), convert to standard
     b64 = b64.replace(/-/g, "+").replace(/_/g, "/");
-    // Pad
     b64 += "=".repeat((4 - (b64.length % 4)) % 4);
     const decodedUrl = Buffer.from(b64, "base64").toString("utf-8");
     if (!decodedUrl.startsWith("http")) return null;
@@ -586,9 +741,8 @@ function decodeBingUrl(ckAurl: string): string | null {
   } catch { return null; }
 }
 
-function parseBingHtml(html: string, query: string, type: QueryType): SearchResult[] {
+function parseBingHtml(html: string, query: string, type: QueryType, category: string, severity: "high" | "medium" | "low" | "info"): SearchResult[] {
   const results: SearchResult[] = [];
-  // Tokens obligatorios para post-filtro (solo para nombres)
   const requiredTokens = type === "name" ? nameTokens(query) : [];
   const blockRe = /<h2[^>]*>\s*<a[^>]*href="(https:\/\/www\.bing\.com\/ck\/a\?[^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>([\s\S]*?)(?=<h2|<div class="b_pag|<\/div>\s*<div class="b_footer|$)/g;
   let m: RegExpExecArray | null;
@@ -604,19 +758,21 @@ function parseBingHtml(html: string, query: string, type: QueryType): SearchResu
     if (!title) continue;
     const pMatch = tail.match(/<p[^>]*>([\s\S]*?)<\/p>/);
     const snippet = (pMatch ? pMatch[1] : "").replace(/<[^>]+>/g, "").trim();
-    // Post-filtro para nombres: el title o snippet DEBE contener TODOS los tokens
     if (requiredTokens.length > 0) {
       const combined = `${title} ${snippet}`.toLowerCase();
-      const allPresent = requiredTokens.every(t => combined.includes(t));
+      const normalized = combined.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const accentless = requiredTokens.map(t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+      const allPresent = requiredTokens.every(t => combined.includes(t)) || accentless.every(t => normalized.includes(t));
       if (!allPresent) continue;
     }
     results.push({
+      category,
       source: "Bing",
       type: "search hit",
       title: title.slice(0, 150),
       url,
       snippet: snippet.slice(0, 250) || "(no snippet)",
-      severity: "medium" as const,
+      severity,
       timestamp: null,
     });
     count++;
@@ -624,7 +780,7 @@ function parseBingHtml(html: string, query: string, type: QueryType): SearchResu
   return results;
 }
 
-async function runDorkOnBing(dork: string, query: string, type: QueryType): Promise<SearchResult[]> {
+async function runDorkOnBing(dork: string, query: string, type: QueryType, category: string, severity: "high" | "medium" | "low" | "info"): Promise<SearchResult[]> {
   try {
     const r = await fetch(
       `https://www.bing.com/search?q=${encodeURIComponent(dork)}&count=30&setlang=en-US&cc=US&FORM=QBLH&nfpr=1`,
@@ -632,20 +788,25 @@ async function runDorkOnBing(dork: string, query: string, type: QueryType): Prom
     );
     if (!r.ok) return [];
     const html = await r.text();
-    const parsed = parseBingHtml(html, query, type);
-    return parsed;
+    return parseBingHtml(html, query, type, category, severity);
   } catch { return []; }
 }
 
-async function runSearchEngines(dorks: string[], query: string, type: QueryType): Promise<SearchResult[]> {
-  // Ejecuta los primeros 12 dorks en Bing (en paralelo, en lotes de 4 para no rate-limit)
-  const selected = dorks.slice(0, 12);
+// Ejecuta 1 dork por categoria (20 categorias = 20 dorks) en lotes de 4
+async function runSearchEngines(categories: DorkCategory[], query: string, type: QueryType): Promise<{ results: SearchResult[]; dorksExecuted: number }> {
+  // Tomamos el dork principal de cada categoria (el mas representativo)
+  const tasks = categories.map(cat => ({
+    dork: cat.dorks[0],
+    category: cat.id,
+    severity: cat.severity,
+  }));
   const out: SearchResult[] = [];
   const seen = new Set<string>();
-  // Lotes de 4 dorks en paralelo
-  for (let i = 0; i < selected.length; i += 4) {
-    const batch = selected.slice(i, i + 4);
-    const arrs = await Promise.all(batch.map(d => runDorkOnBing(d, query, type)));
+  let dorksExecuted = 0;
+  for (let i = 0; i < tasks.length; i += 4) {
+    const batch = tasks.slice(i, i + 4);
+    const arrs = await Promise.all(batch.map(t => runDorkOnBing(t.dork, query, type, t.category, t.severity)));
+    dorksExecuted += batch.length;
     for (const arr of arrs) {
       for (const r of arr) {
         if (seen.has(r.url)) continue;
@@ -654,7 +815,7 @@ async function runSearchEngines(dorks: string[], query: string, type: QueryType)
       }
     }
   }
-  return out.slice(0, 100);
+  return { results: out.slice(0, 200), dorksExecuted };
 }
 
 // ============================================================
@@ -663,28 +824,28 @@ async function runSearchEngines(dorks: string[], query: string, type: QueryType)
 interface SherlockSite {
   name: string;
   url: (u: string) => string;
-  // Patrón en el HTML que indica "no encontrado" (false positive filter)
+  category: string;
   notFoundPattern?: RegExp;
 }
 
 const SHERLOCK_SITES: SherlockSite[] = [
-  { name: "GitHub", url: u => `https://github.com/${u}`, notFoundPattern: /Not Found|page doesn't exist/i },
-  { name: "GitLab", url: u => `https://gitlab.com/${u}` },
-  { name: "Twitter/X", url: u => `https://x.com/${u}` },
-  { name: "TikTok", url: u => `https://tiktok.com/@${u}` },
-  { name: "YouTube", url: u => `https://youtube.com/@${u}` },
-  { name: "Twitch", url: u => `https://twitch.tv/${u}` },
-  { name: "Telegram", url: u => `https://t.me/${u}` },
-  { name: "Pinterest", url: u => `https://pinterest.com/${u}` },
-  { name: "SoundCloud", url: u => `https://soundcloud.com/${u}` },
-  { name: "Dev.to", url: u => `https://dev.to/${u}` },
-  { name: "Hashnode", url: u => `https://hashnode.com/@${u}` },
-  { name: "HackerNews", url: u => `https://news.ycombinator.com/user?id=${u}` },
-  { name: "Steam", url: u => `https://steamcommunity.com/id/${u}` },
-  { name: "Keybase", url: u => `https://keybase.io/${u}` },
-  { name: "Kaggle", url: u => `https://kaggle.com/${u}` },
-  { name: "Spotify", url: u => `https://open.spotify.com/user/${u}` },
-  { name: "Pastebin", url: u => `https://pastebin.com/u/${u}` },
+  { name: "GitHub", url: u => `https://github.com/${u}`, category: "developer-profiles", notFoundPattern: /Not Found|page doesn't exist/i },
+  { name: "GitLab", url: u => `https://gitlab.com/${u}`, category: "developer-profiles" },
+  { name: "Twitter/X", url: u => `https://x.com/${u}`, category: "social-media" },
+  { name: "TikTok", url: u => `https://tiktok.com/@${u}`, category: "social-media" },
+  { name: "YouTube", url: u => `https://youtube.com/@${u}`, category: "social-media" },
+  { name: "Twitch", url: u => `https://twitch.tv/${u}`, category: "social-media" },
+  { name: "Telegram", url: u => `https://t.me/${u}`, category: "social-media" },
+  { name: "Pinterest", url: u => `https://pinterest.com/${u}`, category: "social-media" },
+  { name: "SoundCloud", url: u => `https://soundcloud.com/${u}`, category: "social-media" },
+  { name: "Dev.to", url: u => `https://dev.to/${u}`, category: "developer-profiles" },
+  { name: "Hashnode", url: u => `https://hashnode.com/@${u}`, category: "developer-profiles" },
+  { name: "HackerNews", url: u => `https://news.ycombinator.com/user?id=${u}`, category: "forums" },
+  { name: "Steam", url: u => `https://steamcommunity.com/id/${u}`, category: "social-media" },
+  { name: "Keybase", url: u => `https://keybase.io/${u}`, category: "usernames-handles" },
+  { name: "Kaggle", url: u => `https://kaggle.com/${u}`, category: "academic" },
+  { name: "Spotify", url: u => `https://open.spotify.com/user/${u}`, category: "social-media" },
+  { name: "Pastebin", url: u => `https://pastebin.com/u/${u}`, category: "leaks-pastes" },
 ];
 
 async function checkSherlockUrl(site: SherlockSite, username: string): Promise<SearchResult | null> {
@@ -698,11 +859,9 @@ async function checkSherlockUrl(site: SherlockSite, username: string): Promise<S
     });
     if (r.status !== 200) return null;
     const html = await r.text();
-    // Si la pagina tiene el patron de "no encontrado", es un falso positivo
     if (site.notFoundPattern && site.notFoundPattern.test(html)) return null;
-    // Algunos sitios devuelven 200 con contenido de "login" si el usuario no existe
-    // pero es muy dificil de detectar universalmente, asi que lo dejamos como "hit probable"
     return {
+      category: site.category,
       source: site.name,
       type: "username found",
       title: `${username} en ${site.name}`,
@@ -718,13 +877,12 @@ async function checkSherlockUrl(site: SherlockSite, username: string): Promise<S
 
 async function sherlockEnumerate(username: string): Promise<SearchResult[]> {
   const user = username.startsWith("@") ? username.slice(1) : username;
-  // Lanzar todos los checks en paralelo (17 es un numero manejable)
   const checks = await Promise.all(SHERLOCK_SITES.map(s => checkSherlockUrl(s, user)));
   return checks.filter((c): c is SearchResult => c !== null);
 }
 
 // ============================================================
-//  Main
+//  MAIN
 // ============================================================
 export async function GET(request: Request) {
   try {
@@ -733,7 +891,8 @@ export async function GET(request: Request) {
     const type = (searchParams.get("type") || "name").trim() as QueryType;
     if (!query) return NextResponse.json({ error: "missing_query" }, { status: 400 });
 
-    const dorks = generateDorks(query, type);
+    const categories = buildDorkCategories(query, type);
+    const allDorks = categories.flatMap(c => c.dorks);
 
     const isUsername = type === "username";
     const isEmail = type === "email";
@@ -756,8 +915,8 @@ export async function GET(request: Request) {
       isName ? searchOpenCorporates(query, type) : Promise.resolve([]),
     ]);
 
-    // Lote 2 — motor Bing ejecutando 12 dorks (con post-filtro de coincidencia exacta)
-    const engineResults = await runSearchEngines(dorks, query, type);
+    // Lote 2 — Bing ejecuta 1 dork por categoria (20 categorias en lotes de 4)
+    const { results: engineResults, dorksExecuted } = await runSearchEngines(categories, query, type);
 
     // Lote 3 — enumeración Sherlock (solo para username)
     const sherlockResults = isUsername ? await sherlockEnumerate(query) : [];
@@ -773,17 +932,26 @@ export async function GET(request: Request) {
     const seen = new Set<string>();
     const deduped = all.filter(r => { if (seen.has(r.url)) return false; seen.add(r.url); return true; });
 
+    // Agrupar por categoria
+    const byCategory: Record<string, number> = {};
+    for (const r of deduped) byCategory[r.category] = (byCategory[r.category] || 0) + 1;
+
     const bySource: Record<string, number> = {};
     const bySeverity = { high: 0, medium: 0, low: 0, info: 0 };
     for (const r of deduped) { bySource[r.source] = (bySource[r.source] || 0) + 1; bySeverity[r.severity]++; }
 
     return NextResponse.json({
-      query, queryType: type, dorks,
+      query, queryType: type,
+      categories: categories.map(c => ({ id: c.id, name: c.name, icon: c.icon, severity: c.severity, dorksCount: c.dorks.length })),
+      dorks: allDorks,
+      dorksByCategory: categories.reduce((acc, c) => { acc[c.id] = c.dorks; return acc; }, {} as Record<string, string[]>),
+      dorksExecuted,
       sourcesUsed: Object.keys(bySource),
       enginesUsed: ["Bing"],
       results: deduped,
       summary: {
         total: deduped.length,
+        byCategory,
         bySource,
         bySeverity,
         engines: { bing: engineResults.length },
@@ -793,10 +961,9 @@ export async function GET(request: Request) {
       timestamp: new Date().toISOString(),
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (err: any) {
-    // Log para diagnostico
     console.error("[executive-osint] ERROR:", err?.message || err, err?.stack || "");
     return NextResponse.json(
-      { error: "internal_error", message: String(err?.message || err), dorks: [], results: [], summary: { total: 0, bySource: {}, bySeverity: { high: 0, medium: 0, low: 0, info: 0 } } },
+      { error: "internal_error", message: String(err?.message || err), dorks: [], results: [], summary: { total: 0, bySource: {}, byCategory: {}, bySeverity: { high: 0, medium: 0, low: 0, info: 0 } } },
       { status: 500 }
     );
   }
