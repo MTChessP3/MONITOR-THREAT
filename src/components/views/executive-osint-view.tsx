@@ -172,9 +172,10 @@ export function ExecutiveOsintView() {
       const r = await fetch(`/api/executive-osint/image-search${nameParam}`, { method: "POST", body: formData });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j: any = await r.json();
+      // Mostrar inmediatamente los motores de busqueda visual (con URLs ya cargadas)
       setImageResults(j);
 
-      // PASO 2: Si hay candidatos de Bing, hacer matching facial en el cliente
+      // PASO 2: Si hay candidatos de Bing, intentar matching facial en el cliente
       const candidates: any[] = j.bingCandidates || [];
       if (candidates.length === 0) {
         setImageLoading(false);
@@ -204,14 +205,16 @@ export function ExecutiveOsintView() {
             distance: 0, similarity: 0,
             matchType: "color",
           }));
-          setImageResults({ ...j, imageMatches: matches, matchCount: matches.length, faceDetected: false, faceMatchesCount: 0, colorMatchesCount: matches.length });
+          setImageResults({ ...j, imageMatches: matches, matchCount: matches.length, faceDetected: false, faceMatchesCount: 0, colorMatchesCount: matches.length, candidatesCount: candidates.length });
           setImageLoading(false);
           setFaceApiLoading(false);
+          setTimeout(() => setFaceApiStatus(""), 5000);
           return;
         }
 
         setFaceApiStatus(`Rostro detectado. Comparando con ${candidates.length} candidatos de Bing...`);
-        // Para cada candidato, descargar la imagen (via CORS proxy) y detectar el rostro
+        // Para cada candidato, descargar la imagen via proxy images.weserv.nl (CORS-enabled)
+        // y detectar el rostro
         const faceMatches: any[] = [];
         let processed = 0;
         const FACE_THRESHOLD = 0.62;
@@ -222,16 +225,17 @@ export function ExecutiveOsintView() {
           const results = await Promise.all(batch.map(async (c: any): Promise<any | null> => {
             if (!c.imageUrl) return null;
             try {
-              // Usar un proxy CORS para descargar la imagen (las paginas de Bing a veces no permiten CORS direct)
-              // Usamos allorigins.win que devuelve con headers CORS
-              const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(c.imageUrl)}`;
+              // images.weserv.nl is a free image proxy with proper CORS headers
+              // Format: https://images.weserv.nl/?url=<original-url-without-protocol>
+              const originalUrl = c.imageUrl.replace(/^https?:\/\//, '');
+              const proxyUrl = `https://images.weserv.nl/?url=${encodeURIComponent(originalUrl)}`;
               const candImg = new Image();
               candImg.crossOrigin = "anonymous";
               candImg.src = proxyUrl;
               await new Promise((res, rej) => {
                 candImg.onload = res;
                 candImg.onerror = rej;
-                setTimeout(rej, 8000);
+                setTimeout(rej, 10000);
               });
               const candDesc = await detectFaceDescriptor(faceapi, candImg);
               if (!candDesc) return null;
@@ -253,7 +257,7 @@ export function ExecutiveOsintView() {
           setFaceApiStatus(`Comparando con ${candidates.length} candidatos... ${processed}/${candidates.length} (${faceMatches.length} coincidencias)`);
         }
 
-        setFaceApiStatus(`Comparacion completa: ${faceMatches.length} coincidencias faciales reales.`);
+        setFaceApiStatus(`Comparacion completa: ${faceMatches.length} coincidencias faciales reales de ${candidates.length} candidatos.`);
         setImageResults({
           ...j,
           imageMatches: faceMatches,
@@ -266,7 +270,7 @@ export function ExecutiveOsintView() {
         });
       } catch (e: any) {
         console.error("Face recognition error:", e);
-        setFaceApiStatus(`Error en reconocimiento facial: ${String(e?.message || e)}`);
+        setFaceApiStatus(`Reconocimiento facial no disponible (${String(e?.message || e)}). Mostrando candidatos sin filtro.`);
         // Mostrar candidatos sin filtro como fallback
         const matches = candidates.map((c: any) => ({
           url: c.url, imageUrl: c.imageUrl, thumbnailUrl: c.thumbnailUrl,
@@ -275,11 +279,11 @@ export function ExecutiveOsintView() {
           distance: 0, similarity: 0,
           matchType: "color",
         }));
-        setImageResults({ ...j, imageMatches: matches, matchCount: matches.length, faceDetected: false, faceMatchesCount: 0, colorMatchesCount: matches.length });
+        setImageResults({ ...j, imageMatches: matches, matchCount: matches.length, faceDetected: false, faceMatchesCount: 0, colorMatchesCount: matches.length, candidatesCount: candidates.length });
       } finally {
         setFaceApiLoading(false);
-        // Mantener el status 3s mas para que el usuario vea el resultado
-        setTimeout(() => setFaceApiStatus(""), 3000);
+        // Mantener el status 5s mas para que el usuario vea el resultado
+        setTimeout(() => setFaceApiStatus(""), 5000);
       }
     } catch (e: any) { setError(String(e?.message || e)); }
     setImageLoading(false);
@@ -672,6 +676,30 @@ export function ExecutiveOsintView() {
               </div>
             )}
 
+            {/* Candidatos de Bing — mostrar inmediatamente TODOS como preview mientras se hace face match */}
+            {imageResults.bingCandidates?.length > 0 && !imageResults.imageMatches && (
+              <div className="mb-3 p-2 rounded border border-blue-500/40 bg-blue-500/5">
+                <div className="text-xs font-semibold mb-2 flex items-center gap-1.5 text-blue-400">
+                  <ImageIcon className="w-3.5 h-3.5" /> Candidatos de Bing Visual Search ({imageResults.bingCandidates.length})
+                </div>
+                <div className="text-[10px] text-muted-foreground mb-2">
+                  Bing encontro estos resultados. El reconocimiento facial esta comparando cada uno con tu imagen original. Si face-api no detecta rostro en alguno, se descarta automaticamente.
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 max-h-72 overflow-y-auto">
+                  {imageResults.bingCandidates.map((c: any, i: number) => (
+                    <a key={i} href={c.url} target="_blank" rel="noreferrer" className="block p-1.5 rounded border border-border bg-muted/20 hover:bg-accent transition">
+                      {c.thumbnailUrl && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={c.thumbnailUrl} alt={c.title} className="w-full h-20 object-cover rounded mb-1" />
+                      )}
+                      <div className="text-[10px] font-semibold truncate" title={c.title}>{c.title}</div>
+                      <div className="text-[9px] text-cyan-500 truncate" title={c.imageUrl}>{c.imageUrl}</div>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Coincidencias reales: face match (prioridad) + color match (fallback) */}
             {imageResults.imageMatches?.length > 0 && (
               <div className="mb-3 p-2 rounded border border-emerald-500/40 bg-emerald-500/5">
@@ -684,7 +712,7 @@ export function ExecutiveOsintView() {
                 <div className="text-[10px] text-muted-foreground mb-2">
                   {imageResults.faceDetected
                     ? `Rostro detectado en la imagen original. Cada candidato fue escaneado con face-api.js (SSD MobileNet) y comparado por descriptor facial de 128 dim (distancia euclidiana). El badge de cada coincidencia indica el % de similitud facial. ${imageResults.faceMatchesCount || 0} coincidencias de rostro + ${imageResults.colorMatchesCount || 0} por paleta de color.`
-                    : `No se detecto rostro en la imagen original. Cada candidato fue comparado por histograma de color (512 bins RGB). ${imageResults.colorMatchesCount || 0} coincidencias por paleta similar.`
+                    : `No se detecto rostro en la imagen original (o face-api no pudo cargar). Mostrando candidatos sin filtro facial. ${imageResults.colorMatchesCount || 0} coincidencias.`
                   }
                   {(imageResults.filteredOut || 0) > 0 && <span className="text-amber-500 ml-2">{imageResults.filteredOut} candidatos descartados por no coincidir.</span>}
                 </div>
