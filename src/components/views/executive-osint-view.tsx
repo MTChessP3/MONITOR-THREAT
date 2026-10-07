@@ -47,12 +47,15 @@ export function ExecutiveOsintView() {
   const [summary, setSummary] = React.useState<{
     total: number; byCategory: Record<string, number>; bySource: Record<string, number>;
     bySeverity: { high: number; medium: number; low: number; info: number };
-    engines?: { bing: number };
+    engines?: { bing: number; duckduckgo: number; google: number; yandex: number; edge: number };
     sherlock?: number;
     preciseMatch?: { wikipedia: number; ddg: number; wikidata?: number; opencorporates?: number };
   } | null>(null);
   const [sourcesUsed, setSourcesUsed] = React.useState<string[]>([]);
   const [enginesUsed, setEnginesUsed] = React.useState<string[]>([]);
+  const [enginesAuto, setEnginesAuto] = React.useState<string[]>([]);
+  const [enginesManual, setEnginesManual] = React.useState<string[]>([]);
+  const [manualLinks, setManualLinks] = React.useState<Record<string, { google: string; yandex: string; edge: string; bing: string; duckduckgo: string }>>({});
   const [error, setError] = React.useState<string | null>(null);
   const [searched, setSearched] = React.useState(false);
 
@@ -68,7 +71,8 @@ export function ExecutiveOsintView() {
   const search = async () => {
     if (!query.trim()) return;
     setLoading(true); setError(null); setResults([]); setCategories([]); setDorksByCategory({});
-    setSummary(null); setSourcesUsed([]); setEnginesUsed([]); setSearched(true); setActiveCategory("all");
+    setSummary(null); setSourcesUsed([]); setEnginesUsed([]); setEnginesAuto([]); setEnginesManual([]);
+    setManualLinks({}); setSearched(true); setActiveCategory("all");
     try {
       const r = await fetch(`/api/executive-osint/search?q=${encodeURIComponent(query.trim())}&type=${queryType}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -80,6 +84,9 @@ export function ExecutiveOsintView() {
       setSummary(j.summary || null);
       setSourcesUsed(j.sourcesUsed || []);
       setEnginesUsed(j.enginesUsed || []);
+      setEnginesAuto(j.enginesAuto || []);
+      setEnginesManual(j.enginesManual || []);
+      setManualLinks(j.manualLinks || {});
     } catch (e: any) { setError(String(e?.message || e)); }
     setLoading(false);
   };
@@ -143,6 +150,220 @@ export function ExecutiveOsintView() {
     doc.save(`executive-osint-${Date.now()}.pdf`);
   };
 
+  // Genera un Informe HTML imprimible que se abre en nueva ventana con
+  // estilos de impresion amigables y boton "Imprimir / Guardar como PDF"
+  const generateHtmlReport = () => {
+    if (results.length === 0) return;
+    const sevColorsHtml: Record<string, string> = {
+      high: "#dc2626", medium: "#eab308", low: "#16a34a", info: "#3b82f6",
+    };
+    const sevTextLocal: Record<string, string> = { high: "ALTA", medium: "MEDIA", low: "BAJA", info: "INFO" };
+    const esc = (s: string) => (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+    // Group results by category
+    const grouped: Record<string, SearchResult[]> = {};
+    for (const r of results) {
+      if (!grouped[r.category]) grouped[r.category] = [];
+      grouped[r.category].push(r);
+    }
+
+    const categoryRows = Object.entries(grouped).map(([catId, rs]) => {
+      const cat = categories.find(c => c.id === catId);
+      const catName = cat?.name || catId;
+      const rowsHtml = rs.map(r => `
+        <tr>
+          <td><span class="src-badge">${esc(r.source)}</span></td>
+          <td><span class="sev sev-${r.severity}">${sevTextLocal[r.severity]}</span></td>
+          <td>${esc(r.type)}</td>
+          <td><a href="${esc(r.url)}" target="_blank">${esc(r.title.slice(0, 80))}</a></td>
+          <td class="snippet">${esc(r.snippet.slice(0, 150))}</td>
+        </tr>
+      `).join("");
+      return `
+        <section class="category-section">
+          <h2>${esc(catName)} <span class="count">(${rs.length})</span></h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Source</th><th>Severity</th><th>Type</th><th>Title</th><th>Snippet</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </section>
+      `;
+    }).join("");
+
+    // Dorks HTML grouped by category with manual links
+    const dorksHtml = categories.map(cat => {
+      const catDorks = dorksByCategory[cat.id] || [];
+      if (catDorks.length === 0) return "";
+      const dorkRows = catDorks.map((d, i) => {
+        const links = manualLinks[d];
+        const linksHtml = links ? `
+          <div class="engine-links">
+            <a href="${esc(links.google)}" target="_blank" class="engine-link google">G</a>
+            <a href="${esc(links.yandex)}" target="_blank" class="engine-link yandex">Y</a>
+            <a href="${esc(links.edge)}" target="_blank" class="engine-link edge">E</a>
+            <a href="${esc(links.bing)}" target="_blank" class="engine-link bing">B</a>
+            <a href="${esc(links.duckduckgo)}" target="_blank" class="engine-link ddg">D</a>
+          </div>
+        ` : "";
+        return `
+          <div class="dork-row">
+            <span class="dork-num">${i + 1}</span>
+            <code class="dork-text">${esc(d)}</code>
+            ${i === 0 ? '<span class="auto-badge">auto</span>' : ""}
+            ${linksHtml}
+          </div>
+        `;
+      }).join("");
+      return `
+        <details class="dorks-cat">
+          <summary>${esc(cat.name)} (${catDorks.length} dorks)</summary>
+          ${dorkRows}
+        </details>
+      `;
+    }).join("");
+
+    // Summary stats
+    const summaryStats = summary ? `
+      <div class="summary-stats">
+        <div class="stat"><span class="num">${summary.total}</span><span class="lbl">Total</span></div>
+        <div class="stat high"><span class="num">${summary.bySeverity.high}</span><span class="lbl">Alta</span></div>
+        <div class="stat medium"><span class="num">${summary.bySeverity.medium}</span><span class="lbl">Media</span></div>
+        <div class="stat low"><span class="num">${summary.bySeverity.low}</span><span class="lbl">Baja</span></div>
+        <div class="stat info"><span class="num">${summary.bySeverity.info}</span><span class="lbl">Info</span></div>
+      </div>
+      ${summary.engines ? `
+        <div class="engines-row">
+          <div class="engine-stat"><span class="num">${summary.engines.bing}</span><span class="lbl">Bing</span></div>
+          <div class="engine-stat"><span class="num">${summary.engines.duckduckgo}</span><span class="lbl">DuckDuckGo</span></div>
+          <div class="engine-stat"><span class="num">${summary.engines.google}</span><span class="lbl">Google (manual)</span></div>
+          <div class="engine-stat"><span class="num">${summary.engines.yandex}</span><span class="lbl">Yandex (manual)</span></div>
+          <div class="engine-stat"><span class="num">${summary.engines.edge}</span><span class="lbl">Edge (manual)</span></div>
+        </div>
+      ` : ""}
+    ` : "";
+
+    const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Executive OSINT Report - ${esc(query)}</title>
+  <style>
+    @page { size: A4; margin: 1.5cm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #1a1a1a; margin: 0; padding: 20px; background: #fff; }
+    .header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 3px solid #dc2626; padding-bottom: 12px; margin-bottom: 20px; }
+    .header h1 { font-size: 28px; margin: 0; color: #1e293b; }
+    .header .brand { font-size: 14px; color: #dc2626; font-weight: bold; letter-spacing: 1px; }
+    .header .meta { font-size: 11px; color: #475569; text-align: right; }
+    .summary-stats { display: flex; gap: 10px; margin: 15px 0; }
+    .stat { padding: 10px 15px; border: 1px solid #e2e8f0; border-radius: 4px; min-width: 80px; text-align: center; background: #f8fafc; }
+    .stat .num { display: block; font-size: 22px; font-weight: bold; color: #1e293b; }
+    .stat .lbl { display: block; font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat.high { border-color: #dc2626; background: #fef2f2; }
+    .stat.high .num { color: #dc2626; }
+    .stat.medium { border-color: #eab308; background: #fefce8; }
+    .stat.medium .num { color: #eab308; }
+    .stat.low { border-color: #16a34a; background: #f0fdf4; }
+    .stat.low .num { color: #16a34a; }
+    .stat.info { border-color: #3b82f6; background: #eff6ff; }
+    .stat.info .num { color: #3b82f6; }
+    .engines-row { display: flex; gap: 8px; margin: 10px 0 20px 0; }
+    .engine-stat { padding: 6px 12px; border: 1px dashed #cbd5e1; border-radius: 3px; font-size: 11px; text-align: center; }
+    .engine-stat .num { font-weight: bold; color: #1e293b; }
+    .engine-stat .lbl { color: #64748b; font-size: 9px; }
+    .category-section { margin: 18px 0; page-break-inside: avoid; }
+    .category-section h2 { font-size: 14px; color: #0f172a; border-left: 4px solid #dc2626; padding-left: 8px; margin: 0 0 8px 0; }
+    .category-section h2 .count { font-size: 11px; color: #64748b; font-weight: normal; }
+    table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    th { background: #1e293b; color: #fff; padding: 6px 8px; text-align: left; font-weight: 600; font-size: 9px; text-transform: uppercase; letter-spacing: 0.3px; }
+    td { padding: 6px 8px; border: 1px solid #e2e8f0; vertical-align: top; }
+    tr:nth-child(even) td { background: #f8fafc; }
+    .src-badge { display: inline-block; padding: 2px 6px; border: 1px solid #cbd5e1; border-radius: 3px; font-size: 9px; font-family: monospace; background: #fff; }
+    .sev { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: bold; color: #fff; }
+    .sev-high { background: #dc2626; }
+    .sev-medium { background: #eab308; color: #1a1a1a; }
+    .sev-low { background: #16a34a; }
+    .sev-info { background: #3b82f6; }
+    .snippet { font-family: monospace; font-size: 9px; color: #475569; max-width: 280px; word-break: break-word; }
+    a { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h2.dorks-title { font-size: 16px; margin-top: 30px; border-bottom: 2px solid #1e293b; padding-bottom: 5px; }
+    .dorks-cat { margin: 10px 0; }
+    .dorks-cat summary { cursor: pointer; font-weight: 600; padding: 6px; background: #f1f5f9; border-radius: 3px; }
+    .dork-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px dashed #e2e8f0; font-size: 10px; }
+    .dork-num { color: #dc2626; font-weight: bold; min-width: 20px; }
+    .dork-text { flex: 1; font-family: monospace; color: #475569; word-break: break-all; }
+    .auto-badge { background: #8b5cf6; color: #fff; padding: 1px 5px; border-radius: 3px; font-size: 8px; }
+    .engine-links { display: flex; gap: 3px; }
+    .engine-link { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: bold; color: #fff !important; }
+    .engine-link.google { background: #4285f4; }
+    .engine-link.yandex { background: #ff0000; }
+    .engine-link.edge { background: #0078d7; }
+    .engine-link.bing { background: #008373; }
+    .engine-link.ddg { background: #de5833; }
+    .footer { margin-top: 30px; padding-top: 10px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 9px; color: #94a3b8; }
+    .print-btn { position: fixed; top: 20px; right: 20px; padding: 10px 20px; background: #dc2626; color: #fff; border: none; border-radius: 4px; font-size: 14px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+    .print-btn:hover { background: #b91c1c; }
+    @media print {
+      .print-btn { display: none; }
+      body { padding: 0; }
+      .category-section { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">🖨 Imprimir / Guardar como PDF</button>
+  <div class="header">
+    <div>
+      <h1>Executive OSINT Report</h1>
+      <div class="brand">MONITOR-THREAT</div>
+    </div>
+    <div class="meta">
+      <div><strong>Target:</strong> ${esc(query)} (${queryType})</div>
+      <div><strong>Fecha:</strong> ${new Date().toLocaleString()}</div>
+      <div><strong>Dorks ejecutados:</strong> ${dorksExecuted} (Bing + DuckDuckGo automaticos; Google, Yandex, Edge manuales)</div>
+    </div>
+  </div>
+
+  ${summaryStats}
+
+  <h2 class="dorks-title">Resultados por categoria</h2>
+  ${categoryRows}
+
+  <h2 class="dorks-title">Dorks generados (${dorksExecuted} ejecutados automaticamente)</h2>
+  <div style="font-size: 10px; color: #64748b; margin-bottom: 10px;">
+    Los dorks marcados como "auto" se ejecutaron automaticamente en Bing + DuckDuckGo.
+    Para ejecutar los demas en Google/Yandex/Edge, haz clic en los botones <span class="engine-link google">G</span> <span class="engine-link yandex">Y</span> <span class="engine-link edge">E</span> <span class="engine-link bing">B</span> <span class="engine-link ddg">D</span>.
+  </div>
+  ${dorksHtml}
+
+  <div class="footer">
+    MONITOR-THREAT · Executive OSINT · Generado ${new Date().toISOString()}
+  </div>
+</body>
+</html>`;
+
+    // Open in new window
+    const w = window.open("", "_blank");
+    if (w) {
+      w.document.write(html);
+      w.document.close();
+    } else {
+      // Fallback: download HTML file
+      const blob = new Blob([html], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `executive-osint-${Date.now()}.html`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  };
+
   const typeIcons: Record<string, React.ReactNode> = {
     name: <User className="w-3 h-3" />, email: <Mail className="w-3 h-3" />,
     phone: <Phone className="w-3 h-3" />, username: <AtSign className="w-3 h-3" />,
@@ -174,7 +395,7 @@ export function ExecutiveOsintView() {
           <Input type="text" placeholder={queryType === "name" ? "ej: Juan Perez" : queryType === "email" ? "ej: juan@empresa.com" : queryType === "phone" ? "ej: +57 3001234567" : "ej: @jperez"} value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === "Enter" && search()} className="flex-1 font-mono text-sm" autoFocus />
         </div>
         <div className="text-[10px] text-muted-foreground">
-          20 categorias de dorks ejecutadas en Bing + APIs: GitHub, Gravatar, HIBP, VirusTotal, Wikipedia (EN+ES), DuckDuckGo IA, Hunter, Wikidata, OpenCorporates, Sherlock (17 redes). {dorksExecuted > 0 && <span className="text-purple-400">| {dorksExecuted} dorks ejecutados</span>}
+          20 categorias de dorks ejecutadas en <span className="text-emerald-400">Bing</span> + <span className="text-orange-400">DuckDuckGo</span> (auto) · <span className="text-blue-400">Google</span>, <span className="text-red-400">Yandex</span>, <span className="text-cyan-400">Edge</span> (manual, botones al lado de cada dork) · APIs: GitHub, Gravatar, HIBP, VirusTotal, Wikipedia (EN+ES), DuckDuckGo IA, Hunter, Wikidata, OpenCorporates, Sherlock (17 redes). {dorksExecuted > 0 && <span className="text-purple-400">| {dorksExecuted} dorks ejecutados</span>}
         </div>
         {(sourcesUsed.length > 0 || enginesUsed.length > 0) && (
           <div className="flex gap-1 flex-wrap mt-2">
@@ -259,7 +480,12 @@ export function ExecutiveOsintView() {
       {/* SUMMARY */}
       {summary && (
         <Panel title={`Resultados: ${summary.total} encontrados en ${Object.keys(summary.byCategory || {}).length} categorias`} className="md:col-span-2"
-          action={<Button size="sm" variant="outline" onClick={generatePdf} disabled={results.length === 0}><Printer className="w-3 h-3 mr-1.5" /> PDF</Button>}
+          action={(
+            <div className="flex gap-1.5">
+              <Button size="sm" variant="outline" onClick={generateHtmlReport} disabled={results.length === 0}><FileText className="w-3 h-3 mr-1.5" /> Informe HTML</Button>
+              <Button size="sm" variant="outline" onClick={generatePdf} disabled={results.length === 0}><Printer className="w-3 h-3 mr-1.5" /> PDF</Button>
+            </div>
+          )}
         >
           <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3">
             <div className="rounded p-2 border border-cyan-500/40 bg-cyan-500/5"><div className="text-lg font-bold font-mono text-cyan-400">{summary.total}</div><div className="text-[10px]">Total</div></div>
@@ -269,9 +495,20 @@ export function ExecutiveOsintView() {
             <div className="rounded p-2 border border-blue-500/40 bg-blue-500/5"><div className="text-lg font-bold font-mono text-blue-400">{summary.bySeverity.info}</div><div className="text-[10px]">Info</div></div>
           </div>
           {summary.engines && (
-            <div className="flex gap-2 mb-2">
-              {summary.engines.bing !== undefined && <div className="rounded p-2 border border-purple-500/40 bg-purple-500/5 flex-1"><div className="text-lg font-bold font-mono text-purple-400">{summary.engines.bing}</div><div className="text-[10px]">Bing</div></div>}
-              {summary.preciseMatch && <div className="rounded p-2 border border-cyan-500/40 bg-cyan-500/5 flex-1"><div className="text-lg font-bold font-mono text-cyan-400">{summary.preciseMatch.wikipedia + summary.preciseMatch.ddg + (summary.preciseMatch.wikidata || 0) + (summary.preciseMatch.opencorporates || 0)}</div><div className="text-[10px]">Wikipedia+DDG+Wikidata+OpenCorp</div></div>}
+            <>
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1.5 mt-2">Motores de busqueda (auto + manual):</div>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-2">
+                {summary.engines.bing !== undefined && <div className="rounded p-2 border border-emerald-500/40 bg-emerald-500/5"><div className="text-lg font-bold font-mono text-emerald-400">{summary.engines.bing}</div><div className="text-[10px]">Bing (auto)</div></div>}
+                {summary.engines.duckduckgo !== undefined && <div className="rounded p-2 border border-orange-500/40 bg-orange-500/5"><div className="text-lg font-bold font-mono text-orange-400">{summary.engines.duckduckgo}</div><div className="text-[10px]">DuckDuckGo (auto)</div></div>}
+                {summary.engines.google !== undefined && <div className="rounded p-2 border border-blue-500/40 bg-blue-500/5"><div className="text-lg font-bold font-mono text-blue-400">{summary.engines.google}</div><div className="text-[10px]">Google (manual)</div></div>}
+                {summary.engines.yandex !== undefined && <div className="rounded p-2 border border-red-500/40 bg-red-500/5"><div className="text-lg font-bold font-mono text-red-400">{summary.engines.yandex}</div><div className="text-[10px]">Yandex (manual)</div></div>}
+                {summary.engines.edge !== undefined && <div className="rounded p-2 border border-cyan-500/40 bg-cyan-500/5"><div className="text-lg font-bold font-mono text-cyan-400">{summary.engines.edge}</div><div className="text-[10px]">Edge (manual)</div></div>}
+              </div>
+            </>
+          )}
+          {summary.preciseMatch && (
+            <div className="flex gap-2 mb-2 mt-2">
+              <div className="rounded p-2 border border-cyan-500/40 bg-cyan-500/5 flex-1"><div className="text-lg font-bold font-mono text-cyan-400">{summary.preciseMatch.wikipedia + summary.preciseMatch.ddg + (summary.preciseMatch.wikidata || 0) + (summary.preciseMatch.opencorporates || 0)}</div><div className="text-[10px]">Wikipedia+DDG IA+Wikidata+OpenCorp</div></div>
               {summary.sherlock !== undefined && <div className="rounded p-2 border border-amber-500/40 bg-amber-500/5 flex-1"><div className="text-lg font-bold font-mono text-amber-400">{summary.sherlock}</div><div className="text-[10px]">Sherlock (17)</div></div>}
             </div>
           )}
@@ -312,8 +549,11 @@ export function ExecutiveOsintView() {
 
       {/* DORKS BY CATEGORY */}
       {Object.keys(dorksByCategory).length > 0 && (
-        <Panel title={`Dorks generados — ${dorksExecuted} ejecutados en Bing`} className="md:col-span-2">
-          <div className="text-[10px] text-muted-foreground mb-2">1 dork por categoria se ejecuta automaticamente en Bing. Copia los demas para usarlos manualmente en Google/Yandex:</div>
+        <Panel title={`Dorks generados — ${dorksExecuted} ejecutados en Bing + DuckDuckGo · Google/Yandex/Edge manuales`} className="md:col-span-2">
+          <div className="text-[10px] text-muted-foreground mb-2">
+            1 dork por categoria se ejecuta automaticamente en <span className="text-emerald-400">Bing</span> + <span className="text-orange-400">DuckDuckGo</span>.
+            Para ejecutar en <span className="text-blue-400">Google</span>, <span className="text-red-400">Yandex</span> o <span className="text-cyan-400">Edge</span>, haz clic en los botones <span className="bg-blue-500 text-white px-1 rounded">G</span> <span className="bg-red-500 text-white px-1 rounded">Y</span> <span className="bg-cyan-500 text-white px-1 rounded">E</span> <span className="bg-emerald-500 text-white px-1 rounded">B</span> <span className="bg-orange-500 text-white px-1 rounded">D</span> al lado de cada dork:
+          </div>
           <div className="max-h-72 overflow-y-auto space-y-3">
             {categories.map(cat => {
               const catDorks = dorksByCategory[cat.id] || [];
@@ -326,14 +566,26 @@ export function ExecutiveOsintView() {
                     <span className="text-[11px] font-semibold">{cat.name}</span>
                     <Badge variant={sevColors[cat.severity]} className="text-[9px] ml-1">{sevText[cat.severity]}</Badge>
                   </div>
-                  {catDorks.map((d, i) => (
-                    <div key={i} className="text-[10px] font-mono text-muted-foreground flex items-center gap-1 ml-3">
-                      <span className="text-purple-400">{i + 1}.</span>
-                      {i === 0 && <Badge variant="outline" className="text-[8px] text-purple-400 border-purple-500/40">auto</Badge>}
-                      <code className="flex-1 truncate">{d}</code>
-                      <button onClick={() => navigator.clipboard.writeText(d)} className="text-muted-foreground hover:text-cyan-500 shrink-0"><Copy className="w-2.5 h-2.5" /></button>
-                    </div>
-                  ))}
+                  {catDorks.map((d, i) => {
+                    const links = manualLinks[d];
+                    return (
+                      <div key={i} className="text-[10px] font-mono text-muted-foreground flex items-center gap-1 ml-3 flex-wrap">
+                        <span className="text-purple-400">{i + 1}.</span>
+                        {i === 0 && <Badge variant="outline" className="text-[8px] text-purple-400 border-purple-500/40">auto</Badge>}
+                        <code className="flex-1 truncate">{d}</code>
+                        {links && (
+                          <div className="flex gap-0.5 shrink-0">
+                            <a href={links.google} target="_blank" rel="noreferrer" title="Ejecutar en Google" className="bg-blue-500 hover:bg-blue-600 text-white px-1 rounded text-[8px] font-bold">G</a>
+                            <a href={links.yandex} target="_blank" rel="noreferrer" title="Ejecutar en Yandex" className="bg-red-500 hover:bg-red-600 text-white px-1 rounded text-[8px] font-bold">Y</a>
+                            <a href={links.edge} target="_blank" rel="noreferrer" title="Ejecutar en Edge (Bing)" className="bg-cyan-500 hover:bg-cyan-600 text-white px-1 rounded text-[8px] font-bold">E</a>
+                            <a href={links.bing} target="_blank" rel="noreferrer" title="Ejecutar en Bing" className="bg-emerald-500 hover:bg-emerald-600 text-white px-1 rounded text-[8px] font-bold">B</a>
+                            <a href={links.duckduckgo} target="_blank" rel="noreferrer" title="Ejecutar en DuckDuckGo" className="bg-orange-500 hover:bg-orange-600 text-white px-1 rounded text-[8px] font-bold">D</a>
+                          </div>
+                        )}
+                        <button onClick={() => navigator.clipboard.writeText(d)} className="text-muted-foreground hover:text-cyan-500 shrink-0"><Copy className="w-2.5 h-2.5" /></button>
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })}

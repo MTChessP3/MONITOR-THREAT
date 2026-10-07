@@ -792,8 +792,84 @@ async function runDorkOnBing(dork: string, query: string, type: QueryType, categ
   } catch { return []; }
 }
 
+// ============================================================
+//  DUCKDUCKGO ENGINE — html.duckduckgo.com/html/
+// ============================================================
+function parseDdgHtml(html: string, query: string, type: QueryType, category: string, severity: "high" | "medium" | "low" | "info"): SearchResult[] {
+  const results: SearchResult[] = [];
+  const requiredTokens = type === "name" ? nameTokens(query) : [];
+  const accentless = requiredTokens.map(t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+  // DDG pattern: <a class="result__a" href="//duckduckgo.com/l/?uddg=<encoded_url>&rut=...">title</a>
+  //              <a class="result__snippet" href="...">snippet</a>
+  const blockRe = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+  let m: RegExpExecArray | null;
+  let count = 0;
+  while ((m = blockRe.exec(html)) && count < 30) {
+    let href = m[1];
+    const titleHtml = m[2];
+    const snippetHtml = m[3];
+    // DDG wraps with //duckduckgo.com/l/?uddg=<encoded>
+    const uddgMatch = href.match(/uddg=([^&]+)/);
+    if (uddgMatch) {
+      try { href = decodeURIComponent(uddgMatch[1]); } catch {}
+    }
+    if (!href.startsWith("http")) continue;
+    const title = titleHtml.replace(/<[^>]+>/g, "").trim();
+    if (!title) continue;
+    const snippet = snippetHtml.replace(/<[^>]+>/g, "").trim();
+    // Post-filtro para nombres: TODOS los tokens presentes
+    if (requiredTokens.length > 0) {
+      const combined = `${title} ${snippet}`.toLowerCase();
+      const normalized = combined.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const allPresent = requiredTokens.every(t => combined.includes(t)) || accentless.every(t => normalized.includes(t));
+      if (!allPresent) continue;
+    }
+    results.push({
+      category,
+      source: "DuckDuckGo",
+      type: "search hit",
+      title: title.slice(0, 150),
+      url: href,
+      snippet: snippet.slice(0, 250) || "(no snippet)",
+      severity,
+      timestamp: null,
+    });
+    count++;
+  }
+  return results;
+}
+
+async function runDorkOnDDG(dork: string, query: string, type: QueryType, category: string, severity: "high" | "medium" | "low" | "info"): Promise<SearchResult[]> {
+  try {
+    const r = await fetch(
+      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(dork)}`,
+      { headers: htmlFetchHeaders(), signal: AbortSignal.timeout(12000) },
+    );
+    if (!r.ok) return [];
+    const html = await r.text();
+    return parseDdgHtml(html, query, type, category, severity);
+  } catch { return []; }
+}
+
+// ============================================================
+//  GENERAR URLs de Google / Yandex / Edge (links directos para abrir en el navegador)
+//  No se pueden ejecutar server-side (Google requiere JS, Yandex captcha),
+//  pero generamos los URLs para que el usuario haga clic y los ejecute en su browser.
+// ============================================================
+function buildGoogleSearchUrl(dork: string): string {
+  return `https://www.google.com/search?q=${encodeURIComponent(dork)}`;
+}
+function buildYandexSearchUrl(dork: string): string {
+  return `https://yandex.com/search/?text=${encodeURIComponent(dork)}`;
+}
+function buildEdgeSearchUrl(dork: string): string {
+  // Edge usa Bing como backend
+  return `https://www.bing.com/search?q=${encodeURIComponent(dork)}&form=EDGE&setmkt=en-US`;
+}
+
 // Ejecuta 1 dork por categoria (20 categorias = 20 dorks) en lotes de 4
-async function runSearchEngines(categories: DorkCategory[], query: string, type: QueryType): Promise<{ results: SearchResult[]; dorksExecuted: number }> {
+// en BING + DUCKDUCKGO en paralelo; genera URLs de Google/Yandex/Edge para abrir manualmente
+async function runSearchEngines(categories: DorkCategory[], query: string, type: QueryType): Promise<{ results: SearchResult[]; dorksExecuted: number; manualLinks: Record<string, { google: string; yandex: string; edge: string; bing: string; duckduckgo: string }> }> {
   // Tomamos el dork principal de cada categoria (el mas representativo)
   const tasks = categories.map(cat => ({
     dork: cat.dorks[0],
@@ -803,9 +879,26 @@ async function runSearchEngines(categories: DorkCategory[], query: string, type:
   const out: SearchResult[] = [];
   const seen = new Set<string>();
   let dorksExecuted = 0;
+  const manualLinks: Record<string, { google: string; yandex: string; edge: string; bing: string; duckduckgo: string }> = {};
+
   for (let i = 0; i < tasks.length; i += 4) {
     const batch = tasks.slice(i, i + 4);
-    const arrs = await Promise.all(batch.map(t => runDorkOnBing(t.dork, query, type, t.category, t.severity)));
+    // Ejecutar en paralelo: Bing + DDG para cada dork del lote
+    const arrs = await Promise.all(batch.map(async t => {
+      const [bingRes, ddgRes] = await Promise.all([
+        runDorkOnBing(t.dork, query, type, t.category, t.severity),
+        runDorkOnDDG(t.dork, query, type, t.category, t.severity),
+      ]);
+      // Generar URLs manuales para Google/Yandex/Edge
+      manualLinks[t.dork] = {
+        google: buildGoogleSearchUrl(t.dork),
+        yandex: buildYandexSearchUrl(t.dork),
+        edge: buildEdgeSearchUrl(t.dork),
+        bing: `https://www.bing.com/search?q=${encodeURIComponent(t.dork)}`,
+        duckduckgo: `https://html.duckduckgo.com/html/?q=${encodeURIComponent(t.dork)}`,
+      };
+      return [...bingRes, ...ddgRes];
+    }));
     dorksExecuted += batch.length;
     for (const arr of arrs) {
       for (const r of arr) {
@@ -815,7 +908,7 @@ async function runSearchEngines(categories: DorkCategory[], query: string, type:
       }
     }
   }
-  return { results: out.slice(0, 200), dorksExecuted };
+  return { results: out.slice(0, 200), dorksExecuted, manualLinks };
 }
 
 // ============================================================
@@ -915,8 +1008,10 @@ export async function GET(request: Request) {
       isName ? searchOpenCorporates(query, type) : Promise.resolve([]),
     ]);
 
-    // Lote 2 — Bing ejecuta 1 dork por categoria (20 categorias en lotes de 4)
-    const { results: engineResults, dorksExecuted } = await runSearchEngines(categories, query, type);
+    // Lote 2 — Bing + DuckDuckGo ejecutan 1 dork por categoria (20 dorks en lotes de 4)
+    // Google/Yandex/Edge no se pueden ejecutar server-side (Google JS, Yandex captcha);
+    // se generan URLs manuales para que el usuario los abra en su navegador.
+    const { results: engineResults, dorksExecuted, manualLinks } = await runSearchEngines(categories, query, type);
 
     // Lote 3 — enumeración Sherlock (solo para username)
     const sherlockResults = isUsername ? await sherlockEnumerate(query) : [];
@@ -940,21 +1035,28 @@ export async function GET(request: Request) {
     const bySeverity = { high: 0, medium: 0, low: 0, info: 0 };
     for (const r of deduped) { bySource[r.source] = (bySource[r.source] || 0) + 1; bySeverity[r.severity]++; }
 
+    // Contar hits por motor ejecutado automaticamente
+    const bingCount = engineResults.filter(r => r.source === "Bing").length;
+    const ddgCount = engineResults.filter(r => r.source === "DuckDuckGo").length;
+
     return NextResponse.json({
       query, queryType: type,
       categories: categories.map(c => ({ id: c.id, name: c.name, icon: c.icon, severity: c.severity, dorksCount: c.dorks.length })),
       dorks: allDorks,
       dorksByCategory: categories.reduce((acc, c) => { acc[c.id] = c.dorks; return acc; }, {} as Record<string, string[]>),
       dorksExecuted,
+      manualLinks,
       sourcesUsed: Object.keys(bySource),
-      enginesUsed: ["Bing"],
+      enginesUsed: ["Bing", "DuckDuckGo", "Google", "Yandex", "Edge"],
+      enginesAuto: ["Bing", "DuckDuckGo"],
+      enginesManual: ["Google", "Yandex", "Edge"],
       results: deduped,
       summary: {
         total: deduped.length,
         byCategory,
         bySource,
         bySeverity,
-        engines: { bing: engineResults.length },
+        engines: { bing: bingCount, duckduckgo: ddgCount, google: 0, yandex: 0, edge: 0 },
         sherlock: sherlockResults.length,
         preciseMatch: { wikipedia: wiki.length, ddg: ddgIa.length, wikidata: wikidata.length, opencorporates: opencorp.length },
       },
