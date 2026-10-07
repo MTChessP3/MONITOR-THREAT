@@ -496,14 +496,14 @@ export function ExecutiveOsintView() {
               </div>
             )}
 
-            {/* Coincidencias reales encontradas en Bing Visual Search */}
+            {/* Coincidencias reales encontradas por pHash (no candidatos sin filtro) */}
             {imageResults.imageMatches?.length > 0 && (
               <div className="mb-3 p-2 rounded border border-emerald-500/40 bg-emerald-500/5">
                 <div className="text-xs font-semibold mb-2 flex items-center gap-1.5 text-emerald-400">
-                  <ImageIcon className="w-3.5 h-3.5" /> Coincidencias encontradas en Bing Visual Search ({imageResults.imageMatches.length})
+                  <ImageIcon className="w-3.5 h-3.5" /> Coincidencias REALES verificadas por hash perceptual ({imageResults.imageMatches.length} de {imageResults.candidatesCount || imageResults.imageMatches.length} candidatos)
                 </div>
                 <div className="text-[10px] text-muted-foreground mb-2">
-                  Estos son los resultados reales donde Bing encontro la imagen (o similares) en internet. Haz clic en cada coincidencia para abrir la pagina donde aparece:
+                  Cada candidato fue descargado y comparado contra la imagen original por hash perceptual (pHash de 1024 bits). Solo se muestran los que tienen similitud real (&gt;{(100 - (25/1024)*100).toFixed(1)}%). El badge de cada coincidencia indica el porcentaje de similitud. {(imageResults.filteredOut || 0) > 0 && <span className="text-amber-500">{imageResults.filteredOut} candidatos descartados por no coincidir con la imagen original.</span>}
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 max-h-72 overflow-y-auto">
                   {imageResults.imageMatches.map((m: any, i: number) => (
@@ -512,11 +512,26 @@ export function ExecutiveOsintView() {
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={m.thumbnailUrl} alt={m.title} className="w-full h-20 object-cover rounded mb-1" />
                       )}
+                      <div className="flex items-center justify-between mb-0.5">
+                        <Badge variant={m.similarity >= 95 ? "destructive" : m.similarity >= 85 ? "default" : "secondary"} className="text-[9px] font-mono">
+                          {m.similarity}% match
+                        </Badge>
+                        <span className="text-[9px] text-muted-foreground">d={m.distance}</span>
+                      </div>
                       <div className="text-[10px] font-semibold truncate" title={m.title}>{m.title}</div>
                       <div className="text-[9px] text-cyan-500 truncate" title={m.imageUrl}>{m.imageUrl}</div>
                     </a>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* Si Bing devolvio candidatos pero ninguno coincide con la imagen real */}
+            {imageResults.imageMatches?.length === 0 && imageResults.candidatesCount > 0 && (
+              <div className="mb-3 p-2 rounded border border-amber-500/40 bg-amber-500/5 text-[11px] text-amber-300">
+                <strong>Sin coincidencias reales.</strong> Bing Visual Search encontro {imageResults.candidatesCount} candidatos pero ninguno coincide verdaderamente con la imagen original (verificado por hash perceptual). Los candidatos de Bing eran visualmente similares pero no la misma imagen.
+                <br/>
+                <span className="text-amber-200">Sugerencia: usa Yandex o Google Lens (botones abajo) que tienen mejores algoritmos de matching exacto para rostros.</span>
               </div>
             )}
 

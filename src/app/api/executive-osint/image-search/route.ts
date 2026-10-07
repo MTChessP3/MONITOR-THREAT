@@ -1,17 +1,20 @@
-// Executive OSINT — Reverse Image Search con reconocimiento real
+// Executive OSINT — Reverse Image Search con comparacion REAL por hash perceptual
 //
 // Recibe una imagen (base64 o multipart) y:
 //  1. La sube a tmpfiles.org (hosting publico gratuito anonimo, sin API key)
-//  2. Ejecuta la BUSQUEDA REAL en Bing Visual Search via imgurl parameter
-//     (parsea los <a class="iusc" m="{...}"> con murl, purl, title)
-//  3. Genera URLs de reverse image search para Google, Yandex, DuckDuckGo,
-//     Edge con la URL publica de la imagen (subida a tmpfiles.org)
-//  4. Genera dorks de deepfake usando el nombre del investigado
+//  2. Calcula el hash perceptual (pHash) de la imagen original con sharp
+//  3. Ejecuta Bing Visual Search via imgurl parameter para obtener candidatos
+//  4. Descarga cada candidato (murl) y calcula su pHash
+//  5. Compara hashes (distancia Hamming) y FILTRA solo coincidencias REALES
+//     (distance <= threshold). Ordena por similitud (menor distancia = mas similar)
+//  6. Genera URLs de reverse image search para Google/Yandex/Edge/DuckDuckGo/TinEye
+//  7. Genera dorks de deepfake usando el nombre del investigado
 
 import { NextResponse } from "next/server";
 import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
+import sharp from "sharp";
 
 interface ImageMatch {
   url: string;          // page URL where image appears (purl)
@@ -21,6 +24,8 @@ interface ImageMatch {
   source: string;        // engine
   width?: number;
   height?: number;
+  distance: number;      // Hamming distance (0 = identical, 1024 = totally different)
+  similarity: number;    // 0-100, percentage match (100 = identical)
 }
 
 function htmlFetchHeaders(): Record<string, string> {
@@ -32,7 +37,37 @@ function htmlFetchHeaders(): Record<string, string> {
   };
 }
 
-// Sube una imagen a tmpfiles.org y devuelve la URL publica directa
+// ============================================================
+//  Perceptual hash (pHash) usando sharp
+//  - Redimensiona a 32x32 grayscale
+//  - Bit=1 si pixel > promedio, sino 0
+//  - Devuelve string de 1024 bits
+// ============================================================
+async function computePHash(buffer: Buffer): Promise<string> {
+  const { data } = await sharp(buffer)
+    .resize(32, 32, { fit: "fill" })
+    .grayscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) sum += data[i];
+  const avg = sum / data.length;
+  let hash = "";
+  for (let i = 0; i < data.length; i++) hash += data[i] > avg ? "1" : "0";
+  return hash;
+}
+
+function hammingDistance(h1: string, h2: string): number {
+  let dist = 0;
+  const len = Math.min(h1.length, h2.length);
+  for (let i = 0; i < len; i++) if (h1[i] !== h2[i]) dist++;
+  // Penaliza diferencia de longitud
+  return dist + Math.abs(h1.length - h2.length);
+}
+
+// ============================================================
+//  Sube a tmpfiles.org
+// ============================================================
 async function uploadToTmpfiles(imageBuffer: Buffer, mime: string): Promise<string | null> {
   try {
     const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
@@ -50,7 +85,6 @@ async function uploadToTmpfiles(imageBuffer: Buffer, mime: string): Promise<stri
     const d: any = await r.json();
     const url: string = d?.data?.url || "";
     if (!url) return null;
-    // Convertir https://tmpfiles.org/xxx/file.jpg -> https://tmpfiles.org/dl/xxx/file.jpg
     return url.replace("tmpfiles.org/", "tmpfiles.org/dl/");
   } catch (err) {
     console.error("[image-search] tmpfiles upload error:", err);
@@ -58,8 +92,19 @@ async function uploadToTmpfiles(imageBuffer: Buffer, mime: string): Promise<stri
   }
 }
 
-// Ejecuta la busqueda real en Bing Visual Search y parsea los resultados
-async function bingReverseImageSearch(imageUrl: string): Promise<ImageMatch[]> {
+// ============================================================
+//  Bing Visual Search — obtiene candidatos potenciales
+// ============================================================
+interface BingCandidate {
+  url: string;       // purl (page URL)
+  imageUrl: string;  // murl (direct image URL)
+  thumbnailUrl: string;
+  title: string;
+  width?: number;
+  height?: number;
+}
+
+async function bingReverseImageSearch(imageUrl: string): Promise<BingCandidate[]> {
   try {
     const url = `https://www.bing.com/images/search?q=&qft=+filterui:photo-photo&tbimg=1&imgurl=${encodeURIComponent(imageUrl)}&tsc=ImageHoverTitle&FORM=IRFLTR`;
     const r = await fetch(url, {
@@ -68,14 +113,11 @@ async function bingReverseImageSearch(imageUrl: string): Promise<ImageMatch[]> {
     });
     if (!r.ok) return [];
     const html = await r.text();
-    // Bing inserta: <a class="iusc" style="..." m="{&quot;type&quot;:&quot;image&quot;,...,&quot;murl&quot;:&quot;...&quot;,&quot;purl&quot;:&quot;...&quot;,...}">
-    // m= value is HTML-encoded JSON
     const blockRe = /class="iusc"[^>]*?m="(\{[^"]+\})"/g;
-    const matches: ImageMatch[] = [];
+    const matches: BingCandidate[] = [];
     let m: RegExpExecArray | null;
     while ((m = blockRe.exec(html)) && matches.length < 30) {
       try {
-        // Decode HTML entities
         const jsonStr = m[1]
           .replace(/&quot;/g, '"')
           .replace(/&amp;/g, "&")
@@ -88,7 +130,6 @@ async function bingReverseImageSearch(imageUrl: string): Promise<ImageMatch[]> {
           imageUrl: d.murl || "",
           thumbnailUrl: d.turl || "",
           title: d.title || d.desc || "(no title)",
-          source: "Bing Visual",
           width: d.w,
           height: d.h,
         });
@@ -98,6 +139,68 @@ async function bingReverseImageSearch(imageUrl: string): Promise<ImageMatch[]> {
   } catch {
     return [];
   }
+}
+
+// ============================================================
+//  Compara cada candidato con la imagen original usando pHash
+//  - Descarga la imagen del murl (con timeout corto)
+//  - Calcula pHash del candidato
+//  - Hamming distance: 0 = identica, <=10 = coincidencia fuerte,
+//    <=25 = coincidencia posible, >25 = diferente
+// ============================================================
+async function fetchCandidateImage(url: string): Promise<Buffer | null> {
+  try {
+    const r = await fetch(url, {
+      headers: { "User-Agent": htmlFetchHeaders()["User-Agent"] },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) return null;
+    const ab = await r.arrayBuffer();
+    return Buffer.from(ab);
+  } catch {
+    return null;
+  }
+}
+
+async function filterRealMatches(
+  originalHash: string,
+  candidates: BingCandidate[],
+  threshold: number = 25,
+): Promise<ImageMatch[]> {
+  const results: ImageMatch[] = [];
+  // Procesa en lotes de 6 en paralelo para no saturar
+  for (let i = 0; i < candidates.length; i += 6) {
+    const batch = candidates.slice(i, i + 6);
+    const checked = await Promise.all(batch.map(async (c): Promise<ImageMatch | null> => {
+      if (!c.imageUrl) return null;
+      const imgBuf = await fetchCandidateImage(c.imageUrl);
+      if (!imgBuf || imgBuf.length === 0) return null;
+      try {
+        const candidateHash = await computePHash(imgBuf);
+        const distance = hammingDistance(originalHash, candidateHash);
+        // Similitud: 1024 bits total, 100% = identical
+        const similarity = Math.max(0, Math.round(100 - (distance / 1024) * 100));
+        if (distance > threshold) return null;  // no es coincidencia real
+        return {
+          url: c.url,
+          imageUrl: c.imageUrl,
+          thumbnailUrl: c.thumbnailUrl,
+          title: c.title,
+          source: "Bing Visual",
+          width: c.width,
+          height: c.height,
+          distance,
+          similarity,
+        };
+      } catch {
+        return null;
+      }
+    }));
+    for (const m of checked) if (m) results.push(m);
+  }
+  // Ordena por similitud descendente (menor distancia = mas similar primero)
+  results.sort((a, b) => a.distance - b.distance);
+  return results;
 }
 
 export async function POST(request: Request) {
@@ -134,7 +237,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "empty_image" }, { status: 400 });
     }
 
-    // Guardar la imagen localmente (para referencia)
+    // Guardar la imagen localmente
     const tmpDir = "/tmp/executive-osint-images";
     if (!existsSync(tmpDir)) await mkdir(tmpDir, { recursive: true });
     const imgId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -142,7 +245,15 @@ export async function POST(request: Request) {
     const imgPath = path.join(tmpDir, `${imgId}.${ext}`);
     await writeFile(imgPath, imageBuffer);
 
-    // PASO 1: Subir la imagen a tmpfiles.org para obtener una URL publica
+    // PASO 1: Calcular pHash de la imagen original
+    let originalHash: string | null = null;
+    try {
+      originalHash = await computePHash(imageBuffer);
+    } catch (err) {
+      console.error("[image-search] pHash error:", err);
+    }
+
+    // PASO 2: Subir a tmpfiles.org
     let publicImageUrl: string | null = null;
     let uploadError: string | null = null;
     try {
@@ -152,14 +263,20 @@ export async function POST(request: Request) {
       uploadError = String(e?.message || e);
     }
 
-    // PASO 2: Si tenemos URL publica, ejecutar Bing Visual Search real
-    let imageMatches: ImageMatch[] = [];
+    // PASO 3: Ejecutar Bing Visual Search
+    let bingCandidates: BingCandidate[] = [];
     if (publicImageUrl) {
-      imageMatches = await bingReverseImageSearch(publicImageUrl);
+      bingCandidates = await bingReverseImageSearch(publicImageUrl);
     }
 
-    // PASO 3: Generar URLs de reverse image search para los 5 motores
-    // usando la URL publica de la imagen
+    // PASO 4: Comparar cada candidato con la imagen original via pHash
+    // Solo se mantienen los que tienen distancia <= 25 (de 1024 bits totales)
+    let realMatches: ImageMatch[] = [];
+    if (originalHash && bingCandidates.length > 0) {
+      realMatches = await filterRealMatches(originalHash, bingCandidates, 25);
+    }
+
+    // PASO 5: Generar URLs de reverse image search para los 5 motores
     const engines = publicImageUrl ? [
       {
         source: "Google Images (Reverse)",
@@ -172,17 +289,18 @@ export async function POST(request: Request) {
       },
       {
         source: "Bing Visual Search",
-        type: "reverse image search (auto-ejecutado)",
+        type: realMatches.length > 0 ? "reverse image search (coincidencias reales)" : "reverse image search",
         url: `https://www.bing.com/images/search?q=&qft=+filterui:photo-photo&tbimg=1&imgurl=${encodeURIComponent(publicImageUrl)}&tsc=ImageHoverTitle&FORM=IRFLTR`,
-        snippet: imageMatches.length > 0
-          ? `Busqueda ejecutada: ${imageMatches.length} coincidencias encontradas`
-          : "Bing Visual Search ejecuta busqueda con la imagen",
+        snippet: realMatches.length > 0
+          ? `Comparacion pHash: ${realMatches.length} coincidencias REALES de ${bingCandidates.length} candidatos`
+          : `Candidatos obtenidos: ${bingCandidates.length}, ninguno con similitud suficiente`,
         severity: "high",
-        instructions: imageMatches.length > 0
-          ? `Ver resultados abajo (${imageMatches.length} coincidencias)`
+        instructions: realMatches.length > 0
+          ? `Ver resultados abajo (${realMatches.length} coincidencias reales filtradas por pHash)`
           : "Click para abrir Bing Visual Search en tu navegador",
         autoOpen: true,
-        resultsCount: imageMatches.length,
+        resultsCount: realMatches.length,
+        candidatesCount: bingCandidates.length,
       },
       {
         source: "Yandex Images (Reverse)",
@@ -316,9 +434,15 @@ export async function POST(request: Request) {
       imageBytes: imageBuffer.length,
       publicImageUrl,
       uploadError,
+      originalHashBits: originalHash?.length || 0,
       engines,
-      imageMatches,
-      matchCount: imageMatches.length,
+      // Coincidencias REALES filtradas por pHash (similitud verdadera)
+      imageMatches: realMatches,
+      matchCount: realMatches.length,
+      // Candidatos totales devueltos por Bing antes del filtro
+      candidatesCount: bingCandidates.length,
+      filteredOut: Math.max(0, bingCandidates.length - realMatches.length),
+      threshold: 25,
       deepfakeDorks,
       timestamp: new Date().toISOString(),
     }, { headers: { "Cache-Control": "no-store" } });
