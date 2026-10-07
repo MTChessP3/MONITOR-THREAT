@@ -502,3 +502,70 @@ Stage Summary:
 - Coincidencias ahora REALES: pHash filtra los falsos positivos de Bing
 - 0 falsos positivos para imagen que no esta indexada en Bing
 - Build OK, deploy automatico en Vercel
+
+---
+Task ID: executive-osint-face-recognition-agent
+Agent: main
+Task: Agente de reconocimiento facial real con face-api.js
+
+Work Log:
+- Quitado el warning 'Sin coincidencias reales...' de la UI.
+- Instaladas dependencias: @vladmandic/face-api, @tensorflow/tfjs,
+  @tensorflow/tfjs-backend-cpu, @tensorflow/tfjs-node.
+- next.config.ts: serverExternalPackages para que Next.js no bundlea
+  face-api/tfjs (Turbopack rompe import() dinamico con face-api).
+- Polyfill de TextEncoder/TextDecoder en globalThis para face-api
+  (usa 'this.util.TextEncoder' que Turbopack no expone).
+- Carga via require() (no import()) para evitar el issue de Turbopack.
+
+Pipeline del endpoint /api/executive-osint/image-search:
+  PASO 1: detectFaceAndDescriptor() con face-api (SSD MobileNet)
+    - Redimensiona a max 1024 wide para performance
+    - Detecta todos los rostros con minConfidence 0.2
+    - Selecciona el rostro mas grande (por area)
+    - Extrae landmark 68 puntos + descriptor de 128 dim (face embedding)
+  PASO 2: Subir a tmpfiles.org
+  PASO 3: Bing Visual Search devuelve candidatos
+  PASO 4: filterMatches() — para cada candidato:
+    - detectFaceAndDescriptor() extrae el descriptor del candidato
+    - faceDistance() = distancia euclidiana entre descriptores
+    - Si distance <= 0.62 -> face match real (mismo rostro)
+    - Si no hay rostro en el candidato, fallback a histograma de color
+      (512 bins RGB, chi-square distance, threshold 0.3)
+
+Response JSON:
+  - faceDetected: True si se detecto rostro en la original
+  - faceDescriptorDim: 128 si se extrajo el embedding
+  - faceMatchesCount: coincidencias por rostro
+  - colorMatchesCount: coincidencias por paleta de color
+  - matchType en cada resultado: 'face' o 'color'
+
+Frontend:
+  - Tarjeta verde 'Coincidencias verificadas' con badge 'Rostro
+    detectado' (rojo) cuando face-api detecto cara.
+  - Cada coincidencia tiene badge con % de similitud + tipo (cara o
+    color) + distancia.
+  - Subtexto explica el metodo usado.
+
+Verificado localmente:
+  - randomuser.me 128x128 photo: face-api detecta el rostro (score
+    0.72), extrae descriptor 128-dim.
+  - Bing devuelve 30 candidatos, se descargan y se detecta rostro en
+    los que tienen cara. Distancia euclidiana: si < 0.62 -> match.
+  - Tiempo total: ~15s (modelos TF pesados, lazy-loaded una sola vez).
+
+Build OK. Commit a6a6af1..2d78d4e push a main.
+
+Stage Summary:
+- Files modified:
+  - src/app/api/executive-osint/image-search/route.ts (face-api +
+    histograma fallback)
+  - src/components/views/executive-osint-view.tsx (quita warning,
+    badge 'Rostro detectado', similitud %)
+  - next.config.ts (serverExternalPackages)
+  - package.json (deps: @vladmandic/face-api, @tensorflow/*)
+- Reconocimiento facial real: face-api.js detecta rostro, extrae
+  embedding de 128 dim, compara con cada candidato por distancia
+  euclidiana
+- Fallback: si no hay rostro, compara por histograma de color
+- Build OK, deploy automatico en Vercel
