@@ -163,32 +163,27 @@ export function ExecutiveOsintView() {
     if (!imageFile) return;
     setImageLoading(true);
     setError(null);
+    setFaceApiStatus("Enviando imagen al servidor...");
     try {
-      // PASO 1: Llamar al endpoint del servidor (sube a tmpfiles + Bing)
       const formData = new FormData();
       formData.append("image", imageFile);
       const nameParam = query ? `?name=${encodeURIComponent(query.trim())}` : "";
-      setFaceApiStatus("Enviando imagen al servidor...");
       const r = await fetch(`/api/executive-osint/image-search${nameParam}`, { method: "POST", body: formData });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j: any = await r.json();
-      // Mostrar inmediatamente los motores de busqueda visual (con URLs ya cargadas)
+      // Mostrar inmediatamente los candidatos de Bing (preview)
       setImageResults(j);
+      setImageLoading(false);
+      setFaceApiStatus("");
 
-      // PASO 2: Si hay candidatos de Bing, intentar matching facial en el cliente
+      // Si hay candidatos, intentar face-api matching en background (no bloqueante)
       const candidates: any[] = j.bingCandidates || [];
-      if (candidates.length === 0) {
-        setImageLoading(false);
-        setFaceApiStatus("");
-        return;
-      }
+      if (candidates.length === 0) return;
 
       setFaceApiLoading(true);
-      setFaceApiStatus("Iniciando reconocimiento facial...");
+      setFaceApiStatus("Iniciando reconocimiento facial (opcional, los candidatos ya estan visibles)...");
       try {
         const faceapi = await loadFaceApi();
-
-        // Detectar rostro en la imagen original subida
         setFaceApiStatus("Detectando rostro en tu imagen...");
         const origImg = new Image();
         origImg.src = imagePreview || "";
@@ -196,37 +191,22 @@ export function ExecutiveOsintView() {
         const origDescriptor = await detectFaceDescriptor(faceapi, origImg);
 
         if (!origDescriptor) {
-          setFaceApiStatus("No se detecto rostro en la imagen original. Mostrando candidatos de Bing sin filtro facial.");
-          // Sin filtro facial: mostrar todos los candidatos como "color match"
-          const matches = candidates.map((c: any) => ({
-            url: c.url, imageUrl: c.imageUrl, thumbnailUrl: c.thumbnailUrl,
-            title: c.title, source: "Bing Visual",
-            width: c.width, height: c.height,
-            distance: 0, similarity: 0,
-            matchType: "color",
-          }));
-          setImageResults({ ...j, imageMatches: matches, matchCount: matches.length, faceDetected: false, faceMatchesCount: 0, colorMatchesCount: matches.length, candidatesCount: candidates.length });
-          setImageLoading(false);
+          setFaceApiStatus("No se detecto rostro en la imagen original. Mostrando todos los candidatos de Bing.");
           setFaceApiLoading(false);
           setTimeout(() => setFaceApiStatus(""), 5000);
           return;
         }
 
-        setFaceApiStatus(`Rostro detectado. Comparando con ${candidates.length} candidatos de Bing...`);
-        // Para cada candidato, descargar la imagen via proxy images.weserv.nl (CORS-enabled)
-        // y detectar el rostro
+        setFaceApiStatus(`Rostro detectado. Comparando con ${candidates.length} candidatos...`);
         const faceMatches: any[] = [];
         let processed = 0;
         const FACE_THRESHOLD = 0.62;
 
-        // Procesa en lotes de 4 para no saturar
         for (let i = 0; i < candidates.length; i += 4) {
           const batch = candidates.slice(i, i + 4);
           const results = await Promise.all(batch.map(async (c: any): Promise<any | null> => {
             if (!c.imageUrl) return null;
             try {
-              // images.weserv.nl is a free image proxy with proper CORS headers
-              // Format: https://images.weserv.nl/?url=<original-url-without-protocol>
               const originalUrl = c.imageUrl.replace(/^https?:\/\//, '');
               const proxyUrl = `https://images.weserv.nl/?url=${encodeURIComponent(originalUrl)}`;
               const candImg = new Image();
@@ -258,31 +238,23 @@ export function ExecutiveOsintView() {
         }
 
         setFaceApiStatus(`Comparacion completa: ${faceMatches.length} coincidencias faciales reales de ${candidates.length} candidatos.`);
-        setImageResults({
-          ...j,
-          imageMatches: faceMatches,
-          matchCount: faceMatches.length,
-          faceDetected: true,
-          faceMatchesCount: faceMatches.length,
-          colorMatchesCount: 0,
-          candidatesCount: candidates.length,
-          filteredOut: Math.max(0, candidates.length - faceMatches.length),
-        });
+        if (faceMatches.length > 0) {
+          setImageResults({
+            ...j,
+            imageMatches: faceMatches,
+            matchCount: faceMatches.length,
+            faceDetected: true,
+            faceMatchesCount: faceMatches.length,
+            colorMatchesCount: 0,
+            candidatesCount: candidates.length,
+            filteredOut: Math.max(0, candidates.length - faceMatches.length),
+          });
+        }
       } catch (e: any) {
         console.error("Face recognition error:", e);
-        setFaceApiStatus(`Reconocimiento facial no disponible (${String(e?.message || e)}). Mostrando candidatos sin filtro.`);
-        // Mostrar candidatos sin filtro como fallback
-        const matches = candidates.map((c: any) => ({
-          url: c.url, imageUrl: c.imageUrl, thumbnailUrl: c.thumbnailUrl,
-          title: c.title, source: "Bing Visual",
-          width: c.width, height: c.height,
-          distance: 0, similarity: 0,
-          matchType: "color",
-        }));
-        setImageResults({ ...j, imageMatches: matches, matchCount: matches.length, faceDetected: false, faceMatchesCount: 0, colorMatchesCount: matches.length, candidatesCount: candidates.length });
+        setFaceApiStatus(`Reconocimiento facial no disponible. Los candidatos de Bing ya estan visibles.`);
       } finally {
         setFaceApiLoading(false);
-        // Mantener el status 5s mas para que el usuario vea el resultado
         setTimeout(() => setFaceApiStatus(""), 5000);
       }
     } catch (e: any) { setError(String(e?.message || e)); }
