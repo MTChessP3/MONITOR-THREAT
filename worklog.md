@@ -193,3 +193,78 @@ Stage Summary:
 - Mas resultados para nombre: Bing 12 dorks + Wikidata + OpenCorporates
 - Try/catch en GET garantiza respuesta estructurada ante cualquier error
 - Build OK, deploy automatico en Vercel
+
+---
+Task ID: executive-osint-redesign-20-categories
+Agent: main
+Task: Remodelar modulo Executive OSINT con 20 categorias de dorks + image search
+
+Work Log:
+- Reescrito /api/executive-osint/search con 20 categorias:
+  1. Social Media Profiles (LinkedIn, Facebook, Twitter, Instagram, TikTok)
+  2. Developer & Tech Profiles (GitHub, GitLab, Stack Overflow)
+  3. General Web Presence (about, contact, profile)
+  4. Find Emails & Usernames
+  5. Find Location & Contact Info
+  6. Professional & Academic Publications (PDF)
+  7. Work History & Company Mentions
+  8. Images
+  9. News, Blogs, & Articles
+  10. Public Records & Legal Documents
+  11. Forum & Community Discussions
+  12. Data Leaks & Paste Sites
+  13. Academic & Research Profiles
+  14. Company Registries & Business Filings
+  15. Usernames & Handles (cross-reference)
+  16. Breach Databases (HIBP, LeakLookup, Breachbase)
+  17. Intelligence Search (IntelX, Shodan, ZoomEye)
+  18. Dark Web & Onion Mentions
+  19. Phone & Address Lookups
+  20. Deep Fake Search
+  - Cada categoria tiene 3-6 dorks usando los patrones exactos que pidio
+    el usuario (con 'site:' y operadores Booleanos).
+  - Bing ejecuta 1 dork por categoria (20 dorks en lotes de 4).
+  - Cada resultado ahora incluye category: string (categoria id).
+  - Response JSON incluye categories[] con metadata + dorksByCategory{}
+    + dorksExecuted + summary.byCategory{}.
+  - Para email/phone se omiten categorias no aplicables a nombres.
+
+- Nuevo endpoint /api/executive-osint/image-search (POST):
+  - Acepta imagen via multipart/form-data o JSON base64.
+  - La guarda en /tmp/executive-osint-images/.
+  - Devuelve 8 enlaces a motores de reverse image + face search:
+    Google Images, Google Lens, Bing Visual, Yandex (best for faces),
+    TinEye, PimEyes, FaceCheck.ID, Search4faces.
+  - Cada motor tiene snippet + instrucciones + severity.
+  - Si la URL trae ?name=..., genera 5 dorks de deepfake usando el nombre.
+
+- Vista executive-osint-view.tsx rediseñada:
+  - Panel de busqueda principal (input + tipo de query).
+  - Panel nuevo de busqueda por imagen:
+    * Upload con preview, boton Buscar imagen, grid de 2 columnas con
+      cards de cada motor (severity coloreada, snippet, instrucciones),
+      lista de dorks de deepfake con boton copiar.
+  - Summary con byCategory breakdown + tarjetas Bing/Wikipedia/Sherlock.
+  - Panel 'Categorias de investigacion' — grid de 10 columnas con
+    botones para cada categoria. Click filtra resultados a esa categoria.
+  - Panel de dorks por categoria — agrupa dorks por categoria con icono
+    + nombre + severity badge. Primer dork tiene badge 'auto' (Bing).
+  - Tabla de resultados con columna 'Categoria' (icono + nombre).
+  - Panel inicial con 20 categorias como chips de colores (red=high,
+    yellow=medium, blue=info) + tip de busqueda por imagen.
+  - PDF ahora incluye columna Category.
+
+- npx next build pasa sin errores. Ambas rutas compiladas:
+  /api/executive-osint/search y /api/executive-osint/image-search.
+- Commit 51e3d61..6dbe321 push a main.
+
+Stage Summary:
+- Files modified:
+  - src/app/api/executive-osint/search/route.ts (full rewrite, 20 categorias)
+  - src/app/api/executive-osint/image-search/route.ts (new)
+  - src/components/views/executive-osint-view.tsx (full redesign)
+- 20 categorias de dorks exactamente como las pidio el usuario
+- Busqueda por imagen con 8 motores (Google/Yandex/PimEyes/TinEye/etc)
+- Dorks de deepfake generados con el nombre del investigado
+- UI con navegacion por categorias y filtrado de resultados
+- Build OK, deploy automatico en Vercel
