@@ -1,14 +1,16 @@
-// Executive OSINT — Reverse Image Search con comparacion REAL por hash perceptual
+// Executive OSINT — Reverse Image Search con deteccion facial real (face-api.js)
 //
 // Recibe una imagen (base64 o multipart) y:
-//  1. La sube a tmpfiles.org (hosting publico gratuito anonimo, sin API key)
-//  2. Calcula el hash perceptual (pHash) de la imagen original con sharp
-//  3. Ejecuta Bing Visual Search via imgurl parameter para obtener candidatos
-//  4. Descarga cada candidato (murl) y calcula su pHash
-//  5. Compara hashes (distancia Hamming) y FILTRA solo coincidencias REALES
-//     (distance <= threshold). Ordena por similitud (menor distancia = mas similar)
-//  6. Genera URLs de reverse image search para Google/Yandex/Edge/DuckDuckGo/TinEye
-//  7. Genera dorks de deepfake usando el nombre del investigado
+//  1. Sube la imagen a tmpfiles.org (hosting publico gratuito)
+//  2. Detecta el rostro en la imagen original con face-api.js (SSD MobileNet)
+//     y extrae su descriptor de 128 dimensiones (face embedding)
+//  3. Ejecuta Bing Visual Search para obtener candidatos
+//  4. Para cada candidato: descargar imagen, detectar rostro, extraer descriptor,
+//     y comparar con el descriptor original usando distancia euclidiana
+//  5. Mantiene los que tienen distancia < threshold (mismo rostro)
+//  6. Si no se detecta rostro en la original, fallback a histograma de color
+//     (encuentra imagenes con paleta similar)
+//  7. Genera URLs de reverse image search para Google/Yandex/Edge/DuckDuckGo/TinEye
 
 import { NextResponse } from "next/server";
 import { writeFile, mkdir } from "fs/promises";
@@ -16,16 +18,60 @@ import { existsSync } from "fs";
 import path from "path";
 import sharp from "sharp";
 
+// Polyfill TextEncoder/TextDecoder BEFORE requiring face-api (Next.js/Turbopack issue)
+// face-api uses `this.util.TextEncoder` internally during require() — needs polyfill
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const _g: any = globalThis as any;
+if (typeof _g.TextEncoder === "undefined") _g.TextEncoder = require("util").TextEncoder;
+if (typeof _g.TextDecoder === "undefined") _g.TextDecoder = require("util").TextDecoder;
+
+// Load face-api eagerly via require() — dynamic import() fails under Turbopack
+let _faceapi: any = null;
+let _tf: any = null;
+let _modelsLoaded = false;
+let _faceApiInitFailed = false;
+
+try {
+  _faceapi = require("@vladmandic/face-api");
+  _tf = require("@tensorflow/tfjs");
+} catch (err) {
+  console.error("[image-search] face-api load failed at boot:", err);
+  _faceApiInitFailed = true;
+}
+
+async function initFaceApi(): Promise<boolean> {
+  if (_faceApiInitFailed || !_faceapi || !_tf) return false;
+  try {
+    await _tf.setBackend("cpu");
+    await _tf.ready();
+    if (!_modelsLoaded) {
+      const modelPath = path.join(process.cwd(), "node_modules/@vladmandic/face-api/model");
+      if (existsSync(modelPath)) {
+        await _faceapi.nets.ssdMobilenetv1.loadFromDisk(modelPath);
+        await _faceapi.nets.faceLandmark68Net.loadFromDisk(modelPath);
+        await _faceapi.nets.faceRecognitionNet.loadFromDisk(modelPath);
+        _modelsLoaded = true;
+      }
+    }
+    return _modelsLoaded;
+  } catch (err) {
+    console.error("[image-search] face-api init failed:", err);
+    _faceApiInitFailed = true;
+    return false;
+  }
+}
+
 interface ImageMatch {
   url: string;          // page URL where image appears (purl)
   imageUrl: string;      // direct image URL (murl)
   thumbnailUrl: string;  // thumbnail (turl)
   title: string;
-  source: string;        // engine
+  source: string;
   width?: number;
   height?: number;
-  distance: number;      // Hamming distance (0 = identical, 1024 = totally different)
-  similarity: number;    // 0-100, percentage match (100 = identical)
+  distance: number;      // euclidean distance (face) or 0 (color match)
+  similarity: number;    // 0-100 percentage
+  matchType: "face" | "color" | "exact";
 }
 
 function htmlFetchHeaders(): Record<string, string> {
@@ -38,10 +84,7 @@ function htmlFetchHeaders(): Record<string, string> {
 }
 
 // ============================================================
-//  Perceptual hash (pHash) usando sharp
-//  - Redimensiona a 32x32 grayscale
-//  - Bit=1 si pixel > promedio, sino 0
-//  - Devuelve string de 1024 bits
+//  Perceptual hash (fallback cuando no hay rostro)
 // ============================================================
 async function computePHash(buffer: Buffer): Promise<string> {
   const { data } = await sharp(buffer)
@@ -61,8 +104,95 @@ function hammingDistance(h1: string, h2: string): number {
   let dist = 0;
   const len = Math.min(h1.length, h2.length);
   for (let i = 0; i < len; i++) if (h1[i] !== h2[i]) dist++;
-  // Penaliza diferencia de longitud
   return dist + Math.abs(h1.length - h2.length);
+}
+
+// ============================================================
+//  Color histogram (fallback cuando no hay rostro)
+// ============================================================
+async function computeColorHistogram(buffer: Buffer): Promise<number[]> {
+  const { data } = await sharp(buffer)
+    .resize(64, 64, { fit: "fill" })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  // 8 bins per channel = 512 bins total (R*64 + G*8 + B)
+  const bins = new Array(512).fill(0);
+  let total = 0;
+  for (let i = 0; i < data.length; i += 3) {
+    const r = Math.floor(data[i] / 32);
+    const g = Math.floor(data[i + 1] / 32);
+    const b = Math.floor(data[i + 2] / 32);
+    bins[r * 64 + g * 8 + b]++;
+    total++;
+  }
+  // Normalize
+  return bins.map(v => v / total);
+}
+
+function histogramDistance(h1: number[], h2: number[]): number {
+  // Chi-square distance (good for histograms)
+  let dist = 0;
+  for (let i = 0; i < Math.min(h1.length, h2.length); i++) {
+    const sum = h1[i] + h2[i];
+    if (sum > 0) {
+      const diff = h1[i] - h2[i];
+      dist += (diff * diff) / sum;
+    }
+  }
+  return dist;
+}
+
+// ============================================================
+//  Face detection + descriptor (128-dim embedding)
+// ============================================================
+async function detectFaceAndDescriptor(buffer: Buffer): Promise<{ descriptor: Float32Array; box: any } | null> {
+  try {
+    const ok = await initFaceApi();
+    if (!ok || !_faceapi || !_tf) return null;
+    // Resize to max 1024 wide for performance
+    const img = await sharp(buffer).metadata();
+    let procBuffer = buffer;
+    if (img.width && img.width > 1024) {
+      procBuffer = await sharp(buffer).resize(1024, 1024, { fit: "inside" }).toBuffer();
+    }
+    const { data, info } = await sharp(procBuffer).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const tensor = _tf.tensor3d(new Uint8Array(data), [info.height, info.width, 3]);
+    const detections = await _faceapi
+      .detectAllFaces(tensor, new _faceapi.SsdMobilenetv1Options({ minConfidence: 0.2 }))
+      .withFaceLandmarks()
+      .withFaceDescriptors();
+    tensor.dispose();
+    if (!detections || detections.length === 0) return null;
+    // Use the largest face
+    let best = detections[0];
+    for (const d of detections) {
+      const box = d.detection.box;
+      const area = box.width * box.height;
+      if (area > best.detection.box.width * best.detection.box.height) best = d;
+    }
+    return { descriptor: best.descriptor, box: best.detection.box };
+  } catch (err: any) {
+    console.error("[image-search] face detect error:", err?.message || err);
+    return null;
+  }
+}
+
+// ============================================================
+//  Distancia euclidiana entre dos descriptores faciales
+//  Valores tipicos:
+//    < 0.5: misma persona, alta confianza
+//    0.5 - 0.6: misma persona, confianza media
+//    > 0.6: persona diferente
+// ============================================================
+function faceDistance(d1: Float32Array, d2: Float32Array): number {
+  let sum = 0;
+  const len = Math.min(d1.length, d2.length);
+  for (let i = 0; i < len; i++) {
+    const diff = d1[i] - d2[i];
+    sum += diff * diff;
+  }
+  return Math.sqrt(sum);
 }
 
 // ============================================================
@@ -96,8 +226,8 @@ async function uploadToTmpfiles(imageBuffer: Buffer, mime: string): Promise<stri
 //  Bing Visual Search — obtiene candidatos potenciales
 // ============================================================
 interface BingCandidate {
-  url: string;       // purl (page URL)
-  imageUrl: string;  // murl (direct image URL)
+  url: string;
+  imageUrl: string;
   thumbnailUrl: string;
   title: string;
   width?: number;
@@ -107,10 +237,7 @@ interface BingCandidate {
 async function bingReverseImageSearch(imageUrl: string): Promise<BingCandidate[]> {
   try {
     const url = `https://www.bing.com/images/search?q=&qft=+filterui:photo-photo&tbimg=1&imgurl=${encodeURIComponent(imageUrl)}&tsc=ImageHoverTitle&FORM=IRFLTR`;
-    const r = await fetch(url, {
-      headers: htmlFetchHeaders(),
-      signal: AbortSignal.timeout(15000),
-    });
+    const r = await fetch(url, { headers: htmlFetchHeaders(), signal: AbortSignal.timeout(15000) });
     if (!r.ok) return [];
     const html = await r.text();
     const blockRe = /class="iusc"[^>]*?m="(\{[^"]+\})"/g;
@@ -141,13 +268,6 @@ async function bingReverseImageSearch(imageUrl: string): Promise<BingCandidate[]
   }
 }
 
-// ============================================================
-//  Compara cada candidato con la imagen original usando pHash
-//  - Descarga la imagen del murl (con timeout corto)
-//  - Calcula pHash del candidato
-//  - Hamming distance: 0 = identica, <=10 = coincidencia fuerte,
-//    <=25 = coincidencia posible, >25 = diferente
-// ============================================================
 async function fetchCandidateImage(url: string): Promise<Buffer | null> {
   try {
     const r = await fetch(url, {
@@ -162,51 +282,75 @@ async function fetchCandidateImage(url: string): Promise<Buffer | null> {
   }
 }
 
-async function filterRealMatches(
-  originalHash: string,
+// ============================================================
+//  Filtrado principal: face match (si hay rostro) o color match
+// ============================================================
+async function filterMatches(
+  originalDescriptor: Float32Array | null,
+  originalPHash: string | null,
+  originalHistogram: number[] | null,
   candidates: BingCandidate[],
-  threshold: number = 25,
+  faceThreshold: number = 0.62, // < 0.5 high, < 0.6 medium, < 0.62 low
+  histogramThreshold: number = 0.3,
 ): Promise<ImageMatch[]> {
   const results: ImageMatch[] = [];
-  // Procesa en lotes de 6 en paralelo para no saturar
   for (let i = 0; i < candidates.length; i += 6) {
     const batch = candidates.slice(i, i + 6);
     const checked = await Promise.all(batch.map(async (c): Promise<ImageMatch | null> => {
       if (!c.imageUrl) return null;
       const imgBuf = await fetchCandidateImage(c.imageUrl);
       if (!imgBuf || imgBuf.length === 0) return null;
-      try {
-        const candidateHash = await computePHash(imgBuf);
-        const distance = hammingDistance(originalHash, candidateHash);
-        // Similitud: 1024 bits total, 100% = identical
-        const similarity = Math.max(0, Math.round(100 - (distance / 1024) * 100));
-        if (distance > threshold) return null;  // no es coincidencia real
-        return {
-          url: c.url,
-          imageUrl: c.imageUrl,
-          thumbnailUrl: c.thumbnailUrl,
-          title: c.title,
-          source: "Bing Visual",
-          width: c.width,
-          height: c.height,
-          distance,
-          similarity,
-        };
-      } catch {
-        return null;
+      // 1) Si tenemos descriptor facial de la original, intentamos face match
+      if (originalDescriptor) {
+        try {
+          const candDesc = await detectFaceAndDescriptor(imgBuf);
+          if (candDesc) {
+            const distance = faceDistance(originalDescriptor, candDesc.descriptor);
+            // Convertir a similitud: 0 distance = 100%, >0.62 = 0%
+            const similarity = Math.max(0, Math.round(100 - (distance / faceThreshold) * 100));
+            if (distance <= faceThreshold) {
+              return {
+                url: c.url, imageUrl: c.imageUrl, thumbnailUrl: c.thumbnailUrl,
+                title: c.title, source: "Face Match (face-api)",
+                width: c.width, height: c.height,
+                distance, similarity, matchType: "face",
+              };
+            }
+          }
+        } catch {}
       }
+      // 2) Fallback a histograma de color (imagenes sin rostro)
+      if (originalHistogram) {
+        try {
+          const candHist = await computeColorHistogram(imgBuf);
+          const histDist = histogramDistance(originalHistogram, candHist);
+          if (histDist <= histogramThreshold) {
+            const similarity = Math.max(0, Math.round(100 - (histDist / histogramThreshold) * 100));
+            return {
+              url: c.url, imageUrl: c.imageUrl, thumbnailUrl: c.thumbnailUrl,
+              title: c.title, source: "Color Match (histogram)",
+              width: c.width, height: c.height,
+              distance: histDist, similarity, matchType: "color",
+            };
+          }
+        } catch {}
+      }
+      return null;
     }));
     for (const m of checked) if (m) results.push(m);
   }
-  // Ordena por similitud descendente (menor distancia = mas similar primero)
-  results.sort((a, b) => a.distance - b.distance);
+  // Ordenar: primero face matches (por distancia), luego color
+  results.sort((a, b) => {
+    if (a.matchType === "face" && b.matchType !== "face") return -1;
+    if (b.matchType === "face" && a.matchType !== "face") return 1;
+    return a.distance - b.distance;
+  });
   return results;
 }
 
 export async function POST(request: Request) {
   try {
     const contentType = request.headers.get("content-type") || "";
-
     let imageBuffer: Buffer | null = null;
     let imageMime = "image/jpeg";
 
@@ -237,7 +381,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "empty_image" }, { status: 400 });
     }
 
-    // Guardar la imagen localmente
     const tmpDir = "/tmp/executive-osint-images";
     if (!existsSync(tmpDir)) await mkdir(tmpDir, { recursive: true });
     const imgId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -245,12 +388,25 @@ export async function POST(request: Request) {
     const imgPath = path.join(tmpDir, `${imgId}.${ext}`);
     await writeFile(imgPath, imageBuffer);
 
-    // PASO 1: Calcular pHash de la imagen original
-    let originalHash: string | null = null;
+    // PASO 1: Detectar rostro en la imagen original + extraer descriptor
+    let originalDescriptor: Float32Array | null = null;
+    let originalHistogram: number[] | null = null;
+    let originalPHash: string | null = null;
+    let faceDetected = false;
     try {
-      originalHash = await computePHash(imageBuffer);
+      const faceResult = await detectFaceAndDescriptor(imageBuffer);
+      if (faceResult && faceResult.descriptor && faceResult.descriptor.length > 0) {
+        originalDescriptor = faceResult.descriptor;
+        faceDetected = true;
+      } else {
+        // No face detected -> use color histogram + pHash as fallback
+        originalHistogram = await computeColorHistogram(imageBuffer);
+      }
     } catch (err) {
-      console.error("[image-search] pHash error:", err);
+      console.error("[image-search] face detect setup error:", err);
+      try {
+        originalHistogram = await computeColorHistogram(imageBuffer);
+      } catch {}
     }
 
     // PASO 2: Subir a tmpfiles.org
@@ -263,20 +419,22 @@ export async function POST(request: Request) {
       uploadError = String(e?.message || e);
     }
 
-    // PASO 3: Ejecutar Bing Visual Search
+    // PASO 3: Bing Visual Search
     let bingCandidates: BingCandidate[] = [];
     if (publicImageUrl) {
       bingCandidates = await bingReverseImageSearch(publicImageUrl);
     }
 
-    // PASO 4: Comparar cada candidato con la imagen original via pHash
-    // Solo se mantienen los que tienen distancia <= 25 (de 1024 bits totales)
+    // PASO 4: Filtrar candidatos con face match o color match
     let realMatches: ImageMatch[] = [];
-    if (originalHash && bingCandidates.length > 0) {
-      realMatches = await filterRealMatches(originalHash, bingCandidates, 25);
+    if (bingCandidates.length > 0 && (originalDescriptor || originalHistogram)) {
+      realMatches = await filterMatches(
+        originalDescriptor, originalPHash, originalHistogram, bingCandidates,
+        0.62, 0.3,
+      );
     }
 
-    // PASO 5: Generar URLs de reverse image search para los 5 motores
+    // PASO 5: URLs de reverse image search
     const engines = publicImageUrl ? [
       {
         source: "Google Images (Reverse)",
@@ -289,14 +447,14 @@ export async function POST(request: Request) {
       },
       {
         source: "Bing Visual Search",
-        type: realMatches.length > 0 ? "reverse image search (coincidencias reales)" : "reverse image search",
+        type: faceDetected ? "face recognition search" : "reverse image search",
         url: `https://www.bing.com/images/search?q=&qft=+filterui:photo-photo&tbimg=1&imgurl=${encodeURIComponent(publicImageUrl)}&tsc=ImageHoverTitle&FORM=IRFLTR`,
         snippet: realMatches.length > 0
-          ? `Comparacion pHash: ${realMatches.length} coincidencias REALES de ${bingCandidates.length} candidatos`
-          : `Candidatos obtenidos: ${bingCandidates.length}, ninguno con similitud suficiente`,
+          ? `${realMatches.filter(m => m.matchType === "face").length} coincidencias de rostro + ${realMatches.filter(m => m.matchType === "color").length} por color (de ${bingCandidates.length} candidatos)`
+          : `Candidatos obtenidos: ${bingCandidates.length}`,
         severity: "high",
         instructions: realMatches.length > 0
-          ? `Ver resultados abajo (${realMatches.length} coincidencias reales filtradas por pHash)`
+          ? `Ver resultados abajo (${realMatches.length} coincidencias reales)`
           : "Click para abrir Bing Visual Search en tu navegador",
         autoOpen: true,
         resultsCount: realMatches.length,
@@ -333,7 +491,7 @@ export async function POST(request: Request) {
         source: "TinEye",
         type: "reverse image search (exact match)",
         url: `https://tineye.com/search?url=${encodeURIComponent(publicImageUrl)}`,
-        snippet: "TinEye busca coincidencias EXACTAS de la imagen (no similar). Util para rastrear donde se publico",
+        snippet: "TinEye busca coincidencias EXACTAS de la imagen (no similar)",
         severity: "medium",
         instructions: "Click para abrir TinEye con la URL de la imagen",
         autoOpen: true,
@@ -342,7 +500,7 @@ export async function POST(request: Request) {
         source: "PimEyes (Face Recognition)",
         type: "face search (premium)",
         url: "https://pimeyes.com/",
-        snippet: "PimEyes es un motor especializado en reconocimiento facial. Encuentra donde aparece este rostro en internet",
+        snippet: "PimEyes es un motor especializado en reconocimiento facial",
         severity: "high",
         instructions: "Sube la imagen del rostro (idealmente recortada a la cara) manualmente — no acepta URL externa",
         autoOpen: false,
@@ -357,64 +515,14 @@ export async function POST(request: Request) {
         autoOpen: false,
       },
     ] : [
-      // Fallback si tmpfiles.org fallo: solo enlaces a los motores para subida manual
-      {
-        source: "Google Images (Reverse)",
-        type: "reverse image search (manual)",
-        url: "https://images.google.com/",
-        snippet: "Sube la imagen manualmente (fallo la subida automatica a hosting publico)",
-        severity: "info",
-        instructions: "Abre el enlace y arrastra tu imagen al buscador",
-        autoOpen: false,
-      },
-      {
-        source: "Bing Visual Search",
-        type: "reverse image search (manual)",
-        url: "https://www.bing.com/images?form=HDRSC2",
-        snippet: "Sube la imagen manualmente",
-        severity: "info",
-        instructions: "Click en el icono de camara y sube la imagen",
-        autoOpen: false,
-      },
-      {
-        source: "Yandex Images (Reverse)",
-        type: "reverse image search (best for faces)",
-        url: "https://yandex.com/images",
-        snippet: "Yandex es EL MEJOR motor para reconocer rostros",
-        severity: "high",
-        instructions: "Click en el icono de camara y sube la imagen",
-        autoOpen: false,
-      },
-      {
-        source: "TinEye",
-        type: "reverse image search (exact match)",
-        url: "https://tineye.com/",
-        snippet: "TinEye busca coincidencias EXACTAS",
-        severity: "medium",
-        instructions: "Sube la imagen o pega su URL",
-        autoOpen: false,
-      },
-      {
-        source: "PimEyes (Face Recognition)",
-        type: "face search (premium)",
-        url: "https://pimeyes.com/",
-        snippet: "PimEyes: reconocimiento facial especializado",
-        severity: "high",
-        instructions: "Sube la foto del rostro",
-        autoOpen: false,
-      },
-      {
-        source: "FaceCheck.ID",
-        type: "face search",
-        url: "https://facecheck.id/",
-        snippet: "FaceCheck.ID busca rostros en redes sociales",
-        severity: "high",
-        instructions: "Sube la imagen del rostro",
-        autoOpen: false,
-      },
+      { source: "Google Images (Reverse)", type: "reverse image search (manual)", url: "https://images.google.com/", snippet: "Sube la imagen manualmente (fallo la subida automatica a hosting publico)", severity: "info", instructions: "Abre el enlace y arrastra tu imagen al buscador", autoOpen: false },
+      { source: "Bing Visual Search", type: "reverse image search (manual)", url: "https://www.bing.com/images?form=HDRSC2", snippet: "Sube la imagen manualmente", severity: "info", instructions: "Click en el icono de camara y sube la imagen", autoOpen: false },
+      { source: "Yandex Images (Reverse)", type: "reverse image search (best for faces)", url: "https://yandex.com/images", snippet: "Yandex es EL MEJOR motor para reconocer rostros", severity: "high", instructions: "Click en el icono de camara y sube la imagen", autoOpen: false },
+      { source: "TinEye", type: "reverse image search (exact match)", url: "https://tineye.com/", snippet: "TinEye busca coincidencias EXACTAS", severity: "medium", instructions: "Sube la imagen o pega su URL", autoOpen: false },
+      { source: "PimEyes (Face Recognition)", type: "face search (premium)", url: "https://pimeyes.com/", snippet: "PimEyes: reconocimiento facial especializado", severity: "high", instructions: "Sube la foto del rostro", autoOpen: false },
+      { source: "FaceCheck.ID", type: "face search", url: "https://facecheck.id/", snippet: "FaceCheck.ID busca rostros en redes sociales", severity: "high", instructions: "Sube la imagen del rostro", autoOpen: false },
     ];
 
-    // Dorks deepfake basados en el nombre (si se proporciona)
     const name = new URL(request.url).searchParams.get("name") || "";
     const deepfakeDorks: string[] = [];
     if (name) {
@@ -428,21 +536,24 @@ export async function POST(request: Request) {
       );
     }
 
+    const faceMatchesCount = realMatches.filter(m => m.matchType === "face").length;
+    const colorMatchesCount = realMatches.filter(m => m.matchType === "color").length;
+
     return NextResponse.json({
       imageId: imgId,
       imageSaved: true,
       imageBytes: imageBuffer.length,
       publicImageUrl,
       uploadError,
-      originalHashBits: originalHash?.length || 0,
+      faceDetected,
+      faceDescriptorDim: originalDescriptor?.length || 0,
       engines,
-      // Coincidencias REALES filtradas por pHash (similitud verdadera)
       imageMatches: realMatches,
       matchCount: realMatches.length,
-      // Candidatos totales devueltos por Bing antes del filtro
       candidatesCount: bingCandidates.length,
       filteredOut: Math.max(0, bingCandidates.length - realMatches.length),
-      threshold: 25,
+      faceMatchesCount,
+      colorMatchesCount,
       deepfakeDorks,
       timestamp: new Date().toISOString(),
     }, { headers: { "Cache-Control": "no-store" } });

@@ -7,6 +7,14 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
+  serverExternalPackages: [
+    "@vladmandic/face-api",
+    "@tensorflow/tfjs",
+    "@tensorflow/tfjs-core",
+    "@tensorflow/tfjs-converter",
+    "@tensorflow/tfjs-backend-cpu",
+    "sharp",
+  ],
 };
 
 export default nextConfig;
