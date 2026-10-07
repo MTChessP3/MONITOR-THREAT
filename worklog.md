@@ -268,3 +268,66 @@ Stage Summary:
 - Dorks de deepfake generados con el nombre del investigado
 - UI con navegacion por categorias y filtrado de resultados
 - Build OK, deploy automatico en Vercel
+
+---
+Task ID: executive-osint-5-engines-html-report
+Agent: main
+Task: Anadir Google/Yandex/Edge + Informe Imprimible HTML
+
+Work Log:
+- Diagnostico de motores:
+  - Google: bloquea server-side, devuelve 92KB JS shell sin <h3>/rc reales.
+  - Yandex: bloquea server-side con SmartCaptcha 'Are you not a robot?'.
+  - DuckDuckGo html.duckduckgo.com/html/: SI funciona server-side, 31KB con
+    class='result__a' (10 resultados por query).
+  - Edge: usa el backend de Bing (no es motor independiente).
+
+- Nuevo motor DuckDuckGo en paralelo a Bing:
+  - parseDdgHtml extrae URLs de result__a, decodifica el redirect
+    //duckduckgo.com/l/?uddg=<encoded> a la URL real.
+  - runDorkOnDDG ejecuta cada dork en DDG con timeout 12s.
+  - Post-filtro de tokens AND obligatorio igual que Bing.
+  - Verificado localmente: 'Juan Perez' -> 47 hits DDG + 5 Bing = 52 totales.
+
+- URLs manuales para Google/Yandex/Edge:
+  - buildGoogleSearchUrl, buildYandexSearchUrl, buildEdgeSearchUrl generan
+    URLs directas para cada dork.
+  - runSearchEngines devuelve manualLinks{} con URLs para los 5 motores.
+  - Response JSON incluye enginesUsed (5), enginesAuto (Bing+DDG),
+    enginesManual (Google+Yandex+Edge), manualLinks (20 entradas).
+
+- Frontend - panel de dorks con botones por motor:
+  - Cada dork tiene 5 botones G/Y/E/B/D (coloreados) que abren el dork en
+    cada motor en nueva pestana.
+  - Tooltip y leyenda explican cada motor.
+
+- Frontend - 5 tarjetas de motores en el summary:
+  - Bing (auto) emerald, DuckDuckGo (auto) orange, Google (manual) blue,
+    Yandex (manual) red, Edge (manual) cyan.
+
+- Informe HTML imprimible (generateHtmlReport):
+  - Boton nuevo 'Informe HTML' junto al boton 'PDF' en el panel summary.
+  - Abre nueva ventana con HTML formateado:
+    * Header con target, fecha, dorks ejecutados.
+    * Stats summary (Total/Alta/Media/Baja/Info) + engines row (5 motores).
+    * Resultados agrupados por categoria con tablas.
+    * Seccion de dorks con botones G/Y/E/B/D clickeables por cada dork.
+    * Boton 'Imprimir / Guardar como PDF' fijo arriba a la derecha que
+      llama window.print() -> el dialog del navegador permite guardar
+      como PDF.
+    * @media print: oculta el boton, page-break-inside avoid en
+      category-section.
+    * Fallback: si popup bloqueado, descarga HTML como archivo.
+
+- npx next build pasa. Commit 6dbe321..d48ee7c push a main.
+
+Stage Summary:
+- Files modified:
+  - src/app/api/executive-osint/search/route.ts (DDG parser + manualLinks)
+  - src/components/views/executive-osint-view.tsx (5 tarjetas + botones
+    por dork + generateHtmlReport + boton Informe HTML)
+- 5 motores de busqueda: Bing + DuckDuckGo automaticos, Google + Yandex +
+  Edge manuales con botones clickeables en cada dork
+- Informe HTML imprimible con boton 'Imprimir / Guardar como PDF'
+- 52 resultados para 'Juan Perez' verificado localmente
+- Build OK, deploy automatico en Vercel
