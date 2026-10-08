@@ -709,32 +709,6 @@ export function ExecutiveOsintView() {
               </div>
             )}
 
-            <div className="text-xs font-semibold mb-2 flex items-center gap-1.5"><ImageIcon className="w-3.5 h-3.5" /> Motores de busqueda visual</div>
-            <div className="text-[10px] text-muted-foreground mb-2">
-              {imageResults.publicImageUrl
-                ? "Imagen ya cargada — haz clic en cualquier motor para ejecutar la busqueda automaticamente:"
-                : "Sube la imagen manualmente en cada motor:"}
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {imageResults.engines?.map((eng: any, i: number) => {
-                const sevColor = eng.severity === "high" ? "border-red-500/40 bg-red-500/5" : eng.severity === "medium" ? "border-yellow-500/40 bg-yellow-500/5" : "border-blue-500/40 bg-blue-500/5";
-                return (
-                  <a key={i} href={eng.url} target="_blank" rel="noreferrer" className={`block p-2 rounded border ${sevColor} hover:bg-accent transition`}>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs font-semibold">{eng.source}</span>
-                      <div className="flex gap-1 items-center">
-                        {eng.autoOpen && imageResults.publicImageUrl && (
-                          <Badge variant="outline" className="text-[8px] font-mono text-emerald-400 border-emerald-500/40">auto</Badge>
-                        )}
-                        <Badge variant={sevColors[eng.severity] || "outline"} className="text-[9px]">{sevText[eng.severity]}</Badge>
-                      </div>
-                    </div>
-                    <div className="text-[10px] text-muted-foreground">{eng.snippet}</div>
-                    <div className="text-[10px] text-cyan-500 mt-1">{eng.instructions}</div>
-                  </a>
-                );
-              })}
-            </div>
             {imageResults.deepfakeDorks?.length > 0 && (
               <div className="mt-3">
                 <div className="text-xs font-semibold mb-2">Dorks de Deepfake para &quot;{query}&quot;:</div>
