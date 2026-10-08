@@ -324,11 +324,15 @@ export function BrandProtectionView() {
       )}
 
       {searched && !loading && results.length === 0 && !error && (
-        <Panel title="Sin hallazgos" className="md:col-span-2">
+        <Panel title="Sin hallazgos automaticos" className="md:col-span-2">
           <div className="flex flex-col items-center py-8 text-center gap-3">
-            <ShieldCheck className="w-8 h-8 text-green-500" />
-            <p className="text-sm text-muted-foreground">No se detectaron amenazas de phishing para las marcas seleccionadas.</p>
-            <p className="text-xs text-muted-foreground">Usa los dorks generados arriba para buscar manualmente en Google/Yandex/Edge.</p>
+            <AlertTriangle className="w-8 h-8 text-amber-500" />
+            <p className="text-sm text-muted-foreground">
+              No se detectaron amenazas automaticas (los motores Bing/DuckDuckGo desde el servidor pueden estar limitados).
+            </p>
+            <p className="text-xs text-muted-foreground">
+              <strong>Importante:</strong> usa los botones <span className="bg-blue-500 text-white px-1 rounded text-[10px] font-bold">G</span> <span className="bg-red-500 text-white px-1 rounded text-[10px] font-bold">Y</span> <span className="bg-cyan-500 text-white px-1 rounded text-[10px] font-bold">E</span> al lado de cada dork abajo para ejecutarlos en tu navegador (donde Google, Yandex y Edge no estan bloqueados). Alli encontraras los resultados reales de phishing.
+            </p>
           </div>
         </Panel>
       )}
