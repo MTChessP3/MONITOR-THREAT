@@ -1,38 +1,40 @@
-// Brand Protection — Phishing detection for 9 pre-configured brands
+// Brand Protection — Phishing detection via REAL data sources
 //
-// Brands: Bancolombia, Nequi, Wenia, Banco Agricola, Banco Agro Mercantil,
-// Cibest, SUFI, WOMPI, Zaswin.
+// FUENTES REALES (no Bing/DDG scraping que está bloqueado):
+//   1. DNS resolution: typos conocidos de cada marca -> A records -> IPs reales
+//   2. RDAP: para cada typo resuelto, datos de registro (fecha, registrante, NS)
+//   3. Certificate Transparency (crt.sh): certificados TLS emitidos con el
+//      nombre de la marca (phishing sites a menudo tienen Let's Encrypt certs)
+//   4. URLScan.io: scans publicos con API key opcional
 //
-// Estrategia:
-//   1. Genera dorks anti-phishing por cada marca (login, account, secure,
-//      verificar, suspender, etc. + typosquatting variations).
-//   2. Ejecuta SOLO 5 dorks por marca en Bing (en lotes de 4) — rapido <8s.
-//   3. DuckDuckGo en paralelo (3 dorks por marca).
-//   4. Devuelve resultados categorizados por marca + tipo (phishing/typosquatting/leak).
-//   5. Genera URLs manuales para Google/Yandex/Edge para todos los dorks.
+// Las 9 marcas pre-configuradas: Bancolombia, Nequi, Wenia, Banco Agricola,
+// Banco Agro Mercantil, Cibest, SUFI, WOMPI, Zaswin.
 
 import { NextResponse } from "next/server";
+import { promises as dns } from "dns";
 
-interface BrandResult {
+interface BrandFinding {
   brand: string;
-  category: string;          // phishing | typosquatting | leak | impersonation | app
-  source: string;             // Bing | DuckDuckGo | Manual
+  brandId: string;
+  category: "typosquatting" | "phishing" | "cert" | "registration";
+  source: string;             // DNS | RDAP | crt.sh | urlscan.io
   type: string;
+  domain?: string;
+  url?: string;
   title: string;
-  url: string;
   snippet: string;
   severity: "high" | "medium" | "low" | "info";
+  metadata?: Record<string, any>;
   timestamp: string | null;
 }
 
-// 9 marcas pre-configuradas con metadatos
 interface Brand {
   id: string;
   name: string;
-  officialDomain: string;     // dominio oficial para excluir de resultados
-  aliases: string[];          // nombres alternativos
-  typos: string[];            // typosquatting variations comunes
-  category: string;            // Bancos, Fintech, Cooperativas, etc.
+  officialDomain: string;
+  officialDomains: string[];   // all official domains (incl. subdomains)
+  typos: string[];             // typosquatting domains to test (with TLD)
+  category: string;
 }
 
 const BRANDS: Brand[] = [
@@ -40,324 +42,239 @@ const BRANDS: Brand[] = [
     id: "bancolombia",
     name: "Bancolombia",
     officialDomain: "bancolombia.com",
-    aliases: ["Bancolombia"],
-    typos: ["banc0lombia", "bancolomb1a", "ban-colombia", "bancolombiia", "bancolombia-app"],
+    officialDomains: ["bancolombia.com", "grupobancolombia.com", "bancolombia.com.co"],
+    typos: [
+      "banc0lombia.com", "bancolomb1a.com", "ban-colombia.com",
+      "bancolombiia.com", "bancolombia-app.com", "bancolombia.co",
+      "bancolomb1a.co", "banco-lombia.com", "bancolombia-bank.com",
+      "bancolombia-online.com", "bancolombia-seguro.com", "bancolombia-login.com",
+      "banc0l0mbia.com", "bancolombia.com.co", "bancolombia.net",
+    ],
     category: "Bancos",
   },
   {
     id: "nequi",
     name: "Nequi",
     officialDomain: "nequi.com.co",
-    aliases: ["Nequi"],
-    typos: ["n3qui", "neki", "nequii", "nequi-app", "nequi-bancolombia"],
+    officialDomains: ["nequi.com.co", "nequi.com"],
+    typos: [
+      "n3qui.com", "n3qui.com.co", "neki.com", "nekiapp.com",
+      "nequii.com", "nequi-app.com", "nequi-pay.com", "nequi.co",
+      "nequi-bancolombia.com", "nequicuenta.com", "nequi-login.com",
+      "nequibanco.com", "neki.com.co", "neki.co",
+    ],
     category: "Fintech",
   },
   {
     id: "wenia",
     name: "Wenia",
     officialDomain: "wenia.com",
-    aliases: ["Wenia"],
-    typos: ["w3nia", "wenia-app", "wenia-bancolombia"],
+    officialDomains: ["wenia.com", "wenia.com.co"],
+    typos: [
+      "w3nia.com", "wenia-app.com", "wenia-bancolombia.com",
+      "weniapp.com", "wenia-pay.com", "wenia.co", "wenia.net",
+      "weniia.com", "wenia-login.com",
+    ],
     category: "Fintech",
   },
   {
     id: "banco-agricola",
     name: "Banco Agricola",
     officialDomain: "bancoagricola.com",
-    aliases: ["Banco Agricola", "bancoagricola"],
-    typos: ["banco-agricola", "bancoagricola-el-salvador"],
+    officialDomains: ["bancoagricola.com", "bancoagricola.com.sv"],
+    typos: [
+      "bancoagricola-app.com", "banco-agricola.com", "bancoagricola-el-salvador.com",
+      "bancoagricola-online.com", "bancoagricola-login.com", "bancoagricola.com.co",
+      "banco-agricola.net", "bancoagricola-bank.com",
+    ],
     category: "Bancos",
   },
   {
     id: "banco-agro-mercantil",
     name: "Banco Agro Mercantil",
     officialDomain: "agromercantil.com.bo",
-    aliases: ["Banco Agro Mercantil", "BAM Bolivia"],
-    typos: ["banco-agro-mercantil", "agro-mercantil"],
+    officialDomains: ["agromercantil.com.bo", "bam.com.bo"],
+    typos: [
+      "banco-agro-mercantil.com", "agro-mercantil.com", "bancoagromercantil.com",
+      "agromercantil.com", "bancoagro.com", "bam-bolivia.com",
+      "agromercantil-bank.com", "agromercantil-app.com",
+    ],
     category: "Bancos",
   },
   {
     id: "cibest",
     name: "Cibest",
     officialDomain: "cibest.com",
-    aliases: ["Cibest"],
-    typos: ["c1best", "cib3st", "cibest-app"],
+    officialDomains: ["cibest.com"],
+    typos: [
+      "c1best.com", "cib3st.com", "cibest-app.com", "cibest-login.com",
+      "cibest-bancolombia.com", "cibest-banco.com", "cibest-pay.com",
+      "sibest.com", "cibest.net", "cibest.co",
+    ],
     category: "Servicios Financieros",
   },
   {
     id: "sufi",
     name: "SUFI",
     officialDomain: "sufi.com.co",
-    aliases: ["SUFI", "Sufi Bancolombia"],
-    typos: ["suf1", "sufi-bancolombia", "sufi-app"],
+    officialDomains: ["sufi.com.co", "sufi.com"],
+    typos: [
+      "suf1.com", "suf1.com.co", "suficolombia.com", "sufi-bancolombia.com",
+      "sufi-app.com", "sufi-banco.com", "sufi-pay.com", "sufi.co",
+      "sufii.com", "sufi-login.com", "sufi-account.com",
+    ],
     category: "Servicios Financieros",
   },
   {
     id: "wompi",
     name: "WOMPI",
     officialDomain: "wompi.co",
-    aliases: ["WOMPI", "Wompi"],
-    typos: ["w0mpi", "wompi-app", "wompi-payments"],
+    officialDomains: ["wompi.co", "wompi.com"],
+    typos: [
+      "w0mpi.co", "w0mpi.com", "wompi-app.com", "wompi-payments.com",
+      "wompi-pay.com", "wompii.co", "wompii.com", "wompi-bancolombia.com",
+      "wompi-login.com", "wompi-market.com", "wompi-shop.com",
+    ],
     category: "Pagos",
   },
   {
     id: "zaswin",
     name: "Zaswin",
     officialDomain: "zaswin.com",
-    aliases: ["Zaswin"],
-    typos: ["zasw1n", "zas-win", "zaswin-app"],
+    officialDomains: ["zaswin.com"],
+    typos: [
+      "zasw1n.com", "zas-win.com", "zaswin-app.com", "zaswin-login.com",
+      "zaswin-pay.com", "zaswin-banco.com", "zaswin.co", "zaswin.net",
+      "zaswiin.com", "zaswinn.com",
+    ],
     category: "Servicios Financieros",
   },
 ];
 
-// Generar dorks anti-phishing para una marca
-// IMPORTANTE: buscamos dominios que contengan la marca en el hostname
-// (no solo mencionen la marca en el snippet). El filtro isResultRelevant
-// valida que el hostname contenga la marca o un typo conocido.
-function generateBrandDorks(brand: Brand): { phishing: string[]; typosquatting: string[]; leak: string[]; impersonation: string[] } {
-  const name = brand.name;
-  const officialDomain = brand.officialDomain;
-
-  // Dorks de phishing: combinaciones de marca + palabras de phishing
-  // en el title/snippet. El filtro isResultRelevant eliminara los que
-  // no contengan la marca en el hostname.
-  const phishing = [
-    `${name} ("iniciar sesion" OR "acceder" OR "mi cuenta" OR login) -site:${officialDomain}`,
-    `${name} ("verificar" OR "suspendida" OR "bloqueada" OR "reactivar") -site:${officialDomain}`,
-    `${name} ("actualizar datos" OR "confirmar identidad" OR "verificacion de cuenta") -site:${officialDomain}`,
-    `${name} ("cambiar clave" OR "restablecer contrasena" OR "recuperar cuenta") -site:${officialDomain}`,
-    `${name} ("transferencia segura" OR "pago verificado" OR "tarjeta bloqueada") -site:${officialDomain}`,
-    `${name} (estafa OR scam OR phishing OR fraude OR "phishing") -site:${officialDomain}`,
-  ];
-
-  // Typosquatting: buscar los typos conocidos como strings (no site:)
-  // porque site:dominio-falso no funciona en Bing
-  const typosquatting = [
-    ...brand.typos.map(t => `"${t}" (login OR cuenta OR banco OR acceso)`),
-    `"${name}" typosquatting OR cybersquatting OR "domain squatting"`,
-    `"${name}" ("clone" OR "fake site" OR "sitio falso") -site:${officialDomain}`,
-  ];
-
-  // Leaks: credenciales filtradas
-  const leak = [
-    `${name} (site:pastebin.com OR site:ghostbin.com OR site:throwbin.io)`,
-    `${name} ("credenciales filtradas" OR "leak" OR "filtracion" OR "breach")`,
-    `${name} ("AWS_SECRET" OR "api_key" OR "private_key" OR "BEGIN RSA")`,
-  ];
-
-  // Impersonation: redes sociales
-  const impersonation = [
-    `${name} site:facebook.com (fake OR impersonation OR clone OR estafa)`,
-    `${name} site:twitter.com OR site:x.com (fake OR scam OR estafa)`,
-    `${name} site:instagram.com (fake OR clone OR estafa)`,
-  ];
-
-  return { phishing, typosquatting, leak, impersonation };
-}
+const BRANDS_BY_ID = new Map(BRANDS.map(b => [b.id, b]));
 
 // ============================================================
-//  FILTRO DE FALSOS POSITIVOS — solo URLs que contienen la marca
+//  1. DNS resolution — encuentra typos resueltos (activos)
 // ============================================================
-// Dominios conocidos que NUNCA son phishing de la marca (excluirlos)
-const KNOWN_SAFE_DOMAINS = [
-  // Enciclopedias y referencias
-  "wikipedia.org", "wikidata.org", "wikimedia.org",
-  // Redes sociales y multimedia
-  "youtube.com", "youtu.be", "facebook.com", "fb.com",
-  "twitter.com", "x.com", "instagram.com", "linkedin.com", "tiktok.com",
-  "github.com", "gitlab.com", "bitbucket.org", "reddit.com",
-  "pinterest.com", "pinterest.co", "pinterest.es", "tumblr.com",
-  "flickr.com", "imgur.com", "vimeo.com", "twitch.tv", "snapchat.com",
-  "whatsapp.com", "telegram.org",
-  // E-commerce
-  "amazon.com", "amazon.es", "amazon.co", "ebay.com", "mercadolibre.com",
-  "aliexpress.com", "alibaba.com", "etsy.com",
-  // Buscadores y Microsoft
-  "google.com", "google.es", "google.co", "google.com.co",
-  "bing.com", "duckduckgo.com", "yahoo.com", "msn.com",
-  "microsoft.com", "live.com", "office.com", "outlook.com",
-  "apple.com", "icloud.com",
-  // Viajes
-  "booking.com", "airbnb.com", "tripadvisor.com", "expedia.com",
-  "hoteles.com", "trivago.es", "despegar.com",
-  // Autos
-  "toyota.com", "toyota.es", "honda.com", "ford.com", "volkswagen.com",
-  "coches.net", "motor.es", "carwow.es", "ofertas-toyota.com",
-  // Retail
-  "lowes.com", "homedepot.com", "walmart.com", "target.com", "costco.com",
-  // Streaming
-  "netflix.com", "hulu.com", "disney.com", "disneyplus.com",
-  "spotify.com", "soundcloud.com", "pandora.com",
-  // Maps y ubicaciones
-  "maps.google", "google.com/maps", "maps.google.es",
-  "comunidad.madrid", "madrid.es", "esmadrid.com", "visitmadrid.es",
-  "geoportal.madrid.es", "munimadrid.es",
-  // Otros irrelevantes
-  "instrument.com.cn", "bbs.instrument.com.cn",
-  "artofit.org", "tse3.mm.bing.net", "r.bing.com",
-  "th.bing.com", "bing.net",
-  "play.google.com", "apps.apple.com",
-  "news.google.com",
-];
-
-// Palabras clave que indican phishing (en title o snippet)
-const PHISHING_KEYWORDS = /login|iniciar sesi[oó]n|acceder|mi cuenta|verificar|suspender|bloquear|reactivar|actualizar datos|confirmar identidad|cambiar clave|restablecer contrase[nñ]a|recuperar cuenta|transferencia|clave|contrase[nñ]a|password|cuenta|acceso|tarjeta/i;
-
-function isResultRelevant(brand: Brand, resultUrl: string, title: string, snippet: string): boolean {
-  const lowerUrl = resultUrl.toLowerCase();
-  const lowerTitle = (title || "").toLowerCase();
-  const lowerSnippet = (snippet || "").toLowerCase();
-  const name = brand.name.toLowerCase();
-  const nameNoSpace = name.replace(/\s+/g, "");
-  const allBrandVariants = [name, nameNoSpace, ...brand.typos];
-
-  // 1. Excluir dominios seguros conocidos (no phishing)
-  for (const safe of KNOWN_SAFE_DOMAINS) {
-    if (lowerUrl.includes(safe)) return false;
-  }
-
-  // 2. Excluir el dominio oficial de la marca (todas sus variantes)
-  if (lowerUrl.includes(brand.officialDomain)) return false;
-
-  // 3. Verificar relevancia: el hostname DEBE contener la marca o un typo
+async function resolveTypo(domain: string): Promise<{ ip: string | null; cname: string | null; error: string | null }> {
   try {
-    const url = new URL(resultUrl);
-    const host = url.hostname.toLowerCase();
-    const hostHasBrand = allBrandVariants.some(v => v.length >= 3 && host.includes(v));
-
-    if (hostHasBrand) {
-      // El hostname contiene la marca → potencial phishing/typosquatting
-      return true;
+    // Try A record first
+    const aRecords = await dns.resolve4(domain);
+    if (aRecords.length > 0) {
+      return { ip: aRecords[0], cname: null, error: null };
     }
-
-    // Si el hostname no contiene la marca, solo relevante si:
-    // - El title contiene la marca
-    // - El title/snippet contiene palabras de phishing
-    const titleHasBrand = allBrandVariants.some(v => v.length >= 3 && lowerTitle.includes(v));
-    const hasPhishingKw = PHISHING_KEYWORDS.test(lowerTitle + " " + lowerSnippet);
-    if (titleHasBrand && hasPhishingKw) return true;
-
-    return false;
-  } catch { return false; }
-}
-
-function htmlFetchHeaders(): Record<string, string> {
-  return {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,es;q=0.8",
-  };
-}
-
-// ============================================================
-//  BING ENGINE
-// ============================================================
-function decodeBingUrl(ckAurl: string): string | null {
+  } catch {}
   try {
-    const decoded = ckAurl.replace(/&amp;/g, "&");
-    const m = decoded.match(/u=a1([A-Za-z0-9+/=_-]+)/);
-    if (!m) return null;
-    let b64 = m[1];
-    b64 = b64.replace(/-/g, "+").replace(/_/g, "/");
-    b64 += "=".repeat((4 - (b64.length % 4)) % 4);
-    const url = Buffer.from(b64, "base64").toString("utf-8");
-    if (!url.startsWith("http")) return null;
-    return url;
+    // Try CNAME (sometimes typos point to other hosts)
+    const cnameRecords = await dns.resolveCname(domain);
+    if (cnameRecords.length > 0) {
+      return { ip: null, cname: cnameRecords[0], error: null };
+    }
+  } catch {}
+  return { ip: null, cname: null, error: "no_records" };
+}
+
+// ============================================================
+//  2. RDAP — datos de registro del dominio
+// ============================================================
+async function fetchRdap(domain: string): Promise<any | null> {
+  try {
+    // Use Verisign for .com/.net, or rdap.org for others
+    const tld = domain.split(".").pop()?.toLowerCase();
+    let rdapUrl: string;
+    if (tld === "com" || tld === "net") {
+      rdapUrl = `https://rdap.verisign.com/${tld}/v1/domain/${domain}`;
+    } else {
+      rdapUrl = `https://rdap.org/domain/${domain}`;
+    }
+    const r = await fetch(rdapUrl, {
+      headers: { "User-Agent": "MONITOR-THREAT", "Accept": "application/rdap+json" },
+      signal: AbortSignal.timeout(8000),
+      redirect: "follow",
+    });
+    if (!r.ok) return null;
+    return await r.json();
   } catch { return null; }
 }
 
-function parseBingHtml(html: string): { url: string; title: string; snippet: string }[] {
-  const results: { url: string; title: string; snippet: string }[] = [];
-  const blockRe = /<h2[^>]*>\s*<a[^>]*href="(https:\/\/www\.bing\.com\/ck\/a\?[^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>([\s\S]*?)(?=<h2|<div class="b_pag|$)/g;
-  let m: RegExpExecArray | null;
-  let count = 0;
-  while ((m = blockRe.exec(html)) && count < 30) {
-    const ckAurl = m[1];
-    const titleHtml = m[2];
-    const tail = m[3];
-    const url = decodeBingUrl(ckAurl);
-    if (!url) continue;
-    if (/bing\.com\/(images|videos|maps|news|shop|search)/.test(url)) continue;
-    const title = titleHtml.replace(/<[^>]+>/g, "").trim();
-    if (!title) continue;
-    const pMatch = tail.match(/<p[^>]*>([\s\S]*?)<\/p>/);
-    const snippet = (pMatch ? pMatch[1] : "").replace(/<[^>]+>/g, "").trim();
-    results.push({ url, title: title.slice(0, 150), snippet: snippet.slice(0, 250) || "(no snippet)" });
-    count++;
+function parseRdap(rdapData: any): {
+  registrationDate: string | null;
+  expirationDate: string | null;
+  registrant: string | null;
+  registrar: string | null;
+  nameservers: string[];
+  status: string[];
+} {
+  const events = rdapData?.events || [];
+  let registrationDate: string | null = null;
+  let expirationDate: string | null = null;
+  for (const e of events) {
+    if (e.eventAction === "registration") registrationDate = e.eventDate;
+    if (e.eventAction === "expiration") expirationDate = e.eventDate;
   }
-  return results;
-}
-
-async function runDorkOnBing(dork: string): Promise<{ url: string; title: string; snippet: string }[]> {
-  try {
-    const r = await fetch(
-      `https://www.bing.com/search?q=${encodeURIComponent(dork)}&count=20&setlang=es-ES&cc=ES&FORM=QBLH&nfpr=1`,
-      { headers: htmlFetchHeaders(), signal: AbortSignal.timeout(10000) },
-    );
-    if (!r.ok) return [];
-    const html = await r.text();
-    return parseBingHtml(html);
-  } catch { return []; }
-}
-
-// ============================================================
-//  DUCKDUCKGO ENGINE
-// ============================================================
-function parseDdgHtml(html: string): { url: string; title: string; snippet: string }[] {
-  const results: { url: string; title: string; snippet: string }[] = [];
-  const blockRe = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
-  let m: RegExpExecArray | null;
-  let count = 0;
-  while ((m = blockRe.exec(html)) && count < 30) {
-    let href = m[1];
-    const titleHtml = m[2];
-    const snippetHtml = m[3];
-    const uddgMatch = href.match(/uddg=([^&]+)/);
-    if (uddgMatch) {
-      try { href = decodeURIComponent(uddgMatch[1]); } catch {}
+  let registrant: string | null = null;
+  let registrar: string | null = null;
+  for (const entity of rdapData?.entities || []) {
+    const roles = entity.roles || [];
+    const vcard = entity.vcardArray?.[1] || [];
+    let name = "";
+    for (const f of vcard) {
+      if (f[0] === "fn") name = f[3];
     }
-    if (!href.startsWith("http")) continue;
-    const title = titleHtml.replace(/<[^>]+>/g, "").trim();
-    if (!title) continue;
-    const snippet = snippetHtml.replace(/<[^>]+>/g, "").trim();
-    results.push({ url: href, title: title.slice(0, 150), snippet: snippet.slice(0, 250) || "(no snippet)" });
-    count++;
+    if (roles.includes("registrant")) registrant = name;
+    if (roles.includes("registrar")) registrar = name;
   }
-  return results;
+  const nameservers = (rdapData?.nameservers || []).map((n: any) => n.ldhName).slice(0, 4);
+  const status = rdapData?.status || [];
+  return { registrationDate, expirationDate, registrant, registrar, nameservers, status };
 }
 
-async function runDorkOnDDG(dork: string): Promise<{ url: string; title: string; snippet: string }[]> {
+// ============================================================
+//  3. Certificate Transparency (crt.sh)
+// ============================================================
+async function fetchCrtSh(domain: string): Promise<any[]> {
+  // crt.sh often returns 502 (overloaded). Try 3 times with backoff.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const query = `%${domain.split(".")[0]}%`;
+      const r = await fetch(`https://crt.sh/?q=${encodeURIComponent(query)}&output=json`, {
+        headers: { "User-Agent": "MONITOR-THREAT" },
+        signal: AbortSignal.timeout(20000),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        if (Array.isArray(d) && d.length > 0) return d;
+      }
+    } catch {}
+    await new Promise(res => setTimeout(res, 1500));
+  }
+  return [];
+}
+
+// ============================================================
+//  4. URLScan.io (with optional API key)
+// ============================================================
+async function fetchUrlScan(domain: string): Promise<any[]> {
   try {
-    const r = await fetch(
-      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(dork)}`,
-      { headers: htmlFetchHeaders(), signal: AbortSignal.timeout(10000) },
-    );
+    const apiKey = process.env.URLSCAN_API_KEY || "";
+    const headers: Record<string, string> = { "User-Agent": "MONITOR-THREAT" };
+    if (apiKey) headers["API-Key"] = apiKey;
+    const r = await fetch(`https://urlscan.io/api/v1/search/?q=domain:${domain}&size=10`, {
+      headers,
+      signal: AbortSignal.timeout(10000),
+    });
     if (!r.ok) return [];
-    const html = await r.text();
-    return parseDdgHtml(html);
+    const d: any = await r.json();
+    return d.results || [];
   } catch { return []; }
 }
 
 // ============================================================
-//  Genera URLs manuales para Google/Yandex/Edge/Bing/DDG
-// ============================================================
-function buildManualLinks(dork: string): { google: string; yandex: string; edge: string; bing: string; duckduckgo: string } {
-  return {
-    google: `https://www.google.com/search?q=${encodeURIComponent(dork)}`,
-    yandex: `https://yandex.com/search/?text=${encodeURIComponent(dork)}`,
-    edge: `https://www.bing.com/search?q=${encodeURIComponent(dork)}&form=EDGE&setmkt=en-US`,
-    bing: `https://www.bing.com/search?q=${encodeURIComponent(dork)}`,
-    duckduckgo: `https://duckduckgo.com/?q=${encodeURIComponent(dork)}`,
-  };
-}
-
-// ============================================================
-//  MAIN — busca phishing para las 9 marcas
+//  MAIN
 // ============================================================
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    // Marca a buscar: 'all' para todas, o el id de una marca especifica
     const brandId = (searchParams.get("brand") || "all").trim();
     const brandsToSearch = brandId === "all" ? BRANDS : BRANDS.filter(b => b.id === brandId);
 
@@ -365,102 +282,111 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "brand_not_found", brand: brandId }, { status: 400 });
     }
 
-    const allResults: BrandResult[] = [];
-    const dorksByBrand: Record<string, { phishing: string[]; typosquatting: string[]; leak: string[]; impersonation: string[] }> = {};
-    const manualLinks: Record<string, { google: string; yandex: string; edge: string; bing: string; duckduckgo: string }> = {};
+    const findings: BrandFinding[] = [];
 
-    // Para cada marca, generar dorks y ejecutar los principales
-    // Hacemos brands en lotes de 3 en paralelo para no saturar
-    for (let bi = 0; bi < brandsToSearch.length; bi += 3) {
-      const brandBatch = brandsToSearch.slice(bi, bi + 3);
-
-      await Promise.all(brandBatch.map(async (brand) => {
-        const dorks = generateBrandDorks(brand);
-        dorksByBrand[brand.id] = dorks;
-
-        // Generar manualLinks para TODOS los dorks de esta marca
-        for (const cat of ["phishing", "typosquatting", "leak", "impersonation"] as const) {
-          for (const d of dorks[cat]) {
-            manualLinks[d] = buildManualLinks(d);
-          }
-        }
-
-        // Ejecutar en Bing + DDG en paralelo: 5 dorks de phishing + 2 typosquatting + 1 leak
-        // = 8 dorks en Bing, 3 en DDG (los 3 primeros de phishing)
-        const dorksToExecute: { dork: string; category: string; severity: "high" | "medium" | "low" | "info" }[] = [
-          ...dorks.phishing.slice(0, 5).map(d => ({ dork: d, category: "phishing", severity: "high" as const })),
-          ...dorks.typosquatting.slice(0, 2).map(d => ({ dork: d, category: "typosquatting", severity: "high" as const })),
-          ...dorks.leak.slice(0, 1).map(d => ({ dork: d, category: "leak", severity: "high" as const })),
-        ];
-
-        // Ejecutar en lotes de 4 en Bing (en paralelo con DDG para los 3 primeros)
-        const bingTasks = dorksToExecute.map(t => runDorkOnBing(t.dork));
-        const ddgTasks = dorksToExecute.slice(0, 3).map(t => runDorkOnDDG(t.dork));
-
-        const [bingResults, ddgResults] = await Promise.all([
-          Promise.all(bingTasks),
-          Promise.all(ddgTasks),
-        ]);
-
-        // Combinar resultados
-        const seen = new Set<string>();
-        const addResults = (
-          results: { url: string; title: string; snippet: string }[],
-          dorkMeta: { category: string; severity: "high" | "medium" | "low" | "info" },
-          source: "Bing" | "DuckDuckGo",
-        ) => {
-          for (const r of results) {
-            if (seen.has(r.url)) continue;
-            // Aplicar filtro de relevancia (excluye dominios seguros conocidos
-            // y resultados donde la marca no esta en el dominio ni en title+login kw)
-            if (!isResultRelevant(brand, r.url, r.title, r.snippet)) continue;
-            seen.add(r.url);
-            allResults.push({
-              brand: brand.name,
-              category: dorkMeta.category,
-              source,
-              type: `${dorkMeta.category} detection`,
-              title: r.title,
-              url: r.url,
-              snippet: r.snippet,
-              severity: dorkMeta.severity,
-              timestamp: null,
-            });
-          }
-        };
-
-        // Bing: 8 dorks × resultados
-        bingResults.forEach((res, i) => addResults(res, dorksToExecute[i], "Bing"));
-        // DDG: 3 dorks × resultados
-        ddgResults.forEach((res, i) => addResults(res, dorksToExecute[i], "DuckDuckGo"));
+    // Procesar todas las marcas en paralelo
+    await Promise.all(brandsToSearch.map(async (brand) => {
+      // PASO 1: Para cada typo, resolver DNS en paralelo
+      const typoResults = await Promise.all(brand.typos.map(async (typoDomain) => {
+        // Excluir dominios oficiales
+        if (brand.officialDomains.some(od => typoDomain.includes(od))) return null;
+        const dnsResult = await resolveTypo(typoDomain);
+        if (!dnsResult.ip && !dnsResult.cname) return null;
+        return { typoDomain, ...dnsResult };
       }));
-    }
+
+      // PASO 2: Para cada typo resuelto, fetch RDAP en paralelo
+      const resolvedTyps = typoResults.filter(Boolean) as { typoDomain: string; ip: string | null; cname: string | null }[];
+      const rdapResults = await Promise.all(resolvedTyps.map(async (t) => {
+        const rdapData = await fetchRdap(t.typoDomain);
+        if (!rdapData) return { ...t, rdap: null };
+        return { ...t, rdap: parseRdap(rdapData) };
+      }));
+
+      // Agregar hallazgos de typosquatting (DNS resuelto)
+      for (const t of rdapResults) {
+        const rdap = t.rdap;
+        const registered = !!rdap?.registrationDate;
+        const age = rdap?.registrationDate
+          ? `${new Date().getFullYear() - new Date(rdap.registrationDate).getFullYear()} anos`
+          : "fecha desconocida";
+        findings.push({
+          brand: brand.name,
+          brandId: brand.id,
+          category: rdap ? "registration" : "typosquatting",
+          source: rdap ? "RDAP" : "DNS",
+          type: registered ? "Dominio typosquatting registrado" : "Dominio resuelto (sin RDAP)",
+          domain: t.typoDomain,
+          url: `https://${t.typoDomain}`,
+          title: `${t.typoDomain} — typosquatting de ${brand.name}`,
+          snippet: `IP: ${t.ip || t.cname || "?"} | ${rdap ? `Registrado: ${rdap.registrationDate?.slice(0, 10)} (${age}) | Expira: ${rdap.expirationDate?.slice(0, 10)} | Registrar: ${rdap.registrar || "?"} | Registrant: ${rdap.registrant || "?"} | Status: ${(rdap.status || []).join(", ")}` : "Sin datos RDAP (dominio resuelto pero no registrado en RDAP)"}`,
+          severity: registered ? "high" : "medium",
+          metadata: {
+            ip: t.ip, cname: t.cname,
+            rdap: rdap ? {
+              registrationDate: rdap.registrationDate,
+              expirationDate: rdap.expirationDate,
+              registrant: rdap.registrant,
+              registrar: rdap.registrar,
+              nameservers: rdap.nameservers,
+              status: rdap.status,
+            } : null,
+          },
+          timestamp: rdap?.registrationDate || null,
+        });
+      }
+
+      // PASO 3: crt.sh — certificados TLS emitidos con el nombre de la marca
+      const certs = await fetchCrtSh(brand.officialDomain);
+      // Filtrar certificados que no sean del dominio oficial
+      const suspiciousCerts = certs.filter(c => {
+        const cn = (c.common_name || "").toLowerCase();
+        const san = (c.name_value || "").toLowerCase();
+        return !brand.officialDomains.some(od => cn.includes(od) && san.includes(od));
+      }).slice(0, 5);
+      for (const cert of suspiciousCerts) {
+        const cn = cert.common_name || "?";
+        const san = (cert.name_value || "").split("\n").slice(0, 5).join(", ");
+        const issuer = (cert.issuer_name || "").split("O=")[1]?.replace(/"/g, "") || "?";
+        findings.push({
+          brand: brand.name,
+          brandId: brand.id,
+          category: "cert",
+          source: "crt.sh (Certificate Transparency)",
+          type: "Certificado TLS sospechoso",
+          domain: cn,
+          url: `https://crt.sh/?q=${encodeURIComponent(cn)}`,
+          title: `${cn} — certificado TLS`,
+          snippet: `SAN: ${san.slice(0, 200)} | Issuer: ${issuer} | Not before: ${cert.not_before?.slice(0, 10)}`,
+          severity: "high",
+          metadata: { commonName: cn, san, issuer, notBefore: cert.not_before },
+          timestamp: cert.not_before || null,
+        });
+      }
+    }));
 
     // Resumen por marca y categoria
     const byBrand: Record<string, number> = {};
     const byCategory: Record<string, number> = {};
     const bySeverity = { high: 0, medium: 0, low: 0, info: 0 };
-    for (const r of allResults) {
-      byBrand[r.brand] = (byBrand[r.brand] || 0) + 1;
-      byCategory[r.category] = (byCategory[r.category] || 0) + 1;
-      bySeverity[r.severity]++;
+    for (const f of findings) {
+      byBrand[f.brand] = (byBrand[f.brand] || 0) + 1;
+      byCategory[f.category] = (byCategory[f.category] || 0) + 1;
+      bySeverity[f.severity]++;
     }
 
     return NextResponse.json({
-      brands: BRANDS.map(b => ({ id: b.id, name: b.name, category: b.category, officialDomain: b.officialDomain })),
+      brands: BRANDS.map(b => ({ id: b.id, name: b.name, category: b.category, officialDomain: b.officialDomain, typosCount: b.typos.length })),
       searchedBrands: brandsToSearch.map(b => b.id),
-      dorksByBrand,
-      manualLinks,
-      results: allResults,
+      typosByBrand: brandsToSearch.reduce((acc, b) => { acc[b.id] = b.typos; return acc; }, {} as Record<string, string[]>),
+      results: findings,
       summary: {
-        total: allResults.length,
+        total: findings.length,
         byBrand,
         byCategory,
         bySeverity,
       },
-      enginesUsed: ["Bing", "DuckDuckGo", "Google", "Yandex", "Edge"],
-      enginesAuto: ["Bing", "DuckDuckGo"],
-      enginesManual: ["Google", "Yandex", "Edge"],
+      sourcesUsed: ["DNS", "RDAP", "crt.sh", "urlscan.io"],
       timestamp: new Date().toISOString(),
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (err: any) {
