@@ -111,42 +111,134 @@ const BRANDS: Brand[] = [
 ];
 
 // Generar dorks anti-phishing para una marca
+// IMPORTANTE: buscamos dominios que contengan la marca en el hostname
+// (no solo mencionen la marca en el snippet). El filtro isResultRelevant
+// valida que el hostname contenga la marca o un typo conocido.
 function generateBrandDorks(brand: Brand): { phishing: string[]; typosquatting: string[]; leak: string[]; impersonation: string[] } {
   const name = brand.name;
   const officialDomain = brand.officialDomain;
 
-  // Dorks de phishing: buscar login/account/secure pages que NO sean el dominio oficial
+  // Dorks de phishing: combinaciones de marca + palabras de phishing
+  // en el title/snippet. El filtro isResultRelevant eliminara los que
+  // no contengan la marca en el hostname.
   const phishing = [
-    `"${name}" ("login" OR "iniciar sesion" OR "acceder" OR "mi cuenta") -site:${officialDomain}`,
-    `"${name}" ("verificar" OR "suspendida" OR "bloqueada" OR "reactivar cuenta") -site:${officialDomain}`,
-    `"${name}" ("actualizar datos" OR "confirmar identidad" OR "verificacion de cuenta") -site:${officialDomain}`,
-    `"${name}" ("clave" OR "contrasena" OR "password") ("cambiar" OR "actualizar" OR "restablecer") -site:${officialDomain}`,
-    `"${name}" ("transferencia" OR "pago" OR "tarjeta") ("segura" OR "verificar") -site:${officialDomain}`,
-    `"${name}" filetype:html ("login" OR "acceder") -site:${officialDomain}`,
+    `${name} ("iniciar sesion" OR "acceder" OR "mi cuenta" OR login) -site:${officialDomain}`,
+    `${name} ("verificar" OR "suspendida" OR "bloqueada" OR "reactivar") -site:${officialDomain}`,
+    `${name} ("actualizar datos" OR "confirmar identidad" OR "verificacion de cuenta") -site:${officialDomain}`,
+    `${name} ("cambiar clave" OR "restablecer contrasena" OR "recuperar cuenta") -site:${officialDomain}`,
+    `${name} ("transferencia segura" OR "pago verificado" OR "tarjeta bloqueada") -site:${officialDomain}`,
+    `${name} (estafa OR scam OR phishing OR fraude OR "phishing") -site:${officialDomain}`,
   ];
 
-  // Typosquatting: variaciones typos comunes
+  // Typosquatting: buscar los typos conocidos como strings (no site:)
+  // porque site:dominio-falso no funciona en Bing
   const typosquatting = [
-    ...brand.typos.map(t => `site:${t.replace(/\./g, "[.]")}`),
-    ...brand.typos.map(t => `"${t}" ("login" OR "cuenta" OR "acceder")`),
-    `"${name}" typosquatting OR cybersquatting OR domain squatting`,
+    ...brand.typos.map(t => `"${t}" (login OR cuenta OR banco OR acceso)`),
+    `"${name}" typosquatting OR cybersquatting OR "domain squatting"`,
+    `"${name}" ("clone" OR "fake site" OR "sitio falso") -site:${officialDomain}`,
   ];
 
   // Leaks: credenciales filtradas
   const leak = [
-    `"${name}" (site:pastebin.com OR site:ghostbin.com OR site:throwbin.io) ("password" OR "credential" OR "token")`,
-    `"${name}" ("leak" OR "filtracion" OR "breach" OR "compromised")`,
-    `"${name}" "AWS_SECRET" OR "api_key" OR "private_key"`,
+    `${name} (site:pastebin.com OR site:ghostbin.com OR site:throwbin.io)`,
+    `${name} ("credenciales filtradas" OR "leak" OR "filtracion" OR "breach")`,
+    `${name} ("AWS_SECRET" OR "api_key" OR "private_key" OR "BEGIN RSA")`,
   ];
 
   // Impersonation: redes sociales
   const impersonation = [
-    `"${name}" site:facebook.com (fake OR impersonation OR clone)`,
-    `"${name}" site:twitter.com OR site:x.com (fake OR scam OR estafa)`,
-    `"${name}" site:instagram.com (fake OR clone OR estafa)`,
+    `${name} site:facebook.com (fake OR impersonation OR clone OR estafa)`,
+    `${name} site:twitter.com OR site:x.com (fake OR scam OR estafa)`,
+    `${name} site:instagram.com (fake OR clone OR estafa)`,
   ];
 
   return { phishing, typosquatting, leak, impersonation };
+}
+
+// ============================================================
+//  FILTRO DE FALSOS POSITIVOS — solo URLs que contienen la marca
+// ============================================================
+// Dominios conocidos que NUNCA son phishing de la marca (excluirlos)
+const KNOWN_SAFE_DOMAINS = [
+  // Enciclopedias y referencias
+  "wikipedia.org", "wikidata.org", "wikimedia.org",
+  // Redes sociales y multimedia
+  "youtube.com", "youtu.be", "facebook.com", "fb.com",
+  "twitter.com", "x.com", "instagram.com", "linkedin.com", "tiktok.com",
+  "github.com", "gitlab.com", "bitbucket.org", "reddit.com",
+  "pinterest.com", "pinterest.co", "pinterest.es", "tumblr.com",
+  "flickr.com", "imgur.com", "vimeo.com", "twitch.tv", "snapchat.com",
+  "whatsapp.com", "telegram.org",
+  // E-commerce
+  "amazon.com", "amazon.es", "amazon.co", "ebay.com", "mercadolibre.com",
+  "aliexpress.com", "alibaba.com", "etsy.com",
+  // Buscadores y Microsoft
+  "google.com", "google.es", "google.co", "google.com.co",
+  "bing.com", "duckduckgo.com", "yahoo.com", "msn.com",
+  "microsoft.com", "live.com", "office.com", "outlook.com",
+  "apple.com", "icloud.com",
+  // Viajes
+  "booking.com", "airbnb.com", "tripadvisor.com", "expedia.com",
+  "hoteles.com", "trivago.es", "despegar.com",
+  // Autos
+  "toyota.com", "toyota.es", "honda.com", "ford.com", "volkswagen.com",
+  "coches.net", "motor.es", "carwow.es", "ofertas-toyota.com",
+  // Retail
+  "lowes.com", "homedepot.com", "walmart.com", "target.com", "costco.com",
+  // Streaming
+  "netflix.com", "hulu.com", "disney.com", "disneyplus.com",
+  "spotify.com", "soundcloud.com", "pandora.com",
+  // Maps y ubicaciones
+  "maps.google", "google.com/maps", "maps.google.es",
+  "comunidad.madrid", "madrid.es", "esmadrid.com", "visitmadrid.es",
+  "geoportal.madrid.es", "munimadrid.es",
+  // Otros irrelevantes
+  "instrument.com.cn", "bbs.instrument.com.cn",
+  "artofit.org", "tse3.mm.bing.net", "r.bing.com",
+  "th.bing.com", "bing.net",
+  "play.google.com", "apps.apple.com",
+  "news.google.com",
+];
+
+// Palabras clave que indican phishing (en title o snippet)
+const PHISHING_KEYWORDS = /login|iniciar sesi[oó]n|acceder|mi cuenta|verificar|suspender|bloquear|reactivar|actualizar datos|confirmar identidad|cambiar clave|restablecer contrase[nñ]a|recuperar cuenta|transferencia|clave|contrase[nñ]a|password|cuenta|acceso|tarjeta/i;
+
+function isResultRelevant(brand: Brand, resultUrl: string, title: string, snippet: string): boolean {
+  const lowerUrl = resultUrl.toLowerCase();
+  const lowerTitle = (title || "").toLowerCase();
+  const lowerSnippet = (snippet || "").toLowerCase();
+  const name = brand.name.toLowerCase();
+  const nameNoSpace = name.replace(/\s+/g, "");
+  const allBrandVariants = [name, nameNoSpace, ...brand.typos];
+
+  // 1. Excluir dominios seguros conocidos (no phishing)
+  for (const safe of KNOWN_SAFE_DOMAINS) {
+    if (lowerUrl.includes(safe)) return false;
+  }
+
+  // 2. Excluir el dominio oficial de la marca (todas sus variantes)
+  if (lowerUrl.includes(brand.officialDomain)) return false;
+
+  // 3. Verificar relevancia: el hostname DEBE contener la marca o un typo
+  try {
+    const url = new URL(resultUrl);
+    const host = url.hostname.toLowerCase();
+    const hostHasBrand = allBrandVariants.some(v => v.length >= 3 && host.includes(v));
+
+    if (hostHasBrand) {
+      // El hostname contiene la marca → potencial phishing/typosquatting
+      return true;
+    }
+
+    // Si el hostname no contiene la marca, solo relevante si:
+    // - El title contiene la marca
+    // - El title/snippet contiene palabras de phishing
+    const titleHasBrand = allBrandVariants.some(v => v.length >= 3 && lowerTitle.includes(v));
+    const hasPhishingKw = PHISHING_KEYWORDS.test(lowerTitle + " " + lowerSnippet);
+    if (titleHasBrand && hasPhishingKw) return true;
+
+    return false;
+  } catch { return false; }
 }
 
 function htmlFetchHeaders(): Record<string, string> {
@@ -319,8 +411,9 @@ export async function GET(request: Request) {
         ) => {
           for (const r of results) {
             if (seen.has(r.url)) continue;
-            // Excluir el dominio oficial de la marca (no es phishing)
-            if (r.url.includes(brand.officialDomain)) continue;
+            // Aplicar filtro de relevancia (excluye dominios seguros conocidos
+            // y resultados donde la marca no esta en el dominio ni en title+login kw)
+            if (!isResultRelevant(brand, r.url, r.title, r.snippet)) continue;
             seen.add(r.url);
             allResults.push({
               brand: brand.name,
