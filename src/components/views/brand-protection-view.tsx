@@ -81,27 +81,100 @@ export function BrandProtectionView() {
   const [searched, setSearched] = React.useState(false);
   const [activeBrand, setActiveBrand] = React.useState<string>("all");
   const [activeCategory, setActiveCategory] = React.useState<string>("all");
+  // Progress bar para "Buscar todas" — procesa marca por marca
+  const [progressBrands, setProgressBrands] = React.useState<{ id: string; status: "pending" | "loading" | "done" | "error"; count: number }[]>([]);
+  const [progressStatus, setProgressStatus] = React.useState<string>("");
 
-  const search = async (brandId: string = "all") => {
-    setLoading(true);
-    setError(null);
+  // Todas las marcas pre-configuradas (debe coincidir con el backend)
+  const ALL_BRANDS = [
+    "bancolombia", "nequi", "wenia", "banco-agricola", "banco-agro-mercantil",
+    "cibest", "sufi", "wompi", "zaswin",
+  ];
+
+  const ALL_BRANDS_NAMES: Record<string, string> = {
+    "bancolombia": "Bancolombia",
+    "nequi": "Nequi",
+    "wenia": "Wenia",
+    "banco-agricola": "Banco Agricola",
+    "banco-agro-mercantil": "Banco Agro Mercantil",
+    "cibest": "Cibest",
+    "sufi": "SUFI",
+    "wompi": "WOMPI",
+    "zaswin": "Zaswin",
+  };
+
+  // Limpia y resetea el estado para una nueva busqueda
+  const resetState = () => {
     setResults([]);
     setBrands([]);
     setSummary(null);
+    setError(null);
     setSearched(true);
     setActiveBrand("all");
     setActiveCategory("all");
+    setProgressBrands([]);
+    setProgressStatus("");
+  };
+
+  // Acumula resultados y actualiza el summary incrementalmente
+  const accumulateResults = (newResults: BrandFinding[], allBrands: Brand[]) => {
+    setResults(prev => {
+      const updated = [...prev, ...newResults];
+      // Recalcular summary
+      const byBrand: Record<string, number> = {};
+      const byCategory: Record<string, number> = {};
+      const bySeverity = { high: 0, medium: 0, low: 0, info: 0 };
+      for (const r of updated) {
+        byBrand[r.brand] = (byBrand[r.brand] || 0) + 1;
+        byCategory[r.category] = (byCategory[r.category] || 0) + 1;
+        bySeverity[r.severity]++;
+      }
+      setSummary({ total: updated.length, byBrand, byCategory, bySeverity });
+      return updated;
+    });
+    if (allBrands.length > 0) setBrands(prev => [...prev, ...allBrands.filter(b => !prev.find(p => p.id === b.id))]);
+  };
+
+  const search = async (brandId: string = "all") => {
+    setLoading(true);
+    resetState();
     try {
-      const r = await fetch(`/api/brand-protection/search?brand=${encodeURIComponent(brandId)}`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = await r.json();
-      setResults(j.results || []);
-      setBrands(j.brands || []);
-      setSummary(j.summary || null);
+      if (brandId === "all") {
+        // Procesar las 9 marcas una por una (cada una ~3-6s, dentro del limite Vercel)
+        setProgressBrands(ALL_BRANDS.map(id => ({ id, status: "pending" as const, count: 0 })));
+        for (let i = 0; i < ALL_BRANDS.length; i++) {
+          const bid = ALL_BRANDS[i];
+          const bName = ALL_BRANDS_NAMES[bid] || bid;
+          setProgressStatus(`Analizando ${bName} (${i + 1}/${ALL_BRANDS.length})...`);
+          setProgressBrands(prev => prev.map(p => p.id === bid ? { ...p, status: "loading" } : p));
+          try {
+            const r = await fetch(`/api/brand-protection/search?brand=${encodeURIComponent(bid)}`);
+            if (r.ok) {
+              const j = await r.json();
+              accumulateResults(j.results || [], j.brands || []);
+              setProgressBrands(prev => prev.map(p => p.id === bid ? { ...p, status: "done", count: (j.results || []).length } : p));
+            } else {
+              setProgressBrands(prev => prev.map(p => p.id === bid ? { ...p, status: "error" } : p));
+            }
+          } catch (e: any) {
+            setProgressBrands(prev => prev.map(p => p.id === bid ? { ...p, status: "error" } : p));
+          }
+        }
+        setProgressStatus(`Completo: ${ALL_BRANDS.length} marcas analizadas.`);
+      } else {
+        // Marca individual — una sola request
+        setProgressStatus(`Analizando ${ALL_BRANDS_NAMES[brandId] || brandId}...`);
+        const r = await fetch(`/api/brand-protection/search?brand=${encodeURIComponent(brandId)}`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+        accumulateResults(j.results || [], j.brands || []);
+        setProgressStatus("");
+      }
     } catch (e: any) {
       setError(String(e?.message || e));
     }
     setLoading(false);
+    setTimeout(() => setProgressStatus(""), 3000);
   };
 
   const sevColors: Record<string, "destructive" | "default" | "secondary" | "outline"> = {
@@ -190,6 +263,36 @@ export function BrandProtectionView() {
         <div className="mt-3 text-[10px] text-muted-foreground">
           <strong>Fuentes REALES:</strong> DNS (resolucion de typos) · RDAP (datos de registro de dominios) · crt.sh (Certificate Transparency, certificados TLS emitidos) · urlscan.io (scans publicos, opcional con API key)
         </div>
+
+        {/* Progress bar — se muestra cuando esta procesando marca por marca */}
+        {(progressStatus || (progressBrands.length > 0 && progressBrands.some(p => p.status === "loading" || p.status === "done"))) && (
+          <div className="mt-3 p-3 rounded border border-cyan-500/40 bg-cyan-500/5">
+            <div className="text-[11px] font-semibold text-cyan-400 mb-2 flex items-center gap-1.5">
+              {loading && <Loader2 className="w-3 h-3 animate-spin" />}
+              {progressStatus || "Procesando..."}
+            </div>
+            {progressBrands.length > 0 && (
+              <div className="grid grid-cols-3 md:grid-cols-9 gap-1.5">
+                {progressBrands.map(p => (
+                  <div key={p.id} className={`p-1.5 rounded text-[10px] border ${
+                    p.status === "loading" ? "border-cyan-500 bg-cyan-500/10" :
+                    p.status === "done" ? "border-emerald-500 bg-emerald-500/10" :
+                    p.status === "error" ? "border-red-500 bg-red-500/10" :
+                    "border-border bg-muted/20"
+                  }`}>
+                    <div className="font-semibold truncate">{ALL_BRANDS_NAMES[p.id] || p.id}</div>
+                    <div className="text-[9px] flex items-center gap-1">
+                      {p.status === "loading" && <><Loader2 className="w-2 h-2 animate-spin" /> Analizando</>}
+                      {p.status === "done" && <>✓ {p.count} hallazgos</>}
+                      {p.status === "error" && <>✗ Error</>}
+                      {p.status === "pending" && <>En espera</>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </Panel>
 
       {error && <div className="mb-4 p-3 rounded border border-red-500/40 bg-red-500/10 text-red-400 flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> {error}</div>}
