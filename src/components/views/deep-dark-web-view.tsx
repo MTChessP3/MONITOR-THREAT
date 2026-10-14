@@ -617,34 +617,6 @@ export function DeepDarkWebView() {
         </div>
       )}
 
-      {/* API Key missing — instrucciones para configurar */}
-      {apiKeyMissing && (
-        <Panel title="Configuracion requerida: API Key de Google" className="md:col-span-2">
-          <div className="p-4 rounded border border-amber-500/40 bg-amber-500/5">
-            <div className="flex items-center gap-2 mb-3">
-              <AlertTriangle className="w-5 h-5 text-amber-500" />
-              <span className="text-sm font-semibold text-amber-500">
-                GOOGLE_CSE_API_KEY no esta configurada
-              </span>
-            </div>
-            <p className="text-xs text-muted-foreground mb-3">
-              Para usar este modulo necesitas una API key gratuita de Google Custom Search. Es gratis (100 consultas por dia). Sigue estos pasos:
-            </p>
-            <div className="space-y-1.5 mb-4">
-              {apiKeyInstructions.map((inst, i) => (
-                <div key={i} className="text-[11px] font-mono text-muted-foreground flex items-start gap-2">
-                  <span className="text-amber-500 shrink-0">{i + 1}.</span>
-                  <span>{inst}</span>
-                </div>
-              ))}
-            </div>
-            <div className="p-3 rounded border border-cyan-500/40 bg-cyan-500/5 text-[11px] text-cyan-300">
-              <strong>Resumen:</strong> Google Cloud Console → Habilitar Custom Search API → Crear API Key → Configurar como <code className="bg-muted px-1 rounded">GOOGLE_CSE_API_KEY</code> en Vercel → Listo.
-            </div>
-          </div>
-        </Panel>
-      )}
-
       {/* SUMMARY */}
       {summary && (
         <Panel
