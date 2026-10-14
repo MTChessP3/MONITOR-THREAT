@@ -147,7 +147,7 @@ export function DeepDarkWebView() {
   return (
     <ModuleShell
       name="Deep & Dark Web"
-      description="Busca via Google Programmable Search Engines (CSE) pre-configurados para OSINT, igual que osintsear.ch. 25 categorias de investigacion: fraude, crimen, terrorismo, narcoticos, etc. Resultados REALES de Google."
+      description="Busca en Deep & Dark Web via Google Programmable Search Engines. 25 categorias: fraude, crimen, terrorismo, narcoticos, etc."
       icon={Skull}
       category="OSINT"
     >
@@ -192,7 +192,7 @@ export function DeepDarkWebView() {
           <Input type="text" placeholder="ej: bancolombia phishing, isil, drug marketplace, @username..." value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === "Enter" && search()} className="flex-1 font-mono text-sm" autoFocus />
         </div>
         <div className="text-[10px] text-muted-foreground">
-          Inspirado en <a href="https://osintsear.ch" target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline">osintsear.ch</a>: usa Google Programmable Search Engines (CSE) pre-configurados para investigaciones OSINT. Cada categoria es un motor CSE distinto indexado por Google con sites relevantes. Resultados REALES de Google (no scraping).
+          Usa Google Programmable Search Engines (CSE) pre-configurados para investigacion OSINT. Cada categoria es un motor distinto indexado por Google con sites relevantes.
         </div>
       </Panel>
 
@@ -299,7 +299,7 @@ export function DeepDarkWebView() {
             <Skull className="w-12 h-12 text-muted-foreground/50" />
             <h3 className="text-base font-semibold">Deep & Dark Web — Google CSE</h3>
             <p className="text-xs text-muted-foreground max-w-2xl">
-              Busca via <strong>Google Programmable Search Engines (CSE)</strong> pre-configurados para OSINT, igual que <a href="https://osintsear.ch" target="_blank" rel="noreferrer" className="text-cyan-500 hover:underline">osintsear.ch</a>. 25 categorias de investigacion con CSE IDs especificos que Google ha indexado con sites relevantes.
+              Busca via <strong>Google Programmable Search Engines (CSE)</strong> pre-configurados para OSINT. 25 categorias de investigacion con motores especificos indexados por Google.
             </p>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-2 max-w-3xl w-full text-left">
               {[
@@ -323,7 +323,7 @@ export function DeepDarkWebView() {
               ))}
             </div>
             <div className="text-[10px] text-muted-foreground max-w-2xl mt-4">
-              <strong>Como funciona:</strong> en lugar de scraping de Bing (que bloquea servers), usamos la API JSON de Google Custom Search con la API key publica de osintsear.ch y los CSE IDs pre-configurados para cada categoria. Google devuelve resultados REALES y veridicos, indexados desde sites seleccionados para investigacion.
+              <strong>Como funciona:</strong> usamos la API JSON de Google Custom Search con motores pre-configurados para cada categoria. Google devuelve resultados REALES y veridicos, indexados desde sites seleccionados para investigacion.
             </div>
             <p className="text-[10px] text-cyan-500 mt-2">Prueba: categoria "fraud", query "bancolombia phishing" → resultados reales de Google indexados desde sites de fraude.</p>
           </div>

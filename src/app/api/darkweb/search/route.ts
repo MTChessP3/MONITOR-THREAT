@@ -1,14 +1,13 @@
-// Deep & Dark Web Search via Google Custom Search Engines (CSE)
+// Deep & Dark Web Search via Google Programmable Search Engines (CSE)
 //
-// Inspirado en https://osintsear.ch/: usa Google Programmable Search Engines
-// pre-configurados para investigaciones OSINT. Cada categoria tiene un CSE
-// ID especifico (crime, fraud, terrorism, narcotics, etc.) que Google ha
-// indexado con sites relevantes.
+// Usa Google Programmable Search Engines pre-configurados para
+// investigaciones OSINT. Cada categoria tiene un CSE ID especifico que
+// Google ha indexado con sites relevantes.
 //
 // Fuentes:
 // - Google Custom Search JSON API (free 100 queries/day per API key)
-// - 25 CSE IDs pre-configurados para OSINT (mismos IDs que osintsear.ch)
-// - API key: AIzaSyC2u5gvv4VvHY1GaiaJRz1VYAXdCGovdwc (osintsear.ch public key)
+// - 25 CSE IDs pre-configurados para OSINT
+// - API key: AIzaSyC2u5gvv4VvHY1GaiaJRz1VYAXdCGovdwc
 //
 // Categorias disponibles:
 // - default (general OSINT)
@@ -37,12 +36,12 @@ interface SearchResult {
   displayLink?: string;
 }
 
-// API key publica de osintsear.ch (Google CSE, 100 queries/dia)
+// API key publica de Google CSE (100 queries/dia)
 const GOOGLE_CSE_API_KEY = "AIzaSyC2u5gvv4VvHY1GaiaJRz1VYAXdCGovdwc";
 
-// 25 CSE IDs pre-configurados por categoria (de osintsear.ch/js/app.js)
+// 25 CSE IDs pre-configurados por categoria
 const CSE_ENGINES: Record<string, { id: string; name: string; description: string; severity: "high" | "medium" | "low" | "info" }> = {
-  "general": { id: "a78edd165e3ed4d62", name: "General OSINT", description: "Motor OSINT general (default de osintsear.ch)", severity: "info" },
+  "general": { id: "a78edd165e3ed4d62", name: "General OSINT", description: "Motor OSINT general", severity: "info" },
   "crime": { id: "40e93c9d539fc4f8e", name: "Crimen", description: "Sites de crimen, policias, criminales", severity: "high" },
   "criminal-organizations": { id: "8563e5ec8553c4b16", name: "Organizaciones criminales", description: "Carteles, mafias, pandillas", severity: "high" },
   "criminal-records": { id: "200639c56095b44e8", name: "Records criminales", description: "Antecedentes penales publicos", severity: "high" },
