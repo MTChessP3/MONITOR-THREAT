@@ -402,6 +402,19 @@ export function DeepDarkWebView() {
         {/* Advanced filters — collapsible */}
         {showAdvanced && (
           <div className="border-t border-border pt-3 space-y-3 bg-muted/20 -mx-4 -mb-4 px-4 pb-4 rounded-b">
+            {/* Query duplicado dentro del panel de filtros para que sea visible */}
+            <div>
+              <label className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 block">Buscar (query principal)</label>
+              <Input
+                type="text"
+                placeholder="Buscar... (ej: bancolombia phishing, isil, @username)"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && search(1)}
+                className="text-sm font-mono"
+                autoFocus
+              />
+            </div>
             {/* Exact match */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
               <div>
@@ -554,15 +567,20 @@ export function DeepDarkWebView() {
               </div>
             )}
             {/* Boton Buscar visible dentro del panel de filtros */}
-            <div className="pt-3 mt-2 border-t border-border flex items-center justify-between">
+            <div className="pt-3 mt-2 border-t border-border flex items-center justify-between gap-2">
               <div className="text-[10px] text-muted-foreground">
                 {category === "all"
                   ? "5 categorias × 6 resultados = 30 resultados por pagina"
                   : "30 resultados por pagina (categoria: " + (categoriesList.find(c => c.id === category)?.name || category) + ")"}
               </div>
-              <Button size="sm" onClick={() => search(1)} disabled={loading || !query.trim()}>
-                {loading ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Buscando...</> : <><Search className="w-3.5 h-3.5 mr-1.5" /> Buscar con filtros</>}
-              </Button>
+              <div className="flex items-center gap-2">
+                {!query.trim() && (
+                  <span className="text-[10px] text-amber-500">Escribe un termino de busqueda arriba</span>
+                )}
+                <Button size="sm" onClick={() => search(1)} disabled={loading || !query.trim()}>
+                  {loading ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Buscando...</> : <><Search className="w-3.5 h-3.5 mr-1.5" /> Buscar con filtros</>}
+                </Button>
+              </div>
             </div>
           </div>
         )}
