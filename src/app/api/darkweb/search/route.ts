@@ -4,23 +4,21 @@
 // investigaciones OSINT. Cada categoria tiene un CSE ID especifico que
 // Google ha indexado con sites relevantes.
 //
-// Fuentes:
-// - Google Custom Search JSON API (free 100 queries/day per API key)
-// - 25 CSE IDs pre-configurados para OSINT
-// - API key: AIzaSyC2u5gvv4VvHY1GaiaJRz1VYAXdCGovdwc
-//
-// Categorias disponibles:
-// - default (general OSINT)
-// - crime, criminal-organizations, criminal-records, cold-cases
-// - fraud, money-laundering, sanctions
-// - terrorism, extremism
-// - narcotics
-// - missing-person, murder, sexual-abuse, child-abuse
-// - cryptocurrency, trade-index
-// - news, politics, religion, history, culture
-// - medical
-// - social-media
-// - satellite, webcams
+// Soporta todos los parametros de busqueda avanzada (igual que el
+// panel completo de osintsear.ch):
+//   - query (texto principal)
+//   - exactMatch (frase exacta, con comillas)
+//   - includeWords (palabras a incluir, con +)
+//   - excludeWords (palabras a excluir, con -)
+//   - domain (limitar a dominio, con site:)
+//   - fileTypes (PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, TXT, CSV, KML, KMZ)
+//   - sortBy (relevance / date)
+//   - timeRange (all / hour / day / week / month / year / custom)
+//   - customStartDate, customEndDate (YYYY-MM-DD)
+//   - language (lr=lang_es, lang_en, etc.)
+//   - country (cr=countryCO, etc.)
+//   - interfaceLanguage (hl=es, en, etc.)
+//   - translateFrom, translateTo (Google Translate API)
 
 import { NextResponse } from "next/server";
 
@@ -34,6 +32,9 @@ interface SearchResult {
   timestamp: string | null;
   category?: string;
   displayLink?: string;
+  formattedUrl?: string;
+  mime?: string;
+  image?: { url: string; height: number; width: number };
 }
 
 // API key publica de Google CSE (100 queries/dia)
@@ -77,6 +78,7 @@ interface CSESearchResponse {
     displayLink: string;
     formattedUrl?: string;
     htmlSnippet?: string;
+    mime?: string;
     pagemap?: any;
   }>;
   searchInformation?: {
@@ -87,15 +89,113 @@ interface CSESearchResponse {
   queries?: { request?: any[]; nextPage?: any[] };
 }
 
-// Llama a Google Custom Search JSON API
+// Traduce el query via Google Translate API (misma key que CSE)
+async function translateQuery(text: string, source: string, target: string): Promise<string> {
+  if (!source || !target || source === target) return text;
+  try {
+    const r = await fetch(`https://translation.googleapis.com/language/translate/v2?key=${GOOGLE_CSE_API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q: text, source, target, format: "text" }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return text;
+    const d: any = await r.json();
+    return d?.data?.translations?.[0]?.translatedText || text;
+  } catch { return text; }
+}
+
+// Construye el query combinando todos los componentes (igual que osintsear.ch)
+function buildQuery(params: {
+  query: string;
+  exactMatch?: string;
+  includeWords?: string;
+  excludeWords?: string;
+  fileTypes?: string;
+  domain?: string;
+}): string {
+  let q = params.query.trim();
+  if (params.exactMatch?.trim()) {
+    q += ` "${params.exactMatch.trim()}"`;
+  }
+  if (params.includeWords?.trim()) {
+    const includeTerms = params.includeWords
+      .split(/[\s,;]+/)
+      .filter(t => t.trim())
+      .map(t => `+${t.trim()}`)
+      .join(" ");
+    q += ` ${includeTerms}`;
+  }
+  if (params.excludeWords?.trim()) {
+    const excludeTerms = params.excludeWords
+      .split(/[\s,;]+/)
+      .filter(t => t.trim())
+      .map(t => `-${t.trim()}`)
+      .join(" ");
+    q += ` ${excludeTerms}`;
+  }
+  if (params.fileTypes?.trim()) {
+    const ftypes = params.fileTypes.split(",").map(t => t.trim()).filter(Boolean);
+    if (ftypes.length > 0) {
+      const fileTypeQuery = ftypes.map(t => `filetype:${t}`).join(" OR ");
+      q += ` ${fileTypeQuery}`;
+    }
+  }
+  if (params.domain?.trim()) {
+    const domains = params.domain
+      .split(/[\s,;]+/)
+      .filter(d => d.trim())
+      .map(d => d.trim().toLowerCase());
+    if (domains.length > 0) {
+      const domainQuery = domains.map(d => `site:${d}`).join(" OR ");
+      q = `(${q}) (${domainQuery})`;
+    }
+  }
+  return q;
+}
+
+// Construye el dateRestrict parameter de Google
+function buildDateRestrict(timeRange: string, startDate?: string, endDate?: string): string {
+  switch (timeRange) {
+    case "hour": return "d1";
+    case "day": return "d1";
+    case "week": return "d7";
+    case "month": return "d30";
+    case "year": return "d365";
+    case "custom":
+      if (startDate && endDate) {
+        const s = new Date(startDate);
+        const e = new Date(endDate);
+        const sStr = `${s.getFullYear()}${(s.getMonth() + 1).toString().padStart(2, "0")}${s.getDate().toString().padStart(2, "0")}`;
+        const eStr = `${e.getFullYear()}${(e.getMonth() + 1).toString().padStart(2, "0")}${e.getDate().toString().padStart(2, "0")}`;
+        return `date:r:${sStr}:${eStr}`;
+      }
+      return "";
+    default: return "";
+  }
+}
+
+// Llama a Google Custom Search JSON API con todos los filtros
 async function searchCSE(
   cseId: string,
   query: string,
-  start: number = 1,
-  num: number = 10,
-): Promise<{ results: SearchResult[]; totalResults: number; error: string | null }> {
+  start: number,
+  num: number,
+  opts: {
+    language?: string;
+    country?: string;
+    interfaceLanguage?: string;
+    dateRestrict?: string;
+    sortBy?: string;
+  } = {},
+): Promise<{ results: SearchResult[]; totalResults: number; error: string | null; nextPageStart?: number }> {
   try {
-    const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_CSE_API_KEY}&cx=${cseId}&q=${encodeURIComponent(query)}&start=${start}&num=${num}`;
+    let url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_CSE_API_KEY}&cx=${cseId}&q=${encodeURIComponent(query)}&start=${start}&num=${num}`;
+    if (opts.language) url += `&lr=${opts.language}`;
+    if (opts.country) url += `&cr=country${opts.country.toUpperCase()}`;
+    if (opts.interfaceLanguage) url += `&hl=${opts.interfaceLanguage}`;
+    if (opts.dateRestrict) url += `&dateRestrict=${opts.dateRestrict}`;
+    if (opts.sortBy === "date") url += `&sort=date`;
     const r = await fetch(url, {
       headers: { "User-Agent": "MONITOR-THREAT/1.0" },
       signal: AbortSignal.timeout(15000),
@@ -109,6 +209,7 @@ async function searchCSE(
       return { results: [], totalResults: 0, error: d.error.message };
     }
     const items = d.items || [];
+    const nextStart = d.queries?.nextPage?.[0]?.startIndex;
     return {
       results: items.map(it => ({
         source: "Google CSE",
@@ -119,21 +220,19 @@ async function searchCSE(
         severity: "info" as const,
         timestamp: null,
         displayLink: it.displayLink,
+        formattedUrl: it.formattedUrl,
+        mime: it.mime,
       })),
       totalResults: parseInt(d.searchInformation?.totalResults || "0"),
       error: null,
+      nextPageStart: nextStart,
     };
   } catch (e: any) {
     return { results: [], totalResults: 0, error: String(e?.message || e) };
   }
 }
 
-// GET /api/darkweb/search?q=<query>&category=<cat>&start=<num>
-// - category: 'all' para todas las categorias, o un ID de categoria
-// - start: pagination offset (default 1)
-// - Si category='all', ejecuta en paralelo las 5 categorias mas relevantes
-//   para investigacion OSINT (general, fraud, crime, narcotics, terrorism)
-//   y combina resultados.
+// GET /api/darkweb/search con todos los parametros
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -142,27 +241,64 @@ export async function GET(request: Request) {
     const start = parseInt(searchParams.get("start") || "1");
     const num = parseInt(searchParams.get("num") || "10");
 
+    // Parametros avanzados
+    const exactMatch = searchParams.get("exactMatch") || "";
+    const includeWords = searchParams.get("includeWords") || "";
+    const excludeWords = searchParams.get("excludeWords") || "";
+    const domain = searchParams.get("domain") || "";
+    const fileTypes = searchParams.get("fileTypes") || "";
+    const sortBy = searchParams.get("sortBy") || "relevance";
+    const timeRange = searchParams.get("timeRange") || "all";
+    const customStartDate = searchParams.get("customStartDate") || "";
+    const customEndDate = searchParams.get("customEndDate") || "";
+    const language = searchParams.get("language") || "";
+    const country = searchParams.get("country") || "";
+    const interfaceLanguage = searchParams.get("interfaceLanguage") || "";
+    const translateFrom = searchParams.get("translateFrom") || "";
+    const translateTo = searchParams.get("translateTo") || "";
+
     if (!query) return NextResponse.json({ error: "missing_query" }, { status: 400 });
+
+    // Traducir query si se solicito
+    let finalQuery = query;
+    if (translateFrom && translateTo && translateFrom !== translateTo) {
+      finalQuery = await translateQuery(query, translateFrom, translateTo);
+    }
+
+    // Construir query con todos los componentes
+    const fullQuery = buildQuery({
+      query: finalQuery,
+      exactMatch,
+      includeWords,
+      excludeWords,
+      fileTypes,
+      domain,
+    });
+
+    // Construir dateRestrict
+    const dateRestrict = buildDateRestrict(timeRange, customStartDate, customEndDate);
+
+    const opts = { language, country, interfaceLanguage, dateRestrict, sortBy };
 
     let allResults: SearchResult[] = [];
     let errors: string[] = [];
     let totalResults = 0;
     let categoriesUsed: string[] = [];
+    let nextPageStart: number | undefined;
 
     if (category === "all") {
-      // Ejecutar 5 categorias mas relevantes en paralelo (limite de rate de CSE)
+      // Ejecutar 5 categorias mas relevantes en paralelo
       const topCategories = ["general", "fraud", "crime", "narcotics", "terrorism"];
       categoriesUsed = topCategories;
       const promises = topCategories.map(async (cat) => {
         const cse = CSE_ENGINES[cat];
-        if (!cse) return { cat, results: [], error: "categoria_no_existe" };
-        const r = await searchCSE(cse.id, query, 1, 5);  // 5 resultados por categoria
-        return { cat, results: r.results, error: r.error, total: r.totalResults };
+        if (!cse) return { cat, results: [], error: "categoria_no_existe", total: 0, nextPageStart: undefined as number | undefined };
+        const r = await searchCSE(cse.id, fullQuery, 1, 5, opts);
+        return { cat, results: r.results, error: r.error, total: r.totalResults, nextPageStart: r.nextPageStart };
       });
       const responses = await Promise.all(promises);
       for (const resp of responses) {
         if (resp.error) errors.push(`${resp.cat}: ${resp.error}`);
-        // Etiquetar cada resultado con su categoria
         const cseInfo = CSE_ENGINES[resp.cat];
         for (const r of resp.results) {
           allResults.push({
@@ -173,14 +309,15 @@ export async function GET(request: Request) {
           });
         }
         totalResults += resp.total;
+        if (resp.nextPageStart) nextPageStart = resp.nextPageStart;
       }
     } else if (CSE_ENGINES[category]) {
-      // Solo una categoria
       categoriesUsed = [category];
       const cse = CSE_ENGINES[category];
-      const r = await searchCSE(cse.id, query, start, num);
+      const r = await searchCSE(cse.id, fullQuery, start, num, opts);
       if (r.error) errors.push(r.error);
       totalResults = r.totalResults;
+      nextPageStart = r.nextPageStart;
       allResults = r.results.map(it => ({
         ...it,
         category,
@@ -203,7 +340,6 @@ export async function GET(request: Request) {
       return true;
     });
 
-    // Summary
     const byCategory: Record<string, number> = {};
     const bySeverity = { high: 0, medium: 0, low: 0, info: 0 };
     for (const r of deduped) {
@@ -213,18 +349,22 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       query,
+      fullQuery, // query final construido (con exact match, include, exclude, filetypes, domain)
+      translatedQuery: finalQuery !== query ? finalQuery : undefined,
       category,
       categoriesUsed,
       availableCategories: Object.entries(CSE_ENGINES).map(([k, v]) => ({
         id: k, name: v.name, description: v.description, severity: v.severity,
       })),
+      filters: {
+        exactMatch, includeWords, excludeWords, domain, fileTypes,
+        sortBy, timeRange, customStartDate, customEndDate,
+        language, country, interfaceLanguage, translateFrom, translateTo,
+      },
       results: deduped,
       totalResultsGoogle: totalResults,
-      summary: {
-        total: deduped.length,
-        byCategory,
-        bySeverity,
-      },
+      nextPageStart,
+      summary: { total: deduped.length, byCategory, bySeverity },
       errors: errors.length > 0 ? errors : undefined,
       timestamp: new Date().toISOString(),
     }, { headers: { "Cache-Control": "no-store" } });
