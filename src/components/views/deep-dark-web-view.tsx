@@ -196,6 +196,8 @@ export function DeepDarkWebView() {
   const [nextPageStart, setNextPageStart] = React.useState<number | undefined>(undefined);
   const [currentPage, setCurrentPage] = React.useState(1);
   const [errors, setErrors] = React.useState<string[]>([]);
+  const [apiKeyMissing, setApiKeyMissing] = React.useState(false);
+  const [apiKeyInstructions, setApiKeyInstructions] = React.useState<string[]>([]);
   const [searched, setSearched] = React.useState(false);
   const [activeCategory, setActiveCategory] = React.useState<string>("all");
   // Pre-populate with all 25 categories so info text works before first search
@@ -263,16 +265,29 @@ export function DeepDarkWebView() {
 
     try {
       const r = await fetch(`/api/darkweb/search?${params.toString()}`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = await r.json();
-      setResults(j.results || []);
-      setFullQuery(j.fullQuery || query);
-      setTranslatedQuery(j.translatedQuery || null);
-      setSummary(j.summary || null);
-      setTotalResultsGoogle(j.totalResultsGoogle || 0);
-      setNextPageStart(j.nextPageStart);
-      setErrors(j.errors || []);
-      setCategoriesList(j.availableCategories || []);
+      if (r.status === 503) {
+        const j = await r.json();
+        if (j.error === "api_key_not_configured") {
+          setApiKeyMissing(true);
+          setApiKeyInstructions(j.instructions || []);
+          setErrors([]);
+        } else {
+          setErrors([j.message || "Error del servidor"]);
+        }
+      } else if (!r.ok) {
+        throw new Error(`HTTP ${r.status}`);
+      } else {
+        const j = await r.json();
+        setApiKeyMissing(false);
+        setResults(j.results || []);
+        setFullQuery(j.fullQuery || query);
+        setTranslatedQuery(j.translatedQuery || null);
+        setSummary(j.summary || null);
+        setTotalResultsGoogle(j.totalResultsGoogle || 0);
+        setNextPageStart(j.nextPageStart);
+        setErrors(j.errors || []);
+        setCategoriesList(j.availableCategories || []);
+      }
     } catch (e: any) {
       setErrors([String(e?.message || e)]);
     }
@@ -600,6 +615,34 @@ export function DeepDarkWebView() {
           <div className="flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> Avisos:</div>
           {errors.map((e, i) => <div key={i} className="text-[10px] font-mono ml-6">{e}</div>)}
         </div>
+      )}
+
+      {/* API Key missing — instrucciones para configurar */}
+      {apiKeyMissing && (
+        <Panel title="Configuracion requerida: API Key de Google" className="md:col-span-2">
+          <div className="p-4 rounded border border-amber-500/40 bg-amber-500/5">
+            <div className="flex items-center gap-2 mb-3">
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+              <span className="text-sm font-semibold text-amber-500">
+                GOOGLE_CSE_API_KEY no esta configurada
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mb-3">
+              Para usar este modulo necesitas una API key gratuita de Google Custom Search. Es gratis (100 consultas por dia). Sigue estos pasos:
+            </p>
+            <div className="space-y-1.5 mb-4">
+              {apiKeyInstructions.map((inst, i) => (
+                <div key={i} className="text-[11px] font-mono text-muted-foreground flex items-start gap-2">
+                  <span className="text-amber-500 shrink-0">{i + 1}.</span>
+                  <span>{inst}</span>
+                </div>
+              ))}
+            </div>
+            <div className="p-3 rounded border border-cyan-500/40 bg-cyan-500/5 text-[11px] text-cyan-300">
+              <strong>Resumen:</strong> Google Cloud Console → Habilitar Custom Search API → Crear API Key → Configurar como <code className="bg-muted px-1 rounded">GOOGLE_CSE_API_KEY</code> en Vercel → Listo.
+            </div>
+          </div>
+        </Panel>
       )}
 
       {/* SUMMARY */}

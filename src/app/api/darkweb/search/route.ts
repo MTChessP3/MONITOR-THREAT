@@ -37,8 +37,15 @@ interface SearchResult {
   image?: { url: string; height: number; width: number };
 }
 
-// API key publica de Google CSE (100 queries/dia)
-const GOOGLE_CSE_API_KEY = "AIzaSyC2u5gvv4VvHY1GaiaJRz1VYAXdCGovdwc";
+// API key de Google CSE — configurable via env var GOOGLE_CSE_API_KEY
+// Si no esta configurada, el endpoint devuelve un mensaje claro.
+// Para obtener una key gratuita:
+//   1. Ir a https://console.cloud.google.com/
+//   2. Crear un proyecto (o usar uno existente)
+//   3. Habilitar "Custom Search API" en APIs & Services > Library
+//   4. Ir a APIs & Services > Credentials > Create Credentials > API Key
+//   5. Copiar la key y configurarla como GOOGLE_CSE_API_KEY en Vercel
+const GOOGLE_CSE_API_KEY = process.env.GOOGLE_CSE_API_KEY || "";
 
 // 25 CSE IDs pre-configurados por categoria
 const CSE_ENGINES: Record<string, { id: string; name: string; description: string; severity: "high" | "medium" | "low" | "info" }> = {
@@ -282,6 +289,24 @@ export async function GET(request: Request) {
     const hasAnyFilter = exactMatch.trim() || includeWords.trim() || excludeWords.trim() ||
       domain.trim() || fileTypes.trim();
     if (!query && !hasAnyFilter) return NextResponse.json({ error: "missing_query" }, { status: 400 });
+
+    // Verificar que la API key este configurada
+    if (!GOOGLE_CSE_API_KEY) {
+      return NextResponse.json({
+        error: "api_key_not_configured",
+        message: "GOOGLE_CSE_API_KEY no esta configurada. Para usar este modulo necesitas una API key gratuita de Google Custom Search.",
+        instructions: [
+          "1. Ve a https://console.cloud.google.com/",
+          "2. Crea un proyecto o usa uno existente",
+          "3. Habilita 'Custom Search API' en APIs & Services > Library",
+          "4. Ve a APIs & Services > Credentials > Create Credentials > API Key",
+          "5. Copia la key y configurala como variable de entorno GOOGLE_CSE_API_KEY en Vercel (Settings > Environment Variables)",
+          "6. Es gratis: 100 consultas por dia",
+        ],
+        results: [],
+        summary: { total: 0, byCategory: {}, bySeverity: { high: 0, medium: 0, low: 0, info: 0 } },
+      }, { status: 503 });
+    }
 
     // Traducir query si se solicito
     let finalQuery = query;
