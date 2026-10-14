@@ -278,7 +278,10 @@ export async function GET(request: Request) {
     const translateFrom = searchParams.get("translateFrom") || "";
     const translateTo = searchParams.get("translateTo") || "";
 
-    if (!query) return NextResponse.json({ error: "missing_query" }, { status: 400 });
+    // Permitir busqueda sin query principal si hay filtros avanzados
+    const hasAnyFilter = exactMatch.trim() || includeWords.trim() || excludeWords.trim() ||
+      domain.trim() || fileTypes.trim();
+    if (!query && !hasAnyFilter) return NextResponse.json({ error: "missing_query" }, { status: 400 });
 
     // Traducir query si se solicito
     let finalQuery = query;

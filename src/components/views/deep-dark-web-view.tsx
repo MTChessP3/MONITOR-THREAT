@@ -332,6 +332,10 @@ export function DeepDarkWebView() {
     fileTypes.length > 0 || sortBy !== "relevance" || timeRange !== "all" ||
     language || country || interfaceLanguage || translateFrom || translateTo;
 
+  // El boton se habilita si hay query principal O cualquier filtro avanzado
+  const canSearch = query.trim() || exactMatch.trim() || includeWords.trim() ||
+    excludeWords.trim() || domain.trim() || fileTypes.length > 0;
+
   return (
     <ModuleShell
       name="Deep & Dark Web"
@@ -347,7 +351,7 @@ export function DeepDarkWebView() {
               {showAdvanced ? "Ocultar filtros" : "Mostrar filtros"}
               <ChevronDown className={`w-3 h-3 ml-1 transition ${showAdvanced ? "rotate-180" : ""}`} />
             </Button>
-            <Button size="sm" onClick={() => search(1)} disabled={loading || !query.trim()}>
+            <Button size="sm" onClick={() => search(1)} disabled={loading || !canSearch}>
               {loading ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Buscando...</> : <><Search className="w-3.5 h-3.5 mr-1.5" /> Buscar</>}
             </Button>
           </div>
@@ -574,10 +578,10 @@ export function DeepDarkWebView() {
                   : "30 resultados por pagina (categoria: " + (categoriesList.find(c => c.id === category)?.name || category) + ")"}
               </div>
               <div className="flex items-center gap-2">
-                {!query.trim() && (
-                  <span className="text-[10px] text-amber-500">Escribe un termino de busqueda arriba</span>
+                {!canSearch && (
+                  <span className="text-[10px] text-amber-500">Escribe un termino de busqueda o un filtro</span>
                 )}
-                <Button size="sm" onClick={() => search(1)} disabled={loading || !query.trim()}>
+                <Button size="sm" onClick={() => search(1)} disabled={loading || !canSearch}>
                   {loading ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Buscando...</> : <><Search className="w-3.5 h-3.5 mr-1.5" /> Buscar con filtros</>}
                 </Button>
               </div>
