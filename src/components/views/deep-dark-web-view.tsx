@@ -198,7 +198,37 @@ export function DeepDarkWebView() {
   const [errors, setErrors] = React.useState<string[]>([]);
   const [searched, setSearched] = React.useState(false);
   const [activeCategory, setActiveCategory] = React.useState<string>("all");
-  const [categoriesList, setCategoriesList] = React.useState<CategoryInfo[]>([]);
+  // Pre-populate with all 25 categories so info text works before first search
+  const ALL_CATEGORIES_INFO: CategoryInfo[] = [
+    { id: "general", name: "General OSINT", description: "", severity: "info" },
+    { id: "crime", name: "Crimen", description: "", severity: "high" },
+    { id: "criminal-organizations", name: "Organizaciones criminales", description: "", severity: "high" },
+    { id: "criminal-records", name: "Records criminales", description: "", severity: "high" },
+    { id: "cold-cases", name: "Casos frios", description: "", severity: "medium" },
+    { id: "fraud", name: "Fraude", description: "", severity: "high" },
+    { id: "money-laundering", name: "Lavado de dinero", description: "", severity: "high" },
+    { id: "sanctions", name: "Sanciones", description: "", severity: "high" },
+    { id: "terrorism", name: "Terrorismo", description: "", severity: "high" },
+    { id: "extremism", name: "Extremismo", description: "", severity: "high" },
+    { id: "narcotics", name: "Narcoticos", description: "", severity: "high" },
+    { id: "missing-person", name: "Personas desaparecidas", description: "", severity: "medium" },
+    { id: "murder", name: "Asesinatos", description: "", severity: "high" },
+    { id: "sexual-abuse", name: "Abuso sexual", description: "", severity: "high" },
+    { id: "child-abuse", name: "Abuso infantil", description: "", severity: "high" },
+    { id: "cryptocurrency", name: "Criptomonedas", description: "", severity: "medium" },
+    { id: "trade-index", name: "Indice comercial", description: "", severity: "low" },
+    { id: "news", name: "Noticias", description: "", severity: "info" },
+    { id: "politics", name: "Politica", description: "", severity: "low" },
+    { id: "religion", name: "Religion", description: "", severity: "low" },
+    { id: "history", name: "Historia", description: "", severity: "info" },
+    { id: "culture", name: "Cultura", description: "", severity: "info" },
+    { id: "medical", name: "Medico", description: "", severity: "low" },
+    { id: "social-media", name: "Redes sociales", description: "", severity: "medium" },
+    { id: "satellite", name: "Satelital", description: "", severity: "info" },
+    { id: "webcams", name: "Webcams", description: "", severity: "info" },
+  ];
+
+  const [categoriesList, setCategoriesList] = React.useState<CategoryInfo[]>(ALL_CATEGORIES_INFO);
   const [showAdvanced, setShowAdvanced] = React.useState(false);
 
   const search = async (start: number = 1) => {
@@ -214,7 +244,7 @@ export function DeepDarkWebView() {
       q: query.trim(),
       category,
       start: String(start),
-      num: "10",
+      num: "30",
     });
     if (exactMatch) params.set("exactMatch", exactMatch);
     if (includeWords) params.set("includeWords", includeWords);
@@ -523,6 +553,17 @@ export function DeepDarkWebView() {
                 Filtros activos: {[exactMatch && `exact:"${exactMatch}"`, includeWords && `+${includeWords}`, excludeWords && `-${excludeWords}`, domain && `site:${domain}`, fileTypes.length > 0 && `filetype:${fileTypes.join(",")}`, sortBy !== "relevance" && `sort:${sortBy}`, timeRange !== "all" && `time:${timeRange}`, language && `lang:${language}`, country && `pais:${country}`, translateFrom && translateTo && `traducir:${translateFrom}->${translateTo}`].filter(Boolean).join(" | ")}
               </div>
             )}
+            {/* Boton Buscar visible dentro del panel de filtros */}
+            <div className="pt-3 mt-2 border-t border-border flex items-center justify-between">
+              <div className="text-[10px] text-muted-foreground">
+                {category === "all"
+                  ? "5 categorias × 6 resultados = 30 resultados por pagina"
+                  : "30 resultados por pagina (categoria: " + (categoriesList.find(c => c.id === category)?.name || category) + ")"}
+              </div>
+              <Button size="sm" onClick={() => search(1)} disabled={loading || !query.trim()}>
+                {loading ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Buscando...</> : <><Search className="w-3.5 h-3.5 mr-1.5" /> Buscar con filtros</>}
+              </Button>
+            </div>
           </div>
         )}
         {!showAdvanced && (

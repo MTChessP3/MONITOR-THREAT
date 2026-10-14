@@ -175,7 +175,8 @@ function buildDateRestrict(timeRange: string, startDate?: string, endDate?: stri
   }
 }
 
-// Llama a Google Custom Search JSON API con todos los filtros
+// Google CSE API max is 10 per request. Para obtener N resultados, hacemos
+// ceil(N/10) requests en paralelo con start=1, 11, 21, etc.
 async function searchCSE(
   cseId: string,
   query: string,
@@ -190,30 +191,34 @@ async function searchCSE(
   } = {},
 ): Promise<{ results: SearchResult[]; totalResults: number; error: string | null; nextPageStart?: number }> {
   try {
-    let url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_CSE_API_KEY}&cx=${cseId}&q=${encodeURIComponent(query)}&start=${start}&num=${num}`;
-    if (opts.language) url += `&lr=${opts.language}`;
-    if (opts.country) url += `&cr=country${opts.country.toUpperCase()}`;
-    if (opts.interfaceLanguage) url += `&hl=${opts.interfaceLanguage}`;
-    if (opts.dateRestrict) url += `&dateRestrict=${opts.dateRestrict}`;
-    if (opts.sortBy === "date") url += `&sort=date`;
-    const r = await fetch(url, {
-      headers: { "User-Agent": "MONITOR-THREAT/1.0" },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!r.ok) {
-      const errText = await r.text();
-      return { results: [], totalResults: 0, error: `HTTP ${r.status}: ${errText.slice(0, 200)}` };
+    const requests: number[] = [];
+    let current = start;
+    while (requests.length * 10 < num && requests.length < 4) {
+      requests.push(current);
+      current += 10;
     }
-    const d: CSESearchResponse = await r.json();
-    if (d.error) {
-      return { results: [], totalResults: 0, error: d.error.message };
-    }
-    const items = d.items || [];
-    const nextStart = d.queries?.nextPage?.[0]?.startIndex;
-    return {
-      results: items.map(it => ({
-        source: "Google CSE",
-        type: "search hit",
+    const promises = requests.map(async (s) => {
+      let url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_CSE_API_KEY}&cx=${cseId}&q=${encodeURIComponent(query)}&start=${s}&num=10`;
+      if (opts.language) url += `&lr=${opts.language}`;
+      if (opts.country) url += `&cr=country${opts.country.toUpperCase()}`;
+      if (opts.interfaceLanguage) url += `&hl=${opts.interfaceLanguage}`;
+      if (opts.dateRestrict) url += `&dateRestrict=${opts.dateRestrict}`;
+      if (opts.sortBy === "date") url += `&sort=date`;
+      const r = await fetch(url, {
+        headers: { "User-Agent": "MONITOR-THREAT/1.0" },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!r.ok) {
+        const errText = await r.text();
+        return { items: [], total: 0, error: `HTTP ${r.status}: ${errText.slice(0, 200)}`, nextStart: undefined as number | undefined };
+      }
+      const d: CSESearchResponse = await r.json();
+      if (d.error) {
+        return { items: [], total: 0, error: d.error.message, nextStart: undefined as number | undefined };
+      }
+      const items = (d.items || []).map(it => ({
+        source: "Google CSE" as const,
+        type: "search hit" as const,
         title: it.title || "(no title)",
         url: it.link,
         snippet: it.snippet || "",
@@ -222,9 +227,25 @@ async function searchCSE(
         displayLink: it.displayLink,
         formattedUrl: it.formattedUrl,
         mime: it.mime,
-      })),
-      totalResults: parseInt(d.searchInformation?.totalResults || "0"),
-      error: null,
+      }));
+      return { items, total: parseInt(d.searchInformation?.totalResults || "0"), error: null, nextStart: d.queries?.nextPage?.[0]?.startIndex as number | undefined };
+    });
+    const responses = await Promise.all(promises);
+    const allItems: SearchResult[] = [];
+    let totalResults = 0;
+    let firstError: string | null = null;
+    let nextStart: number | undefined;
+    for (const r of responses) {
+      if (r.error && !firstError) firstError = r.error;
+      allItems.push(...r.items);
+      if (r.total > totalResults) totalResults = r.total;
+      if (r.nextStart) nextStart = r.nextStart;
+    }
+    // Truncate to requested num
+    return {
+      results: allItems.slice(0, num),
+      totalResults,
+      error: firstError,
       nextPageStart: nextStart,
     };
   } catch (e: any) {
@@ -239,7 +260,7 @@ export async function GET(request: Request) {
     const query = (searchParams.get("q") || "").trim();
     const category = (searchParams.get("category") || "all").trim();
     const start = parseInt(searchParams.get("start") || "1");
-    const num = parseInt(searchParams.get("num") || "10");
+    const num = parseInt(searchParams.get("num") || "30");
 
     // Parametros avanzados
     const exactMatch = searchParams.get("exactMatch") || "";
@@ -288,12 +309,13 @@ export async function GET(request: Request) {
 
     if (category === "all") {
       // Ejecutar 5 categorias mas relevantes en paralelo
+      // 5 categorias × 6 resultados = 30 resultados por pagina
       const topCategories = ["general", "fraud", "crime", "narcotics", "terrorism"];
       categoriesUsed = topCategories;
       const promises = topCategories.map(async (cat) => {
         const cse = CSE_ENGINES[cat];
         if (!cse) return { cat, results: [], error: "categoria_no_existe", total: 0, nextPageStart: undefined as number | undefined };
-        const r = await searchCSE(cse.id, fullQuery, 1, 5, opts);
+        const r = await searchCSE(cse.id, fullQuery, 1, 6, opts);
         return { cat, results: r.results, error: r.error, total: r.totalResults, nextPageStart: r.nextPageStart };
       });
       const responses = await Promise.all(promises);
